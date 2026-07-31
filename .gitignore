@@ -12,4 +12,5 @@ __pycache__/
 scratch/
 *.bin
 *.nnue
+!nets/*.nnue
 *.pgn4

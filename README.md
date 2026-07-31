@@ -83,6 +83,9 @@ tetrarch/                 the Python engine + reference
 src/c/                    the accelerator
     tetrarch.c            board, movegen, perft, eval, TT, search   done
 
+nets/                     quantised nets the engine loads
+    net-v0.nnue           first net; bootstrap off the throwaway eval  done
+
 gui/                      Flask viewer: paste PGN4, step a game     done
     app.py                one app, three JSON endpoints
     templates/index.html  one page, one canvas, no npm
