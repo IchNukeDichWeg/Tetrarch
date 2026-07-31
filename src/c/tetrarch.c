@@ -1158,20 +1158,42 @@ static void pick_move(uint32_t *moves, int32_t *scores, int n, int i)
     }
 }
 
+/* --- quiescence check evasions (toggle: off by default) -------------------
+ *
+ * Standing pat means "I could just do nothing here", which is exactly what a
+ * side in check may not do. Without this, quiescence evaluates positions it
+ * has no right to and can score a lost position as quiet.
+ *
+ * When in check it searches every legal move rather than captures only, and
+ * reports mate if there are none -- quiescence currently cannot see a mate at
+ * all. That is a wider search, so it is a toggle with an A/B rather than a
+ * free correctness win: it costs nodes, and nodes are depth.
+ */
+static int use_qs_evasions = 0;
+
+void tt_set_qs_evasions(int on) { use_qs_evasions = on ? 1 : 0; }
+int tt_get_qs_evasions(void) { return use_qs_evasions; }
+
 static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
 {
     uint32_t *moves;
     int32_t *scores;
     TtUndo u;
-    int n, i, me = b->turn;
+    int n, i, me = b->turn, in_chk = 0, legal = 0;
     int32_t stand;
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
     if (ply >= MAX_DEPTH - 2) return tt_eval(b);
 
-    stand = tt_eval_bounded(b, alpha, beta);
-    if (stand >= beta) return stand;
-    if (stand > alpha) alpha = stand;
+    if (use_qs_evasions) in_chk = tt_in_check(b, me);
+    if (in_chk) {
+        /* No stand-pat: the side to move cannot decline to answer a check. */
+        stand = -INF_SCORE;
+    } else {
+        stand = tt_eval_bounded(b, alpha, beta);
+        if (stand >= beta) return stand;
+        if (stand > alpha) alpha = stand;
+    }
 
     /* Captures are filtered out of the full pseudo-legal list rather than
      * produced by a second, captures-only generator. That generator would be
@@ -1185,19 +1207,24 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     for (i = 0; i < n; i++) {
         int king;
         pick_move(moves, scores, n, i);
-        if (!is_capture(b, moves[i])) continue;
+        /* In check every legal move is a candidate; otherwise captures only. */
+        if (!in_chk && !is_capture(b, moves[i])) continue;
         tt_make(b, moves[i], &u);
         king = b->kings[me];
         if (king >= 0 && tt_is_attacked(b, king, me)) {
             tt_unmake(b, moves[i], &u);
             continue;
         }
+        legal++;
         int32_t score = -qsearch(b, -beta, -alpha, ply + 1);
         tt_unmake(b, moves[i], &u);
         if (search_aborted) return 0;
         if (score >= beta) return score;
         if (score > alpha) alpha = score;
     }
+    /* Quiescence can now see a mate, which it previously could not: with no
+     * legal answer to a check the position is lost, not quiet. */
+    if (in_chk && legal == 0) return -(MATE_SCORE - ply);
     return alpha;
 }
 

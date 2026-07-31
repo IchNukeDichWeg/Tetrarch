@@ -281,6 +281,36 @@ missed a mate the full search finds 3 times, and **invented one 0 times** — th
 checkmate. selftest pins the never-invents property; missing is the trade the
 games have to price.
 
+### Quiescence check evasions — built, READY TO SCREEN
+
+`setoption name QSEvasions`, default **off**. When the side to move is in check
+quiescence searches every legal move instead of captures only, does not stand
+pat, and reports mate when there are none.
+
+Standing pat means "I could just do nothing here", which is precisely what a
+side in check may not do. Without this, quiescence scores lost positions as
+quiet and **cannot see a mate at all**.
+
+What it fixes, over 65 random positions with a seat in check, searched to
+depth 2: **10 mates (15%) are visible only with evasions on.**
+
+What it costs:
+
+| depth | off | on | |
+|---:|---:|---:|---|
+| 4 | 13,451 | 13,678 | 101.7% |
+| 5 | 31,359 | 32,214 | 102.7% |
+| 6 | 154,319 | 188,136 | 121.9% |
+| 7 | 397,384 | 502,636 | 126.5% |
+
+Mean depth at 20,000 nodes falls 4.25 → 4.08.
+
+So it is a genuine correctness fix that costs about a sixth of a ply. Unlike
+the pruning features there is no reason to expect it to win on node count —
+the case for it is that the search stops mis-scoring lost positions. Whether
+that is worth the depth is exactly what the games decide, and it is the first
+feature here where a negative result would still be interesting.
+
 ---
 
 ## A property of the harness worth knowing

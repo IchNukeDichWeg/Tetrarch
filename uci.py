@@ -67,6 +67,7 @@ class Engine:
         print("option name LMP type check default false")
         print("option name LMPMaxDepth type spin default 3 min 0 max 8")
         print("option name LMPBase type spin default 4 min 1 max 32")
+        print("option name QSEvasions type check default false")
         print("uciok")
 
     def cmd_isready(self, _args):
@@ -105,6 +106,8 @@ class Engine:
             core.set_lazy_eval(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "lmp":
             core.set_lmp(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "qsevasions":
+            core.set_qs_evasions(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name in ("lmpmaxdepth", "lmpbase"):
             self.lmp_max_depth = (int(value) if name == "lmpmaxdepth"
                                   else self.lmp_max_depth)

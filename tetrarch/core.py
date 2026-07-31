@@ -245,6 +245,8 @@ def load(path=None):
     lib.tt_set_lmp.argtypes = [ctypes.c_int]
     lib.tt_get_lmp.restype = ctypes.c_int
     lib.tt_set_lmp_params.argtypes = [ctypes.c_int, ctypes.c_int]
+    lib.tt_set_qs_evasions.argtypes = [ctypes.c_int]
+    lib.tt_get_qs_evasions.restype = ctypes.c_int
     lib.tt_divide.restype = ctypes.c_int
     lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.POINTER(ctypes.c_uint32),
@@ -409,6 +411,17 @@ def lmp_enabled():
 
 def set_lmp_params(max_depth, base):
     load().tt_set_lmp_params(int(max_depth), int(base))
+
+
+def set_qs_evasions(on):
+    """Search every legal move in quiescence when in check, instead of
+    standing pat. Off by default pending its A/B: it is a correctness fix that
+    costs nodes, and nodes are depth (docs/AB.md)."""
+    load().tt_set_qs_evasions(1 if on else 0)
+
+
+def qs_evasions_enabled():
+    return bool(load().tt_get_qs_evasions())
 
 
 def evaluate(b):

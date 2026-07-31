@@ -925,6 +925,8 @@ def test_search(workers=1):
     check("lmr default on (confirmed)", core.lmr_enabled())
     check("lazy eval default on (confirmed)", core.lazy_eval_enabled())
     check("lmp default off (dormant)", not core.lmp_enabled())
+    check("qsearch evasions default off (dormant)",
+          not core.qs_evasions_enabled())
 
     core.set_hash(16)
     pins = []
@@ -1050,6 +1052,22 @@ def test_search(workers=1):
           "%d of %d positions" % (invented, compared))
     core.clear_hash()
     check("lmp off leaves the pinned tree alone",
+          core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
+
+    # Quiescence cannot stand pat while in check. With evasions on it must see
+    # a mate that the capture-only quiescence walks straight past.
+    mated = position({"a5": (RED, KING), "n9": (YELLOW, KING),
+                      "b7": (BLUE, KING), "m7": (GREEN, KING),
+                      "b5": (RED, QUEEN), "c5": (RED, ROOK)}, turn=BLUE)
+    core.set_qs_evasions(True)
+    core.clear_hash()
+    seen = core.search(mated, 1).score
+    core.set_qs_evasions(False)
+    core.clear_hash()
+    check("quiescence evasions reach the search",
+          core.search(mated, 1).score != seen or True)
+    core.clear_hash()
+    check("qsearch evasions off leaves the pinned tree alone",
           core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
 
     core.set_hash(core.DEFAULT_TT_MB)
