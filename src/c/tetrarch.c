@@ -948,6 +948,10 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
             continue;
         }
         legal++;
+        /* Claim the move before searching it. If the node budget runs out
+         * inside the first subtree we still have to return something legal --
+         * otherwise a shallow budget at a deep target yields no move at all. */
+        if (legal == 1) best_move = moves[i];
         score = -alphabeta(b, depth - 1, -INF_SCORE, -alpha, 1);
         tt_unmake(b, moves[i], &u);
         if (search_aborted) break;
