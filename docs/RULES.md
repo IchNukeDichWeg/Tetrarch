@@ -393,6 +393,38 @@ recording both captures.
 So a single pawn move can remove two enemy pieces and, in FFA, score for both.
 Move encoding must carry two captured pieces.
 
+The position is reachable: at the moment of the double push `M` must be empty (a
+pawn cannot push through an occupied square), but one or two other seats move before
+the capture, and either can drop a piece on `M`.
+
+> **ASSUMPTION:** when `M` is occupied, the en-passant capture is the *only* move
+> onto `M`, and it takes both pieces.
+>
+> Geometrically there is one move — the same pawn from the same square to the same
+> square. It cannot both be a plain capture of the occupant and an en-passant capture
+> of the pawn, and emitting two moves with identical `from`/`to` would make the
+> notation ambiguous. Tetrarch therefore suppresses the plain capture in favour of the
+> en-passant one, following [4pc].
+>
+> The alternative reading is that en passant is simply unavailable when `M` is
+> occupied, leaving a plain capture of the occupant. No source settles it.
+>
+> **Cheapest experiment:** set the position up on chess.com — double-push a pawn, park
+> a third player's piece on the skipped square, and see whether the capture is offered
+> and what it removes. Both generators implement the same choice, so flipping it is one
+> constant in each.
+
+### 5.6 [D] An en passant capture can promote at the same time
+
+Blue's skipped squares lie on file c, ranks 4–11 — which includes **c8**, and c8 is
+Red's promotion rank in FFA (§4.2). A Red pawn on b7 or d7 capturing en passant onto
+c8 therefore promotes as it captures. The same holds in Teams via c11, and for every
+other perpendicular seat pair.
+
+This is why promotion is encoded orthogonally to the move flag in Tetrarch rather than
+being one of its values: one flag field cannot say "en passant" and "promotes" at once.
+Neither [athena] nor [4pc] appears to handle the combination.
+
 ---
 
 ## 6. Castling
@@ -705,6 +737,11 @@ order: castling rights come near the *front*, and the board comes **last**, not 
   (origin retained).
 * `X` — capital — is a **wall** (permanently blocked square), used by custom boards.
 * Runs of empty squares are written as a decimal count `1`–`14`.
+* **A 1-point queen is not representable.** FEN4 spells every queen `Q`, so the
+  promoted/unpromoted distinction that FFA scoring depends on (§4.2, §8.1) does not
+  survive a round trip. Tetrarch carries the bit internally and Zobrist-hashes it, and
+  loses it on FEN4 output; chess.com must track it out of band too. Anything that
+  needs FFA points across a FEN4 boundary has to carry them separately.
 * **The removed 3×3 corners are written as ordinary empty squares**, i.e. `3,…,3`
   and `14` for the two fully empty ranks — *not* as walls. [fen4] `types.rs`:
   "the 3x3 corners of the 14x14 board are counted as empty squares".
@@ -824,6 +861,21 @@ Tetrarch's own perft numbers for both setups, both modes, to depth 5, are record
 | 5 | Two-flank en passant: which engine is right | Tetrarch derives from first principles; expect perft divergence | 5.4 |
 | 6 | Per-piece capture values rest on chess.com only | Two pages agree verbatim; Wikibook has no table | 8.1 |
 | 7 | Which FEN4 castling array is "kingside" for a king-left seat | **ASSUMPTION: short side.** Only affects chess.com interop | 6.3 |
+| 8 | En passant onto an *occupied* skipped square | **ASSUMPTION: one move, captures both**, plain capture suppressed | 5.5 |
 
 Items 2–4 are the ones that could silently corrupt results, and each can wait for the
-phase that touches it. Item 7 is a thirty-second check whenever you are next in a game.
+phase that touches it. Items 7 and 8 are both settled by a minute in a live game
+whenever you happen to be in one.
+
+## 15. Findings added during implementation
+
+Rules that only surfaced once the board and both movegens existed. Each is asserted in
+`selftest.py`.
+
+| Finding | § |
+|---------|---|
+| An en-passant capture can promote at the same time (Blue's c8 is Red's FFA promotion rank) | 5.6 |
+| The 1-point queen is not representable in FEN4 and is lost on round trip | 11.2 |
+| Castling geometry is derivable from the king's current square, so the Board never needs to know its setup — this is what makes all five setups free and sidesteps Athena's table defect | 6.1, 6.4 |
+| Setups differ in perft from depth 2, including two setups that place a seat identically: `rg`'s Red queen on h1 pins Blue's b7 pawn once g2 clears, which `classic` does not | PERFT.md |
+| Only `classic` and `modern` are 180°-symmetric, so Teams seat bias is structural in `by`, `byg` and `rg` | 3.3 |
