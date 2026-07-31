@@ -107,9 +107,14 @@ move-for-move, not just by leaf count.
 * Random-position cross-check, both generators' complete legal move lists sorted
   and compared.
 
-Throughput on the reference machine: **183 positions/s** single-process,
-**~1,300 positions/s** across all 10 cores. The slow generator is the bottleneck
-by design; speeding it up would defeat its purpose.
+Throughput on the reference machine: **183–283 positions/s** single-process,
+**2,871 positions/s** sustained across all 10 cores over the full gate run. The
+slow generator is the bottleneck by design; speeding it up would defeat its
+purpose.
+
+(Short parallel runs report a lower rate — progress only advances as whole
+chunks finish, so the first few ticks under-count and the ETA overstates. 2,871
+is the sustained figure from the 10 M run, not an extrapolation.)
 
 Positions are drawn from two sources, because neither covers the rule surface
 alone: 35 % are playouts of 0–45 random legal moves from a random setup and mode
@@ -122,9 +127,27 @@ that never generated an en-passant capture would pass vacuously.
 
 | run | positions | disagreements | ep | promo | castle | check | dead |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| pre-commit default | 3,000 | 0 | ~400 | ~700 | ~390 | ~680 | ~1,250 |
+| pre-commit default | 3,000 | 0 | 334 | 614 | 393 | 678 | 1,166 |
 | recorded | 20,000 | 0 | 2,019 | 3,920 | 2,700 | 4,499 | 8,008 |
-| gate | 10,000,000 | *pending* | | | | | |
+| **gate** | **10,000,000** | **0** | 983,351 | 1,992,104 | 1,371,517 | 2,257,281 | 4,053,962 |
 
-The 10 M gate run is ~2 h on all 10 cores. Command and result to be recorded here
-when it completes.
+## Phase 1 gate: PASSED
+
+```
+selftest.py --crosscheck 10000000 --workers 0
+```
+
+10,000,000 positions, **0 disagreements**, 3,482.9 s (58 min) at 2,871 positions/s
+on the reference machine, seed 0. 243,138 positions (2.4 %) were terminal — no
+legal move for the side to move — which is the expected rate for scattered
+positions and confirms the sample reaches checkmate and stalemate shapes rather
+than only quiet middlegames.
+
+Coverage over the run: 983,351 en-passant captures, 1,992,104 promotions,
+1,371,517 castles, 2,257,281 positions with the side to move in check, 4,053,962
+with at least one seat eliminated. Every one of those is asserted non-zero — a
+cross-check that never generated an en-passant capture would pass vacuously.
+
+Both Phase 1 gate conditions are therefore met: the two independently written
+generators agree over 10 M random positions, and perft to depth 5 is recorded
+above for all five setups with `modern` matching Athena exactly.
