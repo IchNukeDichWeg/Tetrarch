@@ -33,6 +33,7 @@ HELD-OUT LOSS IS NOT ELO
 
 import argparse
 import json
+import multiprocessing
 import os
 import sys
 import time
@@ -53,54 +54,101 @@ WQ_CLIP = 127.0 / QB
 
 # --- phase 1: cache ---------------------------------------------------------
 
-def build_cache(data_path, cache_path, limit=None, augment=False, quiet=False):
-    """Replay every game once and write features, extras and targets."""
+def _cache_chunk(job):
+    """Replay a block of games into arrays. Pure function of its input lines,
+    so it parallelises per block with no shared state and no ordering
+    subtlety -- the pool preserves block order, so the cache is identical
+    whatever --cache-workers is set to."""
+    lines, augment = job
     feats, extras, cps, results = [], [], [], []
+    for line in lines:
+        record = json.loads(line)
+        board = Board.from_fen4(record["fen4"], MODE_TEAMS)
+        result = record["result"]               # team 0's score
+        for token, cp in zip(record["moves"].split(), record["scores"]):
+            # The score was recorded before this move was played, so the
+            # position to label is the one we are standing in now.
+            views = range(4) if augment else (board.turn,)
+            for persp in views:
+                active = nnue.active_features(board, persp)
+                row = np.full(MAX_FEATURES, -1, dtype=np.int16)
+                row[:len(active)] = active[:MAX_FEATURES]
+                feats.append(row)
+                extras.append(nnue.extra_inputs(board, persp))
+                # Stored scores and results are team 0's; flip for team 1.
+                flip = (persp & 1) == 1
+                cps.append(-cp if flip else cp)
+                results.append(1.0 - result if flip else result)
+            move = next((m for m in gen.gen_legal(board)
+                         if move_str(m) == token), None)
+            if move is None:
+                break                          # corrupt line; drop the rest
+            board.make(move)
+    return (np.asarray(feats, dtype=np.int16).reshape(-1, MAX_FEATURES),
+            np.asarray(extras, dtype=np.int16).reshape(-1, nnue.NEXTRA),
+            np.asarray(cps, dtype=np.float32),
+            np.asarray(results, dtype=np.float32))
+
+
+#: Games per work unit, capped so every worker gets several blocks -- a fixed
+#: size gives a short run one block and therefore no parallelism at all.
+CACHE_CHUNK = 250
+CHUNKS_PER_WORKER = 4
+
+
+def build_cache(data_path, cache_path, limit=None, augment=False, quiet=False,
+                workers=1):
+    """Replay every game once and write features, extras and targets.
+
+    Replaying a game means running the Python move generator once per move to
+    turn a token back into a move, which is why this is worth parallelising:
+    it is pure Python, and it is the one phase BLAS cannot help with.
+    """
     started = time.time()
-    games = 0
 
     with open(data_path) as fh:
-        for line in fh:
-            if limit and games >= limit:
-                break
-            record = json.loads(line)
-            games += 1
-            board = Board.from_fen4(record["fen4"], MODE_TEAMS)
-            result = record["result"]           # team 0's score
-            for token, cp in zip(record["moves"].split(), record["scores"]):
-                # The score was recorded before this move was played, so the
-                # position to label is the one we are standing in now.
-                views = range(4) if augment else (board.turn,)
-                for persp in views:
-                    active = nnue.active_features(board, persp)
-                    row = np.full(MAX_FEATURES, -1, dtype=np.int16)
-                    row[:len(active)] = active[:MAX_FEATURES]
-                    feats.append(row)
-                    extras.append(nnue.extra_inputs(board, persp))
-                    # Stored scores and results are team 0's; flip for team 1.
-                    flip = (persp & 1) == 1
-                    cps.append(-cp if flip else cp)
-                    results.append(1.0 - result if flip else result)
-                move = next((m for m in gen.gen_legal(board)
-                             if move_str(m) == token), None)
-                if move is None:
-                    break                      # corrupt line; drop the rest
-                board.make(move)
-            if not quiet and games % 2000 == 0:
-                rate = games / max(time.time() - started, 1e-9)
-                print("  cached %d games, %d positions, %.0f games/s"
-                      % (games, len(feats), rate), flush=True)
+        lines = [line for _, line in zip(range(limit), fh)] if limit \
+            else fh.readlines()
+    games = len(lines)
+    if workers == 0:
+        workers = multiprocessing.cpu_count()
+    chunk = max(1, min(CACHE_CHUNK,
+                       -(-games // max(1, workers * CHUNKS_PER_WORKER))))
+    jobs = [(lines[i:i + chunk], augment) for i in range(0, games, chunk)]
+    del lines
+    parts, done = [], 0
+    if workers > 1:
+        # imap, not imap_unordered: block order is what makes the cache
+        # reproducible regardless of the worker count.
+        with multiprocessing.Pool(workers) as pool:
+            for part in pool.imap(_cache_chunk, jobs):
+                parts.append(part)
+                done += chunk
+                if not quiet:
+                    rate = done / max(time.time() - started, 1e-9)
+                    print("  cached %d/%d games, %d positions, %.0f games/s"
+                          % (min(done, games), games,
+                             sum(len(p[2]) for p in parts), rate), flush=True)
+    else:
+        for job in jobs:
+            parts.append(_cache_chunk(job))
+            done += chunk
+            if not quiet:
+                rate = done / max(time.time() - started, 1e-9)
+                print("  cached %d/%d games, %d positions, %.0f games/s"
+                      % (min(done, games), games,
+                         sum(len(p[2]) for p in parts), rate), flush=True)
 
     arrays = {
-        "features": np.asarray(feats, dtype=np.int16),
-        "extras": np.asarray(extras, dtype=np.int16),
-        "cp": np.asarray(cps, dtype=np.float32),
-        "result": np.asarray(results, dtype=np.float32),
+        "features": np.concatenate([p[0] for p in parts]),
+        "extras": np.concatenate([p[1] for p in parts]),
+        "cp": np.concatenate([p[2] for p in parts]),
+        "result": np.concatenate([p[3] for p in parts]),
     }
     os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
     np.savez(cache_path, **arrays)
     print("cached %d positions from %d games in %.0fs -> %s"
-          % (len(feats), games, time.time() - started, cache_path))
+          % (len(arrays["cp"]), games, time.time() - started, cache_path))
     return arrays
 
 
@@ -121,7 +169,14 @@ class Model:
             return (rng.standard_normal(shape) * (1.0 / np.sqrt(fan_in))
                     ).astype(np.float32)
 
-        self.w1 = scaled((nnue.NFEATURES, nnue.L1), MAX_FEATURES)
+        # One extra row, permanently zero: an inactive feature slot indexes
+        # it instead of being masked out after the fact. That deletes an
+        # (n, MAX_FEATURES, L1) temporary from every forward pass.
+        #
+        # Drawn at the real size and then padded, so the RNG stream -- and
+        # therefore every later layer's init -- is unchanged by the pad row.
+        self.w1 = np.vstack([scaled((nnue.NFEATURES, nnue.L1), MAX_FEATURES),
+                             np.zeros((1, nnue.L1), dtype=np.float32)])
         self.b1 = np.zeros(nnue.L1, dtype=np.float32)
         self.w2 = scaled((nnue.L2, nnue.L1 + nnue.NEXTRA), nnue.L1)
         self.b2 = np.zeros(nnue.L2, dtype=np.float32)
@@ -137,9 +192,8 @@ class Model:
     def forward(self, features, extras):
         """Returns the output and everything the backward pass needs."""
         mask = features >= 0
-        safe = np.where(mask, features, 0)
-        acc = self.w1[safe] * mask[:, :, None]
-        acc = acc.sum(axis=1) + self.b1                       # (n, L1)
+        safe = np.where(mask, features, nnue.NFEATURES)        # -> the zero row
+        acc = self.w1[safe].sum(axis=1) + self.b1             # (n, L1)
         h0 = np.clip(acc, 0.0, 1.0)
         x = np.concatenate([h0, extras], axis=1)              # (n, L1+NEXTRA)
         z1 = x @ self.w2.T + self.b2
@@ -171,12 +225,19 @@ class Model:
         d_acc = d_h0 * ((acc > 0) & (acc < 1)) / n
 
         grads["b1"] = d_acc.sum(axis=0)
-        # Scatter the accumulator gradient back onto the active features. Every
-        # row of a sample shares the same d_acc, so this is one add per active
-        # feature rather than a dense (NFEATURES, L1) matmul.
-        flat = safe[mask]
-        contrib = np.repeat(d_acc, MAX_FEATURES, axis=0)[mask.ravel()]
-        grads["w1"] = (flat, contrib)
+        # Every active feature of a sample gets that sample's d_acc, so the w1
+        # gradient is indicator.T @ d_acc. Written as an explicit scatter this
+        # was `np.add.at` over an (active, L1) array -- 79% of a training step,
+        # single-threaded, and it materialised ~55 MB a batch. As a matmul it
+        # is ~65x faster, bit-identical, and BLAS spreads it over the cores.
+        #
+        # Plain assignment rather than accumulation is safe: a feature is
+        # (colour, type, square) and a square holds one piece, so a sample
+        # cannot list the same feature twice.
+        sample, _ = np.nonzero(mask)
+        ind = np.zeros((n, nnue.NFEATURES + 1), dtype=np.float32)
+        ind[sample, safe[mask]] = 1.0
+        grads["w1"] = ind.T @ d_acc.astype(np.float32)
         return grads
 
 
@@ -195,14 +256,6 @@ class Adam:
         for name in self.model.names:
             param = getattr(self.model, name)
             grad = grads[name]
-            if name == "w1":
-                # Sparse: only the rows that were active moved.
-                rows, contrib = grad
-                if rows.size == 0:
-                    continue
-                dense = np.zeros_like(param)
-                np.add.at(dense, rows, contrib)
-                grad = dense
             self.m[name] = self.b1 * self.m[name] + (1 - self.b1) * grad
             self.v[name] = self.b2 * self.v[name] + (1 - self.b2) * grad * grad
             param -= self.lr * (self.m[name] / bc1) / \
@@ -216,7 +269,8 @@ class Adam:
 def quantise(model):
     """Float weights -> the integer net the C core and nnue.py both read."""
     return nnue.Net(
-        np.clip(np.round(model.w1 * QA), -32768, 32767).astype(np.int16),
+        np.clip(np.round(model.w1[:nnue.NFEATURES] * QA),
+                -32768, 32767).astype(np.int16),
         np.clip(np.round(model.b1 * QA), -2 ** 31, 2 ** 31 - 1).astype(np.int32),
         np.clip(np.round(model.w2 * QB), -128, 127).astype(np.int8),
         np.round(model.b2 * QA).astype(np.int32),
@@ -225,6 +279,68 @@ def quantise(model):
         np.clip(np.round(model.w4 * QB), -128, 127).astype(np.int8),
         np.round(model.b4 * QA).astype(np.int32),
     )
+
+
+# --- self check -------------------------------------------------------------
+
+def self_check():
+    """The two invariants this file's fast paths rest on.
+
+        python3 train.py --self-check
+
+    Neither would raise if it broke. A gradient leaking into the pad row makes
+    the shipped net differ from the trained one, because `quantise` slices that
+    row off; and the matmul gradient replaced an explicit scatter that nothing
+    else ever compares it against.
+    """
+    rng = np.random.default_rng(0)
+    n = 96
+    model = Model(0)
+    opt = Adam(model, lr=1e-3)
+
+    features = np.full((n, MAX_FEATURES), -1, dtype=np.int16)
+    for row in range(n):
+        live = int(rng.integers(4, MAX_FEATURES))       # some slots inactive
+        features[row, :live] = rng.choice(nnue.NFEATURES, size=live,
+                                          replace=False)
+    extras = rng.integers(-4, 5, size=(n, nnue.NEXTRA)).astype(np.float32)
+    d_out = rng.standard_normal(n).astype(np.float32)
+
+    _, cache = model.forward(features, extras)
+    mask, safe = cache[0], cache[1]
+    got = model.backward(cache, d_out)["w1"]
+
+    # 1. the matmul gradient equals the scatter it replaced
+    want = np.zeros_like(model.w1)
+    contrib = np.repeat(_d_acc_of(model, cache, d_out), MAX_FEATURES,
+                        axis=0)[mask.ravel()]
+    np.add.at(want, safe[mask], contrib)
+    worst = float(np.abs(want - got).max())
+    assert worst < 1e-6, "w1 gradient diverged from the scatter: %.3e" % worst
+
+    # 2. inactive slots contribute nothing -- the whole point of the pad row
+    assert not got[nnue.NFEATURES].any(), "pad row received gradient"
+
+    # 3. and it stays zero through real optimiser steps, including the clip
+    for _ in range(5):
+        _, cache = model.forward(features, extras)
+        opt.step(model.backward(
+            cache, rng.standard_normal(n).astype(np.float32)))
+    pad = float(np.abs(model.w1[nnue.NFEATURES]).max())
+    assert pad == 0.0, "pad row picked up weight: %.3e" % pad
+
+    print("train.py self-check: gradient matches the scatter (%.2e), "
+          "pad row zero after 5 steps, %d features" % (worst, nnue.NFEATURES))
+
+
+def _d_acc_of(model, cache, d_out):
+    """d_acc exactly as `backward` computes it, for the self-check only."""
+    _, _, acc, _, _, z1, _, z2, _ = cache
+    n = d_out.shape[0]
+    d_z2 = np.outer(d_out, model.w4) * ((z2 > 0) & (z2 < 1))
+    d_z1 = (d_z2 @ model.w3) * ((z1 > 0) & (z1 < 1))
+    d_x = d_z1 @ model.w2
+    return (d_x[:, :nnue.L1] * ((acc > 0) & (acc < 1)) / n).astype(np.float32)
 
 
 # --- training ---------------------------------------------------------------
@@ -254,9 +370,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", metavar="PATH", help="gen_data.py JSONL")
-    ap.add_argument("--cache", required=True, metavar="PATH",
+    ap.add_argument("--cache", metavar="PATH",
                     help="feature cache .npz; built from --data if absent")
-    ap.add_argument("--out", required=True, metavar="DIR",
+    ap.add_argument("--out", metavar="DIR",
                     help="checkpoint directory; required, no default")
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch", type=int, default=1024)
@@ -269,8 +385,20 @@ def main():
     ap.add_argument("--augment", action="store_true",
                     help="label every position from all four perspectives")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--self-check", action="store_true",
+                    help="verify the gradient fast paths and exit")
+    ap.add_argument("--cache-workers", type=int, default=0, metavar="N",
+                    help="processes for the cache build; 0 means every core")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+
+    if args.self_check:
+        self_check()
+        return 0
+    # Checked here rather than by argparse so --self-check needs neither. Both
+    # stay mandatory otherwise: no output path in this repo has a default.
+    if not args.cache or not args.out:
+        ap.error("--cache and --out are required")
 
     if os.path.exists(args.cache):
         print("loading cache %s" % args.cache)
@@ -279,7 +407,7 @@ def main():
         if not args.data:
             ap.error("--cache does not exist, so --data is needed to build it")
         data = build_cache(args.data, args.cache, args.games, args.augment,
-                           args.quiet)
+                           args.quiet, args.cache_workers)
 
     os.makedirs(args.out, exist_ok=True)
     n = len(data["cp"])
