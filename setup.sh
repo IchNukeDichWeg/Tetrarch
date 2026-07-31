@@ -1,13 +1,15 @@
 #!/bin/sh
 # Tetrarch one-shot setup. Re-runnable: safe to run any number of times.
 #
-#   ./setup.sh              install what is missing, build, verify
-#   ./setup.sh --no-install only build and verify; never touch the system
+#   ./setup.sh              install what is missing, build, run the selftest
+#   ./setup.sh --no-install build and test only; never touch the system
+#   ./setup.sh --no-test    build only; skip the selftest (fast rebuild loop)
 #
 # A fresh A/B box is `git clone` + `./setup.sh`, so this installs the toolchain
-# rather than merely complaining that it is absent. It ends by actually loading
-# the built library and running a perft, because a setup that "succeeded" and
-# left a broken .so is worse than one that failed.
+# rather than merely complaining that it is absent. It ends by running the whole
+# selftest ladder, because a setup that "succeeded" and left a broken .so is
+# worse than one that failed -- and on a new architecture the ladder is the only
+# thing that proves the C core still agrees with the Python reference.
 #
 # No virtualenv: numpy and flask go into the system python3, so every command
 # in this repo is a plain `python3 something.py`. On a distro python that is
@@ -29,10 +31,12 @@ MIN_PYTHON="3.10"
 PYTHON_DEPS="numpy flask"
 
 NO_INSTALL=0
+NO_TEST=0
 for arg in "$@"; do
     case "$arg" in
         --no-install) NO_INSTALL=1 ;;
-        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --no-test) NO_TEST=1 ;;
+        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'setup.sh: unknown option %s\n' "$arg" >&2; exit 2 ;;
     esac
 done
@@ -217,23 +221,21 @@ fi
 
 # --- verify ------------------------------------------------------------------
 #
-# Actually load what was just built. A setup that reports success and leaves a
-# broken library costs a whole campaign to discover.
+# Run the whole ladder. A setup that reports success and leaves a broken build
+# costs a campaign to discover, and on a fresh box the ladder is also the only
+# thing that proves the compiler and the C core agree with the Python reference
+# on this architecture.
 
-if [ "$built" -gt 0 ]; then
+if [ "$NO_TEST" -eq 1 ]; then
     say ""
-    say "verifying..."
-    ( cd "$ROOT" && python3 -c '
-import sys
-from tetrarch import core
-from tetrarch.board import start_board
-core.load()
-nodes = core.perft(start_board("modern"), 4)
-if nodes != 152050:
-    sys.exit("perft(4) on modern gave %d, expected 152050" % nodes)
-print("  C core loads; modern perft(4) = %d" % nodes)
-' ) || die "the build is broken; do not run a campaign with it"
+    say "skipping selftest (--no-test)"
+elif [ "$built" -gt 0 ]; then
+    say ""
+    ( cd "$ROOT" && python3 -c 'from tetrarch import core; core.load()' ) \
+        || die "the library just built will not load"
+    ( cd "$ROOT" && python3 selftest.py ) \
+        || die "selftest failed; do not run a campaign with this build"
 fi
 
 say ""
-say "setup complete.  python3 selftest.py"
+say "setup complete."
