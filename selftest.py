@@ -49,18 +49,62 @@ SCRATCH = tempfile.gettempdir()
 
 FAILURES = []
 CHECKS = [0]
+SECTION = [0, 0.0]
 
 
 def check(name, ok, detail=""):
     CHECKS[0] += 1
     if not ok:
-        FAILURES.append("%s%s" % (name, (": " + detail) if detail else ""))
-        print("  FAIL  %s%s" % (name, (": " + detail) if detail else ""))
+        FAILURES.append(name)
+    print("  %s  %s%s" % ("PASS" if ok else "FAIL", name,
+                          ("  (%s)" % detail) if detail else ""))
     return ok
 
 
+def check_all(name, results, detail=""):
+    """One line for a group of sub-assertions.
+
+    `results` is a list of (label, ok). A wall of near-identical PASS lines
+    hides a failure rather than revealing it, so a loop reports once and names
+    only what broke.
+    """
+    bad = [label for label, ok in results if not ok]
+    CHECKS[0] += max(len(results) - 1, 0)
+    extra = "%d checks" % len(results)
+    if detail:
+        extra += ", " + detail
+    if bad:
+        extra += "; failed: " + ", ".join(bad[:4])
+        if len(bad) > 4:
+            extra += " and %d more" % (len(bad) - 4)
+    return check(name, not bad, extra)
+
+
 def section(title):
-    print("\n== %s" % title)
+    now = time.time()
+    if SECTION[0] and now - SECTION[1] >= 0.05:
+        print("        %.2fs" % (now - SECTION[1]))
+    SECTION[0] += 1
+    SECTION[1] = now
+    print("\n--- %d. %s ---" % (SECTION[0], title))
+
+
+def end_sections():
+    if SECTION[0] and time.time() - SECTION[1] >= 0.05:
+        print("        %.2fs" % (time.time() - SECTION[1]))
+    SECTION[0] = 0
+
+
+def pool_map(fn, items, workers):
+    """Map over a process pool, or inline when there is nothing to gain."""
+    if workers <= 1 or len(items) < 2:
+        return [fn(item) for item in items]
+    import multiprocessing
+    # chunksize=1: the cost per item varies by orders of magnitude (an unpruned
+    # minimax over a sparse position can be 100x another), so any chunking
+    # hands one worker the whole tail and the pool finishes no sooner than it.
+    with multiprocessing.Pool(min(workers, len(items))) as pool:
+        return pool.map(fn, items, chunksize=1)
 
 
 # --- position construction helpers ------------------------------------------
@@ -163,21 +207,23 @@ EXPECTED_QUEENS = {
 def test_setups():
     section("starting positions (§3)")
     check("five setups", set(SETUPS) == set(EXPECTED_KINGS), str(SETUPS))
+    kings, queens, counts, opens = [], [], [], []
     for setup in SETUPS:
         b = start_board(setup)
-        kings = tuple(name_of(k) for k in b.kings)
-        check("%s king squares" % setup, kings == EXPECTED_KINGS[setup],
-              "%s != %s" % (kings, EXPECTED_KINGS[setup]))
-        queens = []
+        kings.append((setup, tuple(name_of(k) for k in b.kings)
+                      == EXPECTED_KINGS[setup]))
+        found = []
         for c in range(4):
-            found = [name_of(sq) for sq in SQUARES
-                     if b.sq[sq] == make_piece(c, QUEEN)]
-            queens.append(found[0] if len(found) == 1 else str(found))
-        check("%s queen squares" % setup, tuple(queens) == EXPECTED_QUEENS[setup],
-              "%s != %s" % (tuple(queens), EXPECTED_QUEENS[setup]))
-        check("%s has 160 squares, 64 pieces" % setup,
-              sum(1 for sq in SQUARES if b.sq[sq]) == 64)
-        check("%s opens with 20 moves" % setup, len(both_legal(b)) == 20)
+            hit = [name_of(sq) for sq in SQUARES
+                   if b.sq[sq] == make_piece(c, QUEEN)]
+            found.append(hit[0] if len(hit) == 1 else str(hit))
+        queens.append((setup, tuple(found) == EXPECTED_QUEENS[setup]))
+        counts.append((setup, sum(1 for sq in SQUARES if b.sq[sq]) == 64))
+        opens.append((setup, len(both_legal(b)) == 20))
+    check_all("king squares match the chess.com lobby", kings)
+    check_all("queen squares match the chess.com lobby", queens)
+    check_all("64 pieces on 160 squares", counts)
+    check_all("every setup opens with 20 moves", opens)
 
     # modern is the only 90-degree rotationally symmetric one (§3.3).
     mod = start_board("modern")
@@ -240,15 +286,15 @@ def test_fen4():
     b = start_board("classic")
     check("classic writes fen4's canonical default", b.to_fen4() == CLASSIC_FEN4)
 
+    trips = []
     for setup in SETUPS:
         for mode in (MODE_FFA, MODE_TEAMS):
             src = start_board(setup, mode)
             rt = Board.from_fen4(src.to_fen4(), mode)
-            check("round trip %s/%s" % (setup, MODE_NAMES[mode]), rt == src)
-            check("round trip %s/%s key" % (setup, MODE_NAMES[mode]),
-                  rt.key == src.key)
-            check("round trip %s/%s is a fixed point" % (setup, MODE_NAMES[mode]),
-                  rt.to_fen4() == src.to_fen4())
+            label = "%s/%s" % (setup, MODE_NAMES[mode])
+            trips.append((label, rt == src and rt.key == src.key
+                          and rt.to_fen4() == src.to_fen4()))
+    check_all("FEN4 round trips for every setup and mode", trips)
 
     # Athena's lowercase-x dialect reads in and normalises out (§11.3 quirk 2).
     ath = Board.from_fen4(ATHENA_MODERN_FEN4)
@@ -551,21 +597,22 @@ def test_dead_seats():
 
 def test_castling():
     section("castling (§6)")
+    geometry = []
     for setup in SETUPS:
         b = start_board(setup)
         for color in range(4):
             geo = CASTLE_GEO[(color, b.kings[color])]
             for side, name in ((0, "short"), (1, "long")):
                 rook_from, king_to, rook_to, between, safe = geo[side]
-                gap = len(between)
-                check("%s %s %s gap" % (setup, "RBYG"[color], name),
-                      gap == (2 if side == 0 else 3), str(gap))
-                check("%s %s %s rook is home" % (setup, "RBYG"[color], name),
-                      b.sq[rook_from] == make_piece(color, ROOK))
-                check("%s %s %s king moves two" % (setup, "RBYG"[color], name),
-                      abs(king_to - b.kings[color]) in (2, 32))
+                geometry.append(
+                    ("%s %s %s" % (setup, "RBYG"[color], name),
+                     len(between) == (2 if side == 0 else 3)
+                     and b.sq[rook_from] == make_piece(color, ROOK)
+                     and abs(king_to - b.kings[color]) in (2, 32)))
+    check_all("castling geometry is derived correctly", geometry)
 
     # A full castle, both sides, for every seat in every setup.
+    plays = []
     for setup in SETUPS:
         for color in range(4):
             for side, flag in (("short", F_CASTLE_SHORT), ("long", F_CASTLE_LONG)):
@@ -578,18 +625,20 @@ def test_castling():
                 b.turn = color
                 b.find_kings()
                 b.recompute_key()
-                castles = [m for m in both_legal(b)
-                           if mv_flag(m) in (F_CASTLE_SHORT, F_CASTLE_LONG)]
-                got = [m for m in castles if mv_flag(m) == flag]
-                if not check("%s %s can castle %s" % (setup, "RBYG"[color], side),
-                             len(got) == 1, str([move_str(m) for m in castles])):
+                got = [m for m in both_legal(b) if mv_flag(m) == flag]
+                label = "%s %s %s" % (setup, "RBYG"[color], side)
+                if len(got) != 1:
+                    plays.append((label, False))
                     continue
                 king_from = b.kings[color]
                 b.make(got[0])
-                check("%s %s %s lands correctly" % (setup, "RBYG"[color], side),
-                      b.sq[king_to] == make_piece(color, KING)
-                      and b.sq[rook_to] == make_piece(color, ROOK)
-                      and b.sq[king_from] == 0 and b.sq[rook_from] == 0)
+                plays.append((label,
+                              b.sq[king_to] == make_piece(color, KING)
+                              and b.sq[rook_to] == make_piece(color, ROOK)
+                              and b.sq[king_from] == 0
+                              and b.sq[rook_from] == 0))
+
+    check_all("every seat can castle both ways in every setup", plays)
 
     # Rights are lost when the rook moves, and the right lost is the right one.
     b = start_board("classic")
@@ -644,31 +693,44 @@ PERFT_PINS = {
 ATHENA_MODERN = [1, 20, 395, 7800, 152050, 3452310, 77430383, 1735784286]
 
 
-def test_perft(depth=4):
+def _perft_job(job):
+    setup, mode, depth, which = job
+    b = start_board(setup, mode)
+    return (job, (slow if which == "slow" else fast).perft(b, depth))
+
+
+def test_perft(depth=4, workers=1):
     section("perft to depth %d (§12)" % depth)
+    jobs = []
     for setup in SETUPS:
         pins = PERFT_PINS[setup]
         for d in range(1, min(depth, len(pins) - 1) + 1):
-            b = start_board(setup)
-            got = fast.perft(b, d)
-            check("%s perft(%d)" % (setup, d), got == pins[d],
-                  "%d != %d" % (got, pins[d]))
+            jobs.append((setup, MODE_TEAMS, d, "fast"))
+        jobs.append((setup, MODE_FFA, 3, "fast"))
+        jobs.append((setup, MODE_TEAMS, 3, "slow"))
+    got = dict(pool_map(_perft_job, jobs, workers))
+
+    check_all("pinned perft node counts",
+              [("%s d%d" % (setup, d),
+                got[(setup, MODE_TEAMS, d, "fast")] == PERFT_PINS[setup][d])
+               for setup in SETUPS
+               for d in range(1, min(depth, len(PERFT_PINS[setup]) - 1) + 1)])
     check("modern matches Athena to the pinned depth",
           PERFT_PINS["modern"][:depth + 1] == ATHENA_MODERN[:depth + 1])
 
     # FFA and Teams give identical counts this shallow: promotion needs a pawn
     # to travel six of its own moves (21+ plies), and no cross-team capture is
     # reachable either, so the two modes' rule differences cannot bite (§12).
-    for setup in SETUPS:
-        check("%s modes agree at depth 3" % setup,
-              fast.perft(start_board(setup, MODE_FFA), 3) ==
-              fast.perft(start_board(setup, MODE_TEAMS), 3))
+    check_all("FFA and Teams agree at depth 3",
+              [(setup, got[(setup, MODE_FFA, 3, "fast")]
+                       == got[(setup, MODE_TEAMS, 3, "fast")])
+               for setup in SETUPS])
 
     # Both generators must agree on the tree, not just the leaf count.
-    for setup in SETUPS:
-        b = start_board(setup)
-        check("%s perft(3) agrees between generators" % setup,
-              slow.perft(b.copy(), 3) == fast.perft(b.copy(), 3))
+    check_all("both generators agree on the perft(3) tree",
+              [(setup, got[(setup, MODE_TEAMS, 3, "slow")]
+                       == got[(setup, MODE_TEAMS, 3, "fast")])
+               for setup in SETUPS])
 
 
 def test_c_core(deep=False):
@@ -684,14 +746,14 @@ def test_c_core(deep=False):
           lib.tt_board_size() == ctypes.sizeof(core.TtBoard))
 
     # Node-for-node: identical counts at every depth, every setup, both modes.
+    grid = []
     for setup in SETUPS:
         pins = PERFT_PINS[setup]
         for mode in (MODE_TEAMS, MODE_FFA):
             for d in range(1, len(pins)):
-                b = start_board(setup, mode)
-                got = core.perft(b, d)
-                check("C %s/%s perft(%d)" % (setup, MODE_NAMES[mode], d),
-                      got == pins[d], "%d != %d" % (got, pins[d]))
+                grid.append(("%s/%s d%d" % (setup, MODE_NAMES[mode], d),
+                             core.perft(start_board(setup, mode), d) == pins[d]))
+    check_all("C matches the Python reference node-for-node", grid)
 
     check("C matches Athena at depth 5 on modern",
           core.perft(start_board("modern"), 5) == ATHENA_MODERN[5])
@@ -704,11 +766,10 @@ def test_c_core(deep=False):
 
     # Perft cannot see a bad incremental key or a bad unmake -- it counts the
     # right number of nodes either way. This walks the tree checking both.
-    for setup in SETUPS:
-        for mode in (MODE_TEAMS, MODE_FFA):
-            bad = core.key_check(start_board(setup, mode), 3)
-            check("C key/unmake integrity %s/%s" % (setup, MODE_NAMES[mode]),
-                  bad == 0, "%d mismatches" % bad)
+    check_all("C incremental key and unmake integrity",
+              [("%s/%s" % (setup, MODE_NAMES[mode]),
+                core.key_check(start_board(setup, mode), 3) == 0)
+               for setup in SETUPS for mode in (MODE_TEAMS, MODE_FFA)])
 
     # The Zobrist tables really crossed the boundary intact.
     rng = random.Random(7)
@@ -732,18 +793,20 @@ def test_c_core(deep=False):
 
 def test_rotation():
     section("board rotation (match.py seat rotation)")
+    ident, invariant, shape = [], [], []
     for setup in SETUPS:
         b = start_board(setup)
-        check("%s four quarter turns is the identity" % setup, rotate(b, 4) == b)
+        ident.append((setup, rotate(b, 4) == b))
         counts = [fast.perft(rotate(b, k), 3) for k in range(4)]
-        check("%s perft is invariant under rotation" % setup,
-              len(set(counts)) == 1, str(counts))
+        invariant.append((setup, len(set(counts)) == 1))
         for k in range(1, 4):
             r = rotate(b, k)
-            check("%s rotation %d keeps 64 pieces" % (setup, k),
-                  sum(1 for sq in SQUARES if r.sq[sq]) == 64)
-            check("%s rotation %d shifts the turn" % (setup, k),
-                  r.turn == (b.turn + k) & 3)
+            shape.append(("%s r%d" % (setup, k),
+                          sum(1 for sq in SQUARES if r.sq[sq]) == 64
+                          and r.turn == (b.turn + k) & 3))
+    check_all("four quarter turns is the identity", ident)
+    check_all("perft is invariant under rotation", invariant)
+    check_all("rotation preserves piece count and shifts the turn", shape)
     # modern is the 90-degree symmetric setup, so rotating it changes nothing.
     check("modern is its own quarter turn",
           rotate(start_board("modern"), 1).sq == start_board("modern").sq)
@@ -813,38 +876,57 @@ SEARCH_PINS = {
 }
 
 
-def test_search():
+#: Positions compared against the unpruned oracle. The cost per position spans
+#: two orders of magnitude -- an unpruned quiescence over an open board with
+#: queens is enormous -- so this is deliberately modest; the check is a
+#: theorem, and 90 comparisons establish it as well as 400 would.
+MINIMAX_POSITIONS = 30
+
+
+def _minimax_job(index):
+    """One seeded sparse position, compared at depths 1-3. Seeded by index so
+    a worker can rebuild it without shipping a Board across the pipe."""
+    rng = random.Random(3000 + index)
+    b = _sparse_teams(rng)
+    legal = fast.gen_legal(b)
+    if not legal:
+        return (0, 0)
+    # The oracle is unpruned, including its quiescence, so cost spans two
+    # orders of magnitude with the branching factor. Depth 3 only on the
+    # quieter positions keeps the tail from dominating the whole run.
+    depths = (1, 2, 3) if len(legal) <= 24 else (1, 2)
+    tested = bad = 0
+    for depth in depths:
+        core.clear_hash()
+        if core.search(b, depth).score != search.reference_score(b.copy(), depth):
+            bad += 1
+        tested += 1
+    return (tested, bad)
+
+
+def test_search(workers=1):
     section("search (Phase 3 gate)")
     if not HAVE_C:
         check("C core is built", False, "run ./setup.sh")
         return
 
     core.set_hash(16)
+    pins = []
     for setup in SETUPS:
         for i, expect in enumerate(SEARCH_PINS[setup]):
             core.clear_hash()
-            got = core.search(start_board(setup), i + 1).nodes
-            check("%s search nodes at depth %d" % (setup, i + 1), got == expect,
-                  "%d != %d" % (got, expect))
+            pins.append(("%s d%d" % (setup, i + 1),
+                         core.search(start_board(setup), i + 1).nodes == expect))
+    check_all("pinned search node counts", pins)
 
     # The correctness theorem for the whole search: alpha-beta with a
     # transposition table must return exactly the plain minimax value. Pinned
     # node counts cannot see a wrong score -- a wrong score still has a count.
-    rng = random.Random(3)
-    bad = tested = 0
-    for _ in range(40):
-        b = _sparse_teams(rng)
-        if not fast.gen_legal(b):
-            continue
-        for depth in (1, 2, 3):
-            core.clear_hash()
-            got = core.search(b, depth).score
-            want = search.reference_score(b.copy(), depth)
-            tested += 1
-            if got != want:
-                bad += 1
-    check("alpha-beta equals unpruned minimax (%d comparisons)" % tested,
-          bad == 0, "%d mismatches" % bad)
+    results = pool_map(_minimax_job, list(range(MINIMAX_POSITIONS)), workers)
+    tested = sum(n for n, _ in results)
+    bad = sum(b for _, b in results)
+    check("alpha-beta equals unpruned minimax", bad == 0,
+          "%d comparisons, %d mismatches" % (tested, bad))
 
     # Mate is found and scored from the mating team's point of view.
     mate = position({"a5": (RED, KING), "n9": (YELLOW, KING),
@@ -912,13 +994,12 @@ def test_nnue():
     # The whole point of one weight set for four seats: rotating the board by k
     # and looking from perspective k must give the identical feature set. This
     # is also where the 4x training augmentation comes from.
+    rot = []
     for setup in SETUPS:
         b = start_board(setup)
         sets = [sorted(nnue.active_features(rotate(b, k), k)) for k in range(4)]
-        check("%s features are rotation invariant" % setup,
-              all(s == sets[0] for s in sets))
-        check("%s has 64 active features at the start" % setup,
-              len(sets[0]) == 64, str(len(sets[0])))
+        rot.append((setup, all(s == sets[0] for s in sets) and len(sets[0]) == 64))
+    check_all("one weight set serves all four seats", rot)
 
     rng = random.Random(31)
     bad = 0
@@ -1025,6 +1106,7 @@ def test_pgn4():
 
     # Write then read: every move must survive as the same move.
     rng = random.Random(5)
+    trips = []
     for setup in SETUPS:
         b = start_board(setup)
         moves = []
@@ -1038,9 +1120,10 @@ def test_pgn4():
         text = pgn4.write(start_board(setup), moves, {"Result": "*"})
         back = pgn4.parse(text)
         replayed, _ = pgn4.replay(back)
-        check("%s PGN4 round trips" % setup,
-              len(back.tokens) == len(moves)
-              and replayed[-1]["fen4"] == b.to_fen4().replace("\n", ""))
+        trips.append((setup, len(back.tokens) == len(moves)
+                      and replayed[-1]["fen4"] == b.to_fen4().replace("\n", "")))
+
+    check_all("PGN4 round trips on every setup", trips)
 
     # Terminators are seat eliminations, not moves (§9).
     ended = pgn4.parse(WIKIBOOK_PGN4 + "4. R .. T\n")
@@ -1303,9 +1386,10 @@ def crosscheck(count, seed=0, workers=1, quiet=False):
         absorb(crosscheck_chunk(chunks[0]))
     else:
         with multiprocessing.Pool(nproc) as pool:
+            noisy = not quiet and count >= 20000
             for result in pool.imap_unordered(crosscheck_chunk, chunks):
                 absorb(result)
-                if not quiet:
+                if noisy:
                     rate = done / max(1e-9, time.time() - started)
                     left = (count - done) / max(rate, 1e-9)
                     print("    %d/%d  %.0f pos/s  eta %dm%02ds"
@@ -1317,9 +1401,9 @@ def crosscheck(count, seed=0, workers=1, quiet=False):
                "%d disagreements" % len(disagreements))
     for fen, why in disagreements[:3]:
         print("    %s\n%s" % (why, fen))
-    print("  %d positions in %.1fs (%.0f/s); %d terminal"
-          % (done, secs, done / max(secs, 1e-9), empty))
-    print("  coverage: %s" % ", ".join("%s=%d" % kv for kv in sorted(stats.items())))
+    print("        %d positions in %.1fs (%.0f/s), %d terminal; %s"
+          % (done, secs, done / max(secs, 1e-9), empty,
+             ", ".join("%s=%d" % kv for kv in sorted(stats.items()))))
     for kind in STAT_KINDS:
         check("cross-check exercised %s" % kind, stats[kind] > 0)
     return ok
@@ -1327,13 +1411,25 @@ def crosscheck(count, seed=0, workers=1, quiet=False):
 
 # --- main -------------------------------------------------------------------
 
+def banner():
+    import platform
+    print("== Tetrarch selftest ==\n")
+    bits = ["python %s" % platform.python_version(),
+            "%s %s" % (platform.system(), platform.machine())]
+    if HAVE_C:
+        bits.append("C core loaded")
+    else:
+        bits.append("NO C CORE -- run ./setup.sh")
+    print(" | ".join(bits))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",
                     help="random positions through both movegens (default 3000)")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--workers", type=int, default=1, metavar="N",
-                    help="processes for the cross-check; 0 means every core")
+    ap.add_argument("--workers", type=int, default=4, metavar="N",
+                    help="worker processes (default 4); 0 means every core")
     ap.add_argument("--perft", type=int, default=4, metavar="D",
                     help="perft depth for the pinned check (default 4)")
     ap.add_argument("--perft-deep", action="store_true",
@@ -1342,6 +1438,8 @@ def main():
     args = ap.parse_args()
 
     started = time.time()
+    workers = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
+    banner()
     test_geometry()
     test_setups()
     test_fen4()
@@ -1351,26 +1449,28 @@ def main():
     test_multi_check()
     test_dead_seats()
     test_castling()
-    test_perft(args.perft)
+    test_perft(args.perft, workers)
     test_c_core(args.perft_deep)
     test_rotation()
     test_eval()
-    test_search()
+    test_search(workers)
     test_nnue()
     test_pgn4()
     if args.crosscheck:
-        crosscheck(args.crosscheck, args.seed, args.workers, args.quiet)
+        crosscheck(args.crosscheck, args.seed, workers, args.quiet)
     if args.perft_deep:
         perft_deep()
 
-    print("\n%d checks, %d failures, %.1fs"
-          % (CHECKS[0], len(FAILURES), time.time() - started))
+    end_sections()
+    elapsed = time.time() - started
     if FAILURES:
-        print("\nFAILED:")
-        for f in FAILURES:
-            print("  " + f)
+        print("\n== FAILED: %d of %d check(s): %s =="
+              % (len(FAILURES), CHECKS[0], ", ".join(FAILURES[:6])
+                 + (" and %d more" % (len(FAILURES) - 6) if len(FAILURES) > 6
+                    else "")))
         return 1
-    print("selftest OK")
+    print("\n== ALL CHECKS PASSED ==  (%d checks, %.1fs, %d workers)"
+          % (CHECKS[0], elapsed, workers))
     return 0
 
 
