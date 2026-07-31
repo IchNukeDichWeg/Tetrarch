@@ -237,6 +237,9 @@ def load(path=None):
     lib.tt_get_history.restype = ctypes.c_int
     lib.tt_set_pvs.argtypes = [ctypes.c_int]
     lib.tt_get_pvs.restype = ctypes.c_int
+    lib.tt_set_lmr.argtypes = [ctypes.c_int]
+    lib.tt_get_lmr.restype = ctypes.c_int
+    lib.tt_set_lmr_params.argtypes = [ctypes.c_int, ctypes.c_int]
     lib.tt_divide.restype = ctypes.c_int
     lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.POINTER(ctypes.c_uint32),
@@ -352,6 +355,23 @@ def set_pvs(on):
 
 def pvs_enabled():
     return bool(load().tt_get_pvs())
+
+
+def set_lmr(on):
+    """Late move reductions. Off by default pending its A/B.
+
+    Unlike PVS this is not exact -- it can miss a line the full search would
+    find -- so the node reduction is not automatically Elo.
+    """
+    load().tt_set_lmr(1 if on else 0)
+
+
+def lmr_enabled():
+    return bool(load().tt_get_lmr())
+
+
+def set_lmr_params(min_depth, min_move):
+    load().tt_set_lmr_params(int(min_depth), int(min_move))
 
 
 def evaluate(b):

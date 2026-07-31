@@ -36,6 +36,8 @@ class Engine:
         self.mode = MODE_TEAMS
         self.hash_mb = core.DEFAULT_TT_MB
         self.net = None
+        self.lmr_min_depth = 3
+        self.lmr_min_move = 3
         self.board = start_board(self.setup, self.mode)
 
     # -- protocol ---------------------------------------------------------
@@ -56,6 +58,9 @@ class Engine:
         # this engine reaches. See docs/AB.md.
         print("option name History type check default false")
         print("option name PVS type check default false")
+        print("option name LMR type check default false")
+        print("option name LMRMinDepth type spin default 3 min 1 max 16")
+        print("option name LMRMinMove type spin default 3 min 1 max 32")
         print("uciok")
 
     def cmd_isready(self, _args):
@@ -88,6 +93,14 @@ class Engine:
             core.set_history(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "pvs":
             core.set_pvs(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "lmr":
+            core.set_lmr(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name in ("lmrmindepth", "lmrminmove"):
+            self.lmr_min_depth = (int(value) if name == "lmrmindepth"
+                                  else self.lmr_min_depth)
+            self.lmr_min_move = (int(value) if name == "lmrminmove"
+                                 else self.lmr_min_move)
+            core.set_lmr_params(self.lmr_min_depth, self.lmr_min_move)
         elif name == "net":
             if value.strip().lower() in ("", "<none>", "none"):
                 core.unload_net()

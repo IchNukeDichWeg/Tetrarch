@@ -158,3 +158,34 @@ cost of a node, of which the throwaway eval is 77% — its king-danger term alon
 is 54% of all search time. So the work that buys depth is pruning that engages
 at shallow depth (LMP, LMR) and a cheaper eval, not window or ordering
 refinements.
+
+### Late move reductions — built, READY TO SCREEN
+
+`setoption name LMR`, default **off**, with `LMRMinDepth` (3) and `LMRMinMove`
+(3). Reduction table is `0.75 + log(depth)·log(move)/2.25`.
+
+Node counts at fixed depth, classic + modern:
+
+| depth | off | on | |
+|---:|---:|---:|---|
+| 4 | 19,318 | 13,451 | 69.6% |
+| 5 | 143,774 | 31,359 | **21.8%** |
+| 6 | 513,485 | 154,319 | 30.1% |
+| 7 | 2,704,547 | 397,384 | **14.7%** |
+
+Unlike history and PVS this engages at depth 4, because it attacks the
+branching factor rather than assuming the ordering is already good.
+
+The number that decides whether it is worth screening is not the node count but
+whether it converts into depth at a fixed budget. Over 40 positions at 20,000
+nodes:
+
+| | median depth | mean depth | distribution |
+|---|---:|---:|---|
+| off | 4 | 3.73 | 2:1, 3:11, 4:26, 5:2 |
+| on | 4 | **4.25** | 2:1, 3:8, 4:15, 5:13, 6:2, 7:1 |
+
+Half a ply of mean depth, and the tail reaches 6–7 where it previously never
+passed 5. **LMR is not exact** — it can miss a line the full search would find —
+so the reduction is not automatically Elo, and this one genuinely needs the
+games.

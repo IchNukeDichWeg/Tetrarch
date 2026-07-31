@@ -920,6 +920,7 @@ def test_search(workers=1):
     check("killers default on (confirmed)", core.killers_enabled())
     check("history default off (dormant)", not core.history_enabled())
     check("pvs default off (dormant)", not core.pvs_enabled())
+    check("lmr default off (dormant)", not core.lmr_enabled())
 
     core.set_hash(16)
     pins = []
@@ -991,6 +992,22 @@ def test_search(workers=1):
             same = False
     core.set_pvs(False)
     check("pvs returns the same score as plain alpha-beta", same)
+
+    # LMR is NOT exact, so it gets no score-equality check -- only that it
+    # reaches the search, shrinks the tree, and leaves the pins alone when off.
+    core.clear_hash()
+    full = core.search(start_board("classic"), 6).nodes
+    core.set_lmr(True)
+    core.clear_hash()
+    reduced = core.search(start_board("classic"), 6).nodes
+    core.set_lmr(False)
+    check("the lmr toggle reaches the search", reduced != full,
+          "%d on, %d off at depth 6" % (reduced, full))
+    check("lmr shrinks the tree", reduced < full,
+          "%.1f%% of the unreduced tree" % (100.0 * reduced / full))
+    core.clear_hash()
+    check("lmr off leaves the pinned tree alone",
+          core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
 
     core.set_hash(core.DEFAULT_TT_MB)
 

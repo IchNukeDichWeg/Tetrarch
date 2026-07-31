@@ -13,6 +13,7 @@
  * Section references (§n) are to docs/RULES.md.
  */
 
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -910,6 +911,49 @@ static int use_pvs = 0;
 void tt_set_pvs(int on) { use_pvs = on ? 1 : 0; }
 int tt_get_pvs(void) { return use_pvs; }
 
+/* --- late move reductions (toggle: off by default) ------------------------
+ *
+ * Quiet moves tried late are unlikely to be best, so search them shallower
+ * with a null window and only pay full depth if one raises alpha. Unlike PVS
+ * this is NOT exact -- it can miss a line the full search would have found --
+ * which is why it is a toggle with an A/B rather than a free win.
+ *
+ * It is the one thing on the list that engages at the depth this engine
+ * actually reaches, because it attacks the branching factor directly rather
+ * than assuming the ordering is already good.
+ */
+#define LMR_MAX_MOVE 64
+static int use_lmr = 0;
+static int lmr_min_depth = 3;
+static int lmr_min_move = 3;
+static int lmr_table[MAX_DEPTH][LMR_MAX_MOVE];
+static int lmr_built = 0;
+
+static void lmr_build(void)
+{
+    int d, m;
+    for (d = 0; d < MAX_DEPTH; d++)
+        for (m = 0; m < LMR_MAX_MOVE; m++) {
+            double r = (d < 1 || m < 1) ? 0.0
+                     : 0.75 + log((double)d) * log((double)m) / 2.25;
+            lmr_table[d][m] = (int)r;
+        }
+    lmr_built = 1;
+}
+
+void tt_set_lmr(int on)
+{
+    if (!lmr_built) lmr_build();
+    use_lmr = on ? 1 : 0;
+}
+int tt_get_lmr(void) { return use_lmr; }
+
+void tt_set_lmr_params(int min_depth, int min_move)
+{
+    lmr_min_depth = min_depth < 1 ? 1 : min_depth;
+    lmr_min_move = min_move < 1 ? 1 : min_move;
+}
+
 static uint32_t search_buf[MAX_DEPTH][MAX_MOVES];
 static int32_t order_buf[MAX_DEPTH][MAX_MOVES];
 static uint64_t search_nodes;
@@ -1114,7 +1158,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     for (i = 0; i < n; i++) {
         int king;
         int32_t score;
-        int is_capture_before;
+        int is_capture_before, reduction;
         pick_move(moves, scores, n, i);
         is_capture_before = is_capture(b, moves[i]);
         tt_make(b, moves[i], &u);
@@ -1124,7 +1168,21 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
             continue;
         }
         legal++;
-        if (!use_pvs || legal == 1) {
+        reduction = 0;
+        if (use_lmr && legal > lmr_min_move && depth >= lmr_min_depth
+            && !is_capture_before && !MV_PROMO(moves[i]) && !in_chk) {
+            reduction = lmr_table[depth < MAX_DEPTH ? depth : MAX_DEPTH - 1]
+                                 [legal < LMR_MAX_MOVE ? legal : LMR_MAX_MOVE - 1];
+            if (reduction > depth - 2) reduction = depth - 2;
+            if (reduction < 0) reduction = 0;
+        }
+        if (reduction) {
+            /* Scout shallow; only a move that raises alpha earns full depth. */
+            score = -alphabeta(b, depth - 1 - reduction, -alpha - 1, -alpha,
+                               ply + 1);
+            if (!search_aborted && score > alpha)
+                score = -alphabeta(b, depth - 1, -beta, -alpha, ply + 1);
+        } else if (!use_pvs || legal == 1) {
             score = -alphabeta(b, depth - 1, -beta, -alpha, ply + 1);
         } else {
             score = -alphabeta(b, depth - 1, -alpha - 1, -alpha, ply + 1);
