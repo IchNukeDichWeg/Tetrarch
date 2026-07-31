@@ -867,15 +867,15 @@ def test_eval():
 #: The eval and the search are integer-only, so unlike a float eval these do
 #: not drift across microarchitectures -- but they DO move whenever ordering,
 #: pruning or the table changes, which is the point of pinning them.
-#: Re-pinned when killers were confirmed into the default (docs/AB.md). A
-#: confirmed feature changes the tree, so the pins move with it -- that is the
-#: point of re-measuring rather than relaxing them.
+#: Re-pinned whenever a feature is confirmed into the default (docs/AB.md).
+#: Killers, then LMR. A confirmed feature changes the tree, so the pins move
+#: with it -- the point is to re-measure, never to relax them.
 SEARCH_PINS = {
-    "classic": [40, 194, 1129, 10851, 83805],
-    "modern": [40, 148, 1158, 8467, 59969],
-    "by": [40, 148, 1211, 8553, 54615],
-    "byg": [40, 148, 1211, 10940, 60390],
-    "rg": [40, 190, 1237, 12791, 70722],
+    "classic": [40, 194, 1129, 8177, 17772],
+    "modern": [40, 148, 1158, 5274, 13587],
+    "by": [40, 148, 1211, 4866, 10565],
+    "byg": [40, 148, 1211, 3589, 11713],
+    "rg": [40, 190, 1237, 6881, 14270],
 }
 
 
@@ -889,6 +889,7 @@ MINIMAX_POSITIONS = 30
 def _minimax_job(index):
     """One seeded sparse position, compared at depths 1-3. Seeded by index so
     a worker can rebuild it without shipping a Board across the pipe."""
+    core.set_lmr(False)          # the oracle is plain minimax; see test_search
     rng = random.Random(3000 + index)
     b = _sparse_teams(rng)
     legal = fast.gen_legal(b)
@@ -904,6 +905,7 @@ def _minimax_job(index):
         if core.search(b, depth).score != search.reference_score(b.copy(), depth):
             bad += 1
         tested += 1
+    core.set_lmr(True)
     return (tested, bad)
 
 
@@ -920,7 +922,7 @@ def test_search(workers=1):
     check("killers default on (confirmed)", core.killers_enabled())
     check("history default off (dormant)", not core.history_enabled())
     check("pvs default off (dormant)", not core.pvs_enabled())
-    check("lmr default off (dormant)", not core.lmr_enabled())
+    check("lmr default on (confirmed)", core.lmr_enabled())
     check("lazy eval default off (dormant)", not core.lazy_eval_enabled())
 
     core.set_hash(16)
@@ -935,6 +937,8 @@ def test_search(workers=1):
     # The correctness theorem for the whole search: alpha-beta with a
     # transposition table must return exactly the plain minimax value. Pinned
     # node counts cannot see a wrong score -- a wrong score still has a count.
+    # The oracle is plain minimax, so the inexact reductions have to be off for
+    # the comparison to mean anything.
     results = pool_map(_minimax_job, list(range(MINIMAX_POSITIONS)), workers)
     tested = sum(n for n, _ in results)
     bad = sum(b for _, b in results)
@@ -997,18 +1001,15 @@ def test_search(workers=1):
     # LMR is NOT exact, so it gets no score-equality check -- only that it
     # reaches the search, shrinks the tree, and leaves the pins alone when off.
     core.clear_hash()
-    full = core.search(start_board("classic"), 6).nodes
-    core.set_lmr(True)
-    core.clear_hash()
     reduced = core.search(start_board("classic"), 6).nodes
     core.set_lmr(False)
-    check("the lmr toggle reaches the search", reduced != full,
+    core.clear_hash()
+    full = core.search(start_board("classic"), 6).nodes
+    core.set_lmr(True)
+    check("the lmr toggle still reaches the search", reduced != full,
           "%d on, %d off at depth 6" % (reduced, full))
     check("lmr shrinks the tree", reduced < full,
           "%.1f%% of the unreduced tree" % (100.0 * reduced / full))
-    core.clear_hash()
-    check("lmr off leaves the pinned tree alone",
-          core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
 
     # Lazy eval is a speed change, so the thing to pin is that it does NOT
     # move the tree. It is not exact by construction -- a bail returns the

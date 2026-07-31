@@ -159,7 +159,7 @@ is 54% of all search time. So the work that buys depth is pruning that engages
 at shallow depth (LMP, LMR) and a cheaper eval, not window or ordering
 refinements.
 
-### Late move reductions — built, READY TO SCREEN
+### Late move reductions — CONFIRMED, default on
 
 `setoption name LMR`, default **off**, with `LMRMinDepth` (3) and `LMRMinMove`
 (3). Reduction table is `0.75 + log(depth)·log(move)/2.25`.
@@ -190,9 +190,19 @@ passed 5. **LMR is not exact** — it can miss a line the full search would find
 so the reduction is not automatically Elo, and this one genuinely needs the
 games.
 
-**Screened +24.53 ± 14.19** over 2,000 games (Dist: 17, 2, 93, 5, 212, 8, 126,
-2, 35). Positive at 1.7σ — not conclusive, not remotely "clearly negative", so
-it earns the 10,000-game confirm.
+| | |
+|---|---|
+| Instrument | fixed nodes 20,000 |
+| Games | 10,000 (2,500 openings × 4) |
+| Elo | **+35.07 ± 6.51** |
+| Dist | 88, 12, 415, 39, 1002, 45, 681, 16, 202 |
+
+Screened +24.53 ± 14.19 over 2,000 first, confirmed at ~5.4σ. `SEARCH_PINS`
+re-measured with it on.
+
+The minimax oracle in `selftest.py` turns LMR off for its comparison: the
+reductions are inexact, so the oracle would otherwise be checking alpha-beta
+against a search that is deliberately allowed to differ.
 
 ### Lazy evaluation — built, needs a FIXED-TIME screen
 
@@ -220,3 +230,24 @@ And a fixed-time run needs **far fewer workers than cores**. Two engine
 subprocesses per worker means 111 workers on a 111-core box gives each engine
 about half a core, and the timing becomes noise. Around 40 workers keeps every
 engine on its own core.
+
+**Screened +64.66 ± 15.12** over 2,000 games at `movetime 200`, 40 workers
+(Dist: 13, 1, 64, 10, 187, 22, 133, 7, 63). About 4.3σ.
+
+Larger than +14% NPS would usually buy, and the likely reason is depth
+granularity: at a median of 4 plies, 14% more nodes is often the difference
+between finishing an iteration and not, and a whole extra ply is worth far more
+than 14%. Awaiting a 10,000-game confirm — which will run against the new
+LMR-on baseline, not the one it was screened on.
+
+---
+
+## A property of the harness worth knowing
+
+Two identical `match.py` invocations return **byte-identical results** — same
+score, same distribution. Openings are seeded from `--seed` (default 1) and the
+engines are deterministic at fixed nodes, so the same command replays the same
+games.
+
+That is good for reproducing a verdict and useless for adding confidence.
+**Re-running is not an independent sample; change `--seed`.**

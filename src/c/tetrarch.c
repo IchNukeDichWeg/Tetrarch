@@ -961,19 +961,23 @@ static int use_pvs = 0;
 void tt_set_pvs(int on) { use_pvs = on ? 1 : 0; }
 int tt_get_pvs(void) { return use_pvs; }
 
-/* --- late move reductions (toggle: off by default) ------------------------
+/* --- late move reductions -------------------------------------------------
  *
  * Quiet moves tried late are unlikely to be best, so search them shallower
- * with a null window and only pay full depth if one raises alpha. Unlike PVS
- * this is NOT exact -- it can miss a line the full search would have found --
- * which is why it is a toggle with an A/B rather than a free win.
+ * with a null window and only pay full depth if one raises alpha. NOT exact:
+ * it can miss a line the full search would have found, which is why it needed
+ * the games rather than a node count.
  *
- * It is the one thing on the list that engages at the depth this engine
- * actually reaches, because it attacks the branching factor directly rather
- * than assuming the ordering is already good.
+ * CONFIRMED and default ON. Teams / classic, fixed nodes 20,000:
+ *   +35.07 +/- 6.51 Elo over 10,000 games
+ *   Dist: 88, 12, 415, 39, 1002, 45, 681, 16, 202
+ * against a null self-test of -2.64 +/- 6.24. See docs/AB.md.
+ *
+ * It works where history and PVS did not because it attacks the branching
+ * factor directly rather than assuming the ordering is already good.
  */
 #define LMR_MAX_MOVE 64
-static int use_lmr = 0;
+static int use_lmr = 1;
 static int lmr_min_depth = 3;
 static int lmr_min_move = 3;
 static int lmr_table[MAX_DEPTH][LMR_MAX_MOVE];
@@ -1301,6 +1305,7 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     search_nodes = 0;
     search_limit = node_limit ? node_limit : (uint64_t)-1;
     search_aborted = 0;
+    if (!lmr_built) lmr_build();
     /* Killers are per-search, not per-game: a stale table from another
      * position orders by moves that meant something somewhere else. */
     if (use_killers) killers_clear();

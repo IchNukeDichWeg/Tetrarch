@@ -58,7 +58,7 @@ class Engine:
         # this engine reaches. See docs/AB.md.
         print("option name History type check default false")
         print("option name PVS type check default false")
-        print("option name LMR type check default false")
+        print("option name LMR type check default true")
         print("option name LMRMinDepth type spin default 3 min 1 max 16")
         print("option name LMRMinMove type spin default 3 min 1 max 32")
         print("option name LazyEval type check default false")

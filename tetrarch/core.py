@@ -360,10 +360,10 @@ def pvs_enabled():
 
 
 def set_lmr(on):
-    """Late move reductions. Off by default pending its A/B.
+    """Late move reductions. CONFIRMED +35.07 +/- 6.51, default on (docs/AB.md).
 
-    Unlike PVS this is not exact -- it can miss a line the full search would
-    find -- so the node reduction is not automatically Elo.
+    Not exact: it can miss a line the full search would find, which is why it
+    needed games rather than a node count.
     """
     load().tt_set_lmr(1 if on else 0)
 
