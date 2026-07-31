@@ -126,14 +126,20 @@ docs/               rules, results, perft, protocol, releasing
 
 ## Status
 
-**Phase 4 is open.** The engine still plays on a hand-written evaluation that is
-marked for deletion: net v0 was trained on 3.9 M self-play positions and lost its
-A/B at −40.13 ± 7.01. Five confirmed search gains since then — +271 Elo of
-self-relative improvement — have made the engine a substantially stronger teacher,
-so the next step is regenerating data with it and retraining.
+**Phase 4 is open.** The engine still plays on a hand-written evaluation marked
+for deletion. Net v0 lost its A/B at −40.13 ± 7.01; net v1, trained on 9.19 M
+positions from a much stronger and no-longer-blind teacher, reached
+−2.26 ± 15.58 — parity with the hand eval, roughly +38 Elo of net quality.
 
-Not yet built: FFA paranoid search, repetition detection, an opening book, and
-multithreading.
+Neither shipped, and both were labelled by the *hand eval* playing, which is
+about where a student trained on its teacher's own scores should land. The
+accumulator is now incremental (2.84× → 1.37× slower than the hand eval, which
+removes the tax that made any net unshippable), and `gen_data.py --net` lets a
+net label the next generation. That is the first real test of whether the loop
+compounds.
+
+Not yet built: FFA paranoid search, repetition detection, an opening book,
+multithreading, and int8 SIMD for the hidden layers.
 
 ## License
 

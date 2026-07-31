@@ -63,6 +63,62 @@ second generation (regenerate data with a net playing, retrain), not a tweak.
 
 The net stays in `nets/` so the result is reproducible.
 
+### Net v1 — NOT promoted, but the pipeline works
+
+| | |
+|---|---|
+| Mode / Setup | Teams / classic |
+| Instrument | fixed nodes 20,000 |
+| Games | 2,000 (500 openings × 4) — screen only |
+| Elo | **−2.26 ± 15.58** |
+| Dist | 42, 2, 102, 3, 196, 7, 115, 1, 32 |
+
+| | net v0 | net v1 |
+|---|---|---|
+| Elo vs hand eval | −40.13 ± 7.01 | **−2.26 ± 15.58** |
+| teacher | v0 engine | v5 engine |
+| budget | 5,000 nodes | 20,000 nodes |
+| teacher mean depth | ~3.7 | 5.09 |
+| teacher quiescence | stood pat through checks | sees evasions and mates |
+| positions | 3.9 M | 9.19 M |
+
+**Roughly +38 Elo of net quality**, and the net now evaluates about as well as
+the hand eval per node. Not promoted: at the time it was also **2.84× slower**
+per node, which loses at any real time control regardless of the fixed-nodes
+result.
+
+No 10,000-game confirm was run. Every decision is the same whether the true
+value is +13 or −18 — do not promote, fix the speed — so the games were spent
+on the accumulator instead.
+
+Training stopped improving at **epoch 5** (val 0.02690) while train loss kept
+falling to 0.02323 by epoch 8. That is overfitting, not the underfitting v0
+showed, so more epochs is the wrong lever and more data is the right one.
+
+**Why parity was the expected ceiling, not a disappointment.** Both v0 and v1
+were labelled by the *hand eval* playing, because `gen_data.py` had no way to
+load a net until now. A student trained on a teacher's own search scores
+converges on that teacher. Generation 2 is the first run where a net plays,
+and it is the first real test of whether the loop compounds.
+
+### Incremental NNUE accumulator — infrastructure, no version number
+
+Not an A/B: with no net loaded not a line of it runs, so the default build is
+untouched and every pin is unchanged.
+
+| | NNUE nps | vs hand eval |
+|---|---:|---|
+| full refresh per eval | 448,411 | 2.84× slower |
+| incremental | 918,768 | **1.37× slower** |
+
+A 2.07× speedup of the evaluation path. The 2.84× tax was unconditional, so
+before this no net could ship on a fixed-time control however well it
+evaluated.
+
+Gated by `tt_nnue_acc_matches` against a rebuild — perft and node pins cannot
+see a wrong accumulator, because it changes evaluations rather than the shape
+of the tree.
+
 ### Killers — CONFIRMED, default on
 
 | | |
