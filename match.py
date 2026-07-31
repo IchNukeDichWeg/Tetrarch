@@ -335,6 +335,9 @@ def main():
     else:
         args.go_string = "go depth %d" % args.depth
 
+    for path in (args.log, args.pgn4):
+        if path:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     if os.path.exists(args.log):
         ap.error("%s already exists; pick a fresh path" % args.log)
 

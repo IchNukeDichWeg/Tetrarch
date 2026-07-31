@@ -145,6 +145,11 @@ def main():
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
+    # Create the parent directory rather than dying on it. Failing after the
+    # banner has printed reads like the run started and then crashed.
+    parent = os.path.dirname(os.path.abspath(args.out))
+    os.makedirs(parent, exist_ok=True)
+
     done = 0
     if os.path.exists(args.out):
         if not args.resume:
