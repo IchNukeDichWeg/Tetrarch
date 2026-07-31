@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""match.py -- headless engine-vs-engine matches with a full seat rotation.
+
+    python3 match.py 250 --log run.jsonl --nodes 20000
+    python3 match.py 250 --log run.jsonl --engine-b random --workers 0
+
+The positional argument is the number of **opening positions**, not games.
+Total games = positions x 4, because a paired game here is a full seat
+rotation, not two games.
+
+THE ROTATION
+    Seat identity is worth more Elo than most engine changes, so a result that
+    has not cancelled it is not a result. Each opening is played four times:
+
+        rotation 0  board as generated      engine A plays team R+Y
+        rotation 1  board turned 90 deg     engine A plays team B+G
+        rotation 2  board turned 180 deg    engine A plays team R+Y
+        rotation 3  board turned 270 deg    engine A plays team B+G
+
+    So each engine plays each team twice and the opening is seen from all four
+    orientations. Score sum per opening runs 0..4 in half-point steps, which is
+    the nine-bucket distribution reported below -- NOT a pentanomial, which
+    would assume two games per opening.
+
+THREE IMPLEMENTATION NOTES, each of which cost real money to learn elsewhere
+    * Workers are fed from a generator through Pool.imap_unordered, whose task
+      handler is a thread. A plain multiprocessing.Queue silently deadlocks on
+      macOS past 32767 items, and a run bigger than that hangs with no error.
+    * Each engine command gets its own subprocess. Two engine versions must
+      never share a process: dlopen returns the stale same-name image and you
+      get a silent fallback to the wrong engine.
+    * The progress bar is NOT gated on isatty(). It is written to stderr
+      unconditionally, so piping through `tee` keeps it. Use --quiet to silence.
+
+Ctrl-C prints the running summary and the distribution. The per-game log is
+written as it goes, so a hard kill is still recoverable from --log.
+"""
+
+import argparse
+import json
+import math
+import multiprocessing
+import os
+import random
+import signal
+import subprocess
+import sys
+import time
+
+from tetrarch.board import (
+    Board, start_board, rotate, SETUPS, DEFAULT_SETUP, MODE_TEAMS,
+    move_str, SEAT_NAMES,
+)
+from tetrarch import movegen as gen
+
+ROTATIONS = 4
+#: Adjudicate a draw rather than play forever. 50-move already covers most of
+#: it; this is the backstop.
+MAX_PLIES = 400
+RANDOM_ENGINE = "random"
+
+
+# --- engine driver ----------------------------------------------------------
+
+class UciEngine:
+    """One engine subprocess speaking the protocol in docs/PROTOCOL.md."""
+
+    def __init__(self, command, setup, mode, hash_mb=16):
+        self.command = command
+        self.proc = subprocess.Popen(
+            command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        self._send("uci")
+        self._wait_for("uciok")
+        self._send("setoption name Setup value %s" % setup)
+        self._send("setoption name Mode value %s" % ("teams" if mode else "ffa"))
+        self._send("setoption name Hash value %d" % hash_mb)
+        self._send("isready")
+        self._wait_for("readyok")
+
+    def _send(self, line):
+        self.proc.stdin.write(line + "\n")
+        self.proc.stdin.flush()
+
+    def _wait_for(self, token):
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError("engine %r died" % self.command)
+            if line.strip().startswith(token):
+                return line.strip()
+
+    def newgame(self):
+        self._send("ucinewgame")
+        self._send("isready")
+        self._wait_for("readyok")
+
+    def bestmove(self, start_fen4, moves, go):
+        position = "position fen4 %s" % start_fen4
+        if moves:
+            position += " moves " + " ".join(moves)
+        self._send(position)
+        self._send(go)
+        line = self._wait_for("bestmove")
+        parts = line.split()
+        return parts[1] if len(parts) > 1 else None
+
+    def close(self):
+        try:
+            self._send("quit")
+            self.proc.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            self.proc.kill()
+
+
+_ENGINE_CACHE = {}
+
+
+def get_engine(command, setup, mode):
+    """One subprocess per command per worker, reused across games.
+
+    Reuse is per *version*: a different command is a different subprocess, so
+    two versions never share an address space.
+    """
+    if command == RANDOM_ENGINE:
+        return RANDOM_ENGINE
+    key = (command, setup, mode)
+    if key not in _ENGINE_CACHE:
+        _ENGINE_CACHE[key] = UciEngine(command, setup, mode)
+    engine = _ENGINE_CACHE[key]
+    engine.newgame()
+    return engine
+
+
+# --- openings ---------------------------------------------------------------
+
+def make_opening(setup, mode, plies, seed):
+    """A start position reached by `plies` random legal moves. Deterministic."""
+    rng = random.Random(seed)
+    b = start_board(setup, mode)
+    for _ in range(plies):
+        legal = gen.gen_legal(b)
+        if not legal:
+            return None
+        b.make(rng.choice(legal))
+    if not gen.gen_legal(b):
+        return None
+    return b
+
+
+# --- one game ---------------------------------------------------------------
+
+def play_game(job):
+    """Play one game. Returns a dict; never raises past a forfeit."""
+    (index, opening_seed, rotation, setup, mode, plies, cmd_a, cmd_b,
+     go_string, seed) = job
+
+    base = make_opening(setup, mode, plies, opening_seed)
+    if base is None:
+        return None
+    board = rotate(base, rotation)
+    start_fen4 = board.to_fen4().replace("\n", "")
+
+    # A plays team 0 (seats R,Y) on even rotations, team 1 (B,G) on odd.
+    a_team = rotation & 1
+    engines = {}
+    try:
+        engines[a_team] = get_engine(cmd_a, setup, mode)
+        engines[1 - a_team] = get_engine(cmd_b, setup, mode)
+    except Exception as exc:                                   # noqa: BLE001
+        return {"index": index, "error": "engine start: %r" % (exc,)}
+
+    rng = random.Random(seed)
+    moves = []
+    result = None
+    reason = ""
+
+    for ply in range(MAX_PLIES):
+        legal = gen.gen_legal(board)
+        if not legal:
+            if gen.in_check(board, board.turn):
+                # Checkmating one opponent wins for the whole team (§7).
+                loser_team = board.turn & 1
+                result = 0.0 if loser_team == a_team else 1.0
+                reason = "checkmate %s" % SEAT_NAMES[board.turn]
+            else:
+                result = 0.5
+                reason = "stalemate %s" % SEAT_NAMES[board.turn]
+            break
+        if board.halfmove >= 200:
+            result, reason = 0.5, "fifty-move"
+            break
+
+        engine = engines[board.turn & 1]
+        if engine is RANDOM_ENGINE:
+            chosen = rng.choice(legal)
+        else:
+            try:
+                token = engine.bestmove(start_fen4, moves, go_string)
+            except Exception as exc:                           # noqa: BLE001
+                result = 0.0 if (board.turn & 1) == a_team else 1.0
+                reason = "engine failure: %r" % (exc,)
+                break
+            match = [m for m in legal if move_str(m) == token]
+            if not match:
+                result = 0.0 if (board.turn & 1) == a_team else 1.0
+                reason = "illegal move %s by %s" % (token, SEAT_NAMES[board.turn])
+                break
+            chosen = match[0]
+        moves.append(move_str(chosen))
+        board.make(chosen)
+    else:
+        result, reason = 0.5, "adjudicated at %d plies" % MAX_PLIES
+
+    return {"index": index, "opening": opening_seed, "rotation": rotation,
+            "score": result, "reason": reason, "plies": len(moves),
+            "a_team": a_team, "moves": " ".join(moves)}
+
+
+# --- statistics -------------------------------------------------------------
+
+def elo(score_rate):
+    if score_rate <= 0.0:
+        return -800.0
+    if score_rate >= 1.0:
+        return 800.0
+    return -400.0 * math.log10(1.0 / score_rate - 1.0)
+
+
+def summarise(by_opening, games, elapsed):
+    """Report as the doctrine requires: Elo with its margin, games, and the
+    nine-bucket distribution. Never a bare Elo, never a pentanomial."""
+    complete = [v for v in by_opening.values() if len(v) == ROTATIONS]
+    partial = len(by_opening) - len(complete)
+    total = sum(g["score"] for g in games if g.get("score") is not None)
+    played = sum(1 for g in games if g.get("score") is not None)
+
+    lines = []
+    lines.append("games %d  score %.1f/%d  rate %.4f"
+                 % (played, total, played, total / played if played else 0.0))
+
+    if complete:
+        sums = [sum(v) for v in complete]
+        rate = sum(sums) / (ROTATIONS * len(sums))
+        mean = sum(sums) / len(sums)
+        var = sum((s - mean) ** 2 for s in sums) / max(1, len(sums) - 1)
+        se_rate = math.sqrt(var / len(sums)) / ROTATIONS
+        e = elo(rate)
+        if 0.0 < rate < 1.0:
+            margin = 1.96 * se_rate * 400.0 / (math.log(10) * rate * (1 - rate))
+        else:
+            margin = float("inf")
+        lines.append("Elo %+.2f +/- %.2f   (%d complete rotations)"
+                     % (e, margin, len(complete)))
+        buckets = [0] * 9
+        for s in sums:
+            buckets[int(round(s * 2))] += 1
+        lines.append("Dist: %s" % ", ".join(str(b) for b in buckets))
+        lines.append("      (score sums 0, 0.5, 1 ... 4 over the 4-game rotation)")
+    if partial:
+        lines.append("%d openings have an INCOMPLETE rotation and are excluded "
+                     "from the Elo -- an incomplete rotation is seat bias, not "
+                     "a result." % partial)
+    lines.append("%.1fs elapsed" % elapsed)
+    return "\n".join(lines)
+
+
+# --- main -------------------------------------------------------------------
+
+def jobs(count, args):
+    """A generator, so Pool's thread-backed task handler feeds the workers
+    lazily. A plain Queue deadlocks past 32767 items on macOS."""
+    index = 0
+    for i in range(count):
+        for rotation in range(ROTATIONS):
+            yield (index, args.seed * 7919 + i, rotation, args.setup,
+                   MODE_TEAMS, args.opening_plies, args.engine_a,
+                   args.engine_b, args.go_string, args.seed * 104729 + index)
+            index += 1
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__.split("\n")[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="The progress bar is written to stderr unconditionally and is "
+               "not gated on isatty(), so piping through tee keeps it. "
+               "Use --quiet to silence it.")
+    ap.add_argument("positions", type=int,
+                    help="number of OPENING POSITIONS; games = positions x 4")
+    ap.add_argument("--log", required=True, metavar="PATH",
+                    help="per-game JSONL log; required, no default, so a smoke "
+                         "test can never overwrite a real run")
+    ap.add_argument("--engine-a", default="python3 uci.py")
+    ap.add_argument("--engine-b", default="python3 uci.py",
+                    help="engine command, or the literal word 'random'")
+    ap.add_argument("--nodes", type=int)
+    ap.add_argument("--movetime", type=int, metavar="MS")
+    ap.add_argument("--depth", type=int)
+    ap.add_argument("--setup", default=DEFAULT_SETUP, choices=SETUPS)
+    ap.add_argument("--opening-plies", type=int, default=8)
+    ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--workers", type=int, default=1,
+                    help="0 means every core")
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args()
+
+    instruments = [x for x in (args.nodes, args.movetime, args.depth)
+                   if x is not None]
+    if len(instruments) != 1:
+        ap.error("choose exactly one instrument: --nodes, --movetime or "
+                 "--depth. Mixing them inside one campaign invalidates it.")
+    if args.nodes:
+        args.go_string = "go nodes %d" % args.nodes
+    elif args.movetime:
+        args.go_string = "go movetime %d" % args.movetime
+    else:
+        args.go_string = "go depth %d" % args.depth
+
+    if os.path.exists(args.log):
+        ap.error("%s already exists; pick a fresh path" % args.log)
+
+    nproc = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
+    total = args.positions * ROTATIONS
+    print("setup %s teams | %s | %s vs %s | %d openings x %d = %d games"
+          % (args.setup, args.go_string, args.engine_a, args.engine_b,
+             args.positions, ROTATIONS, total))
+
+    games = []
+    by_opening = {}
+    started = time.time()
+    log = open(args.log, "w")
+
+    def absorb(game):
+        if game is None:
+            return
+        games.append(game)
+        log.write(json.dumps(game) + "\n")
+        log.flush()
+        if game.get("score") is not None:
+            by_opening.setdefault(game["opening"], []).append(game["score"])
+
+    def progress():
+        if args.quiet:
+            return
+        done = len(games)
+        secs = time.time() - started
+        rate = done / max(secs, 1e-9)
+        eta = (total - done) / max(rate, 1e-9)
+        width = 28
+        filled = int(width * done / max(total, 1))
+        sys.stderr.write("\r[%s%s] %d/%d  %.1f g/s  eta %dm%02ds "
+                         % ("#" * filled, "." * (width - filled), done, total,
+                            rate, eta // 60, eta % 60))
+        sys.stderr.flush()
+
+    try:
+        if nproc == 1:
+            for job in jobs(args.positions, args):
+                absorb(play_game(job))
+                progress()
+        else:
+            with multiprocessing.Pool(nproc, initializer=_ignore_sigint) as pool:
+                for game in pool.imap_unordered(play_game,
+                                                jobs(args.positions, args),
+                                                chunksize=1):
+                    absorb(game)
+                    progress()
+    except KeyboardInterrupt:
+        sys.stderr.write("\ninterrupted -- summary of what completed:\n")
+    finally:
+        if not args.quiet:
+            sys.stderr.write("\n")
+        log.close()
+        for engine in _ENGINE_CACHE.values():
+            if engine is not RANDOM_ENGINE:
+                engine.close()
+
+    print(summarise(by_opening, games, time.time() - started))
+    errors = [g for g in games if g.get("error") or "illegal" in g.get("reason", "")
+              or "failure" in g.get("reason", "")]
+    if errors:
+        print("%d games ended on an engine error or illegal move:" % len(errors))
+        for g in errors[:5]:
+            print("  %s" % (g.get("error") or g.get("reason")))
+    print("log: %s" % args.log)
+    return 0
+
+
+def _ignore_sigint():
+    """Workers ignore Ctrl-C so the parent can print its summary instead of
+    every child dumping a traceback."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -844,6 +844,63 @@ SETUPS = tuple(SETUP_SWAPS)
 DEFAULT_SETUP = "classic"
 
 
+def _build_rot90():
+    """(file, rank) -> (rank, 13 - file). Maps the board onto itself, corners
+    included, and sends each seat's home to the next seat's clockwise."""
+    table = list(range(NSQ))
+    for sq in range(NSQ):
+        f, r = file_of(sq), rank_of(sq)
+        if f < NFILE and r < NRANK:
+            table[sq] = sq_of(r, 13 - f)
+    return table
+
+
+ROT90 = _build_rot90()
+
+
+def rotate(b, quarter_turns):
+    """The position turned `quarter_turns` x 90 degrees clockwise.
+
+    Seats shift with the board: Red's army lands where Blue's was, and so on.
+    Used by `match.py` to play one opening from all four orientations, which is
+    how seat bias is cancelled -- in FFA seat identity is worth more Elo than
+    most engine changes, so this is not optional.
+    """
+    quarter_turns &= 3
+    if quarter_turns == 0:
+        return b.copy()
+    out = Board(b.mode)
+    out.halfmove = b.halfmove
+    out.pawn_base_rank = b.pawn_base_rank
+    out.extra = dict(b.extra)
+
+    mapping = list(range(NSQ))
+    for _ in range(quarter_turns):
+        mapping = [ROT90[sq] for sq in mapping]
+
+    for sq in SQUARES:
+        p = b.sq[sq]
+        if not p:
+            continue
+        color = PC_COLOR[p]
+        if color != DEAD_UNKNOWN:
+            color = (color + quarter_turns) & 3
+        out.sq[mapping[sq]] = make_piece(color, PC_TYPE[p])
+
+    for c in range(4):
+        nc = (c + quarter_turns) & 3
+        out.alive[nc] = b.alive[c]
+        out.points[nc] = b.points[c]
+        out.ck[nc] = b.ck[c]
+        out.cq[nc] = b.cq[c]
+        out.ep[nc] = (None if b.ep[c] is None
+                      else (mapping[b.ep[c][0]], mapping[b.ep[c][1]]))
+    out.turn = (b.turn + quarter_turns) & 3
+    out.find_kings()
+    out.recompute_key()
+    return out
+
+
 def start_board(setup=DEFAULT_SETUP, mode=MODE_TEAMS):
     if setup not in SETUP_SWAPS:
         raise ValueError("unknown setup %r; expected one of %s"

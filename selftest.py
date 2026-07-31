@@ -25,7 +25,8 @@ import sys
 import time
 
 from tetrarch.board import (
-    Board, start_board, SETUPS, SETUP_SWAPS, MODE_FFA, MODE_TEAMS, MODE_NAMES,
+    Board, start_board, rotate, SETUPS, SETUP_SWAPS, MODE_FFA, MODE_TEAMS,
+    MODE_NAMES,
     VALID, COMPACT, SQUARES, NPLAYABLE, NSQ, KNIGHT_DELTAS, QUEEN_DIRS,
     PAWN_PUSH, PAWN_TAKES, PROMO_COORD, pawn_coord, CASTLE_GEO, ROOK_HOME,
     RED, BLUE, YELLOW, GREEN, DEAD_UNKNOWN,
@@ -37,6 +38,8 @@ from tetrarch.board import (
 from tetrarch import movegen as fast
 from tetrarch import movegen_slow as slow
 from tetrarch import core
+from tetrarch import eval_hand
+from tetrarch import search
 
 HAVE_C = core.available()
 
@@ -723,6 +726,160 @@ def test_c_core(deep=False):
           "%d positions differ" % move_bad)
 
 
+def test_rotation():
+    section("board rotation (match.py seat rotation)")
+    for setup in SETUPS:
+        b = start_board(setup)
+        check("%s four quarter turns is the identity" % setup, rotate(b, 4) == b)
+        counts = [fast.perft(rotate(b, k), 3) for k in range(4)]
+        check("%s perft is invariant under rotation" % setup,
+              len(set(counts)) == 1, str(counts))
+        for k in range(1, 4):
+            r = rotate(b, k)
+            check("%s rotation %d keeps 64 pieces" % (setup, k),
+                  sum(1 for sq in SQUARES if r.sq[sq]) == 64)
+            check("%s rotation %d shifts the turn" % (setup, k),
+                  r.turn == (b.turn + k) & 3)
+    # modern is the 90-degree symmetric setup, so rotating it changes nothing.
+    check("modern is its own quarter turn",
+          rotate(start_board("modern"), 1).sq == start_board("modern").sq)
+    check("classic is not", rotate(start_board("classic"), 1).sq
+          != start_board("classic").sq)
+
+
+def test_eval():
+    section("throwaway eval (deleted at Phase 4)")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+    rng = random.Random(19)
+    bad = 0
+    for _ in range(400):
+        b = random_position(rng)
+        if eval_hand.evaluate(b) != core.evaluate(b):
+            bad += 1
+    check("Python and C eval agree bit for bit", bad == 0, "%d differ" % bad)
+    check("eval is integer only",
+          isinstance(eval_hand.evaluate(start_board("classic")), int))
+
+    # Symmetric position, symmetric score.
+    check("the start position evaluates to 0 for every setup",
+          all(eval_hand.evaluate(start_board(s)) == 0 for s in SETUPS))
+
+    # A queen and a promoted queen on the SAME square attack identically, so
+    # the king-danger term cancels exactly and the difference is pure material.
+    # (Comparing against an empty square would not: adding a queen anywhere
+    # also changes how many squares near the enemy kings are attacked.)
+    kings = {"h1": (RED, KING), "a8": (BLUE, KING),
+             "g14": (YELLOW, KING), "n7": (GREEN, KING)}
+    real = position(dict(kings, **{"h7": (RED, QUEEN)}))
+    promoted = position(dict(kings, **{"h7": (RED, PQUEEN)}))
+    check("a promoted queen is worth 1 point, not 9 (§8.1)",
+          eval_hand.evaluate(real) - eval_hand.evaluate(promoted)
+          == eval_hand.PIECE_VALUE[QUEEN] - eval_hand.PIECE_VALUE[PQUEEN],
+          "%d vs %d" % (eval_hand.evaluate(real), eval_hand.evaluate(promoted)))
+    check("bishop and rook are both worth 5 (§8.1)",
+          eval_hand.PIECE_VALUE[BISHOP] == eval_hand.PIECE_VALUE[ROOK] == 500)
+
+    # The score is from the side to move's TEAM, and the team flips every ply,
+    # so advancing the turn by one seat must negate it exactly.
+    rng = random.Random(23)
+    asym = 0
+    for _ in range(200):
+        b = random_position(rng)
+        flipped = b.copy()
+        flipped.turn = (b.turn + 1) & 3
+        flipped.recompute_key()
+        if eval_hand.evaluate(b) != -eval_hand.evaluate(flipped):
+            asym += 1
+    check("eval negates when the turn advances one seat", asym == 0,
+          "%d positions" % asym)
+
+
+#: Search node counts at fixed depth with a 16 MB table, cleared before each.
+#: The eval and the search are integer-only, so unlike a float eval these do
+#: not drift across microarchitectures -- but they DO move whenever ordering,
+#: pruning or the table changes, which is the point of pinning them.
+SEARCH_PINS = {
+    "classic": [40, 380, 3552, 26044, 228628],
+    "modern": [40, 308, 4815, 31170, 238879],
+    "by": [40, 308, 4437, 34221, 220568],
+    "byg": [40, 308, 4437, 33912, 282296],
+    "rg": [40, 364, 3306, 36865, 230482],
+}
+
+
+def test_search():
+    section("search (Phase 3 gate)")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+
+    core.set_hash(16)
+    for setup in SETUPS:
+        for i, expect in enumerate(SEARCH_PINS[setup]):
+            core.clear_hash()
+            got = core.search(start_board(setup), i + 1).nodes
+            check("%s search nodes at depth %d" % (setup, i + 1), got == expect,
+                  "%d != %d" % (got, expect))
+
+    # The correctness theorem for the whole search: alpha-beta with a
+    # transposition table must return exactly the plain minimax value. Pinned
+    # node counts cannot see a wrong score -- a wrong score still has a count.
+    rng = random.Random(3)
+    bad = tested = 0
+    for _ in range(40):
+        b = _sparse_teams(rng)
+        if not fast.gen_legal(b):
+            continue
+        for depth in (1, 2, 3):
+            core.clear_hash()
+            got = core.search(b, depth).score
+            want = search.reference_score(b.copy(), depth)
+            tested += 1
+            if got != want:
+                bad += 1
+    check("alpha-beta equals unpruned minimax (%d comparisons)" % tested,
+          bad == 0, "%d mismatches" % bad)
+
+    # Mate is found and scored from the mating team's point of view.
+    mate = position({"a5": (RED, KING), "n9": (YELLOW, KING),
+                     "b7": (BLUE, KING), "m7": (GREEN, KING),
+                     "d7": (RED, QUEEN), "d8": (RED, ROOK)}, turn=RED)
+    core.clear_hash()
+    r = core.search(mate, 3)
+    check("a forced mate scores as a mate", r.score > 29000 - 100
+          or r.score < -(29000 - 100), "score %d" % r.score)
+
+    core.set_hash(core.DEFAULT_TT_MB)
+
+
+def _sparse_teams(rng):
+    """A few pieces per seat: dense positions make the unpruned reference
+    intractable, and it is the reference that has to stay simple."""
+    b = Board(MODE_TEAMS)
+    free = list(SQUARES)
+    rng.shuffle(free)
+    for color in range(4):
+        b.sq[free.pop()] = make_piece(color, KING)
+        for _ in range(rng.randrange(0, 3)):
+            ptype = rng.choice((PAWN, KNIGHT, BISHOP, ROOK, QUEEN))
+            if ptype == PAWN:
+                candidates = [sq for sq in free
+                              if 0 < pawn_coord(color, sq) < PROMO_COORD[MODE_TEAMS]]
+                if not candidates:
+                    continue
+                sq = rng.choice(candidates)
+                free.remove(sq)
+            else:
+                sq = free.pop()
+            b.sq[sq] = make_piece(color, ptype)
+    b.turn = rng.randrange(4)
+    b.find_kings()
+    b.recompute_key()
+    return b
+
+
 def perft_deep():
     section("deep perft -- all setups, both modes, to depth 5")
     print("  %-9s %-6s %12s %12s %8s" % ("setup", "mode", "depth 4", "depth 5",
@@ -1007,6 +1164,9 @@ def main():
     test_castling()
     test_perft(args.perft)
     test_c_core(args.perft_deep)
+    test_rotation()
+    test_eval()
+    test_search()
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, args.workers, args.quiet)
     if args.perft_deep:

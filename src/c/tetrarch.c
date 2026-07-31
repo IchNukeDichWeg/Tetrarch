@@ -14,6 +14,7 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define NSQ 256
@@ -81,6 +82,8 @@ typedef struct {
     int32_t n_promo_choices[2];
     int32_t king_home[4][2];      /* the two central squares per seat */
     int32_t castle[4][2][2][10];
+    int32_t piece_value[NTYPE];   /* throwaway eval: deleted at Phase 4 */
+    int32_t king_danger;
 } TtParams;
 
 typedef struct {
@@ -640,4 +643,324 @@ int tt_divide(TtBoard *b, int depth, uint32_t *moves, uint64_t *nodes)
         tt_unmake(b, buf[i], &u);
     }
     return n;
+}
+
+/* --- evaluation --------------------------------------------------------- *
+ *
+ * throwaway: deleted at Phase 4, replaced by NNUE. Material on the FFA capture
+ * values (§8.1) plus a crude king-danger term. Integer only, and mirrored
+ * statement for statement by tetrarch/eval_hand.py -- selftest asserts the two
+ * agree bit for bit, which is the only reason to keep them in step at all.
+ *
+ * Returned from the perspective of the side to move's TEAM. In Teams the seat
+ * rotation alternates team every ply (team = seat & 1, and the turn advances by
+ * one), so plain negamax applies with no special casing (§2).
+ */
+
+int32_t tt_eval(const TtBoard *b)
+{
+    int me = b->turn & 1;
+    int32_t total = 0;
+    int sq, c, i;
+
+    for (sq = 0; sq < NSQ; sq++) {
+        uint8_t p;
+        int pc;
+        if (!P.valid[sq]) continue;
+        p = b->sq[sq];
+        if (!p) continue;
+        pc = P.pc_color[p];
+        /* Dead seats' pieces are worth nothing to capture (§9.1). They are
+         * still on the board and still block; a material eval cannot see
+         * that, and the throwaway is not the place to try. */
+        if (pc == DEAD_UNKNOWN || !b->alive[pc]) continue;
+        total += ((pc & 1) == me ? 1 : -1) * P.piece_value[P.pc_type[p]];
+    }
+
+    for (c = 0; c < 4; c++) {
+        int k, danger = 0;
+        if (!b->alive[c]) continue;
+        k = b->kings[c];
+        if (k < 0) continue;
+        for (i = 0; i < 8; i++) {
+            int t = (k + P.queen_dirs[i]) & 255;
+            if (P.valid[t] && tt_is_attacked(b, t, c)) danger++;
+        }
+        total += ((c & 1) == me ? -1 : 1) * danger * P.king_danger;
+    }
+    return total;
+}
+
+/* --- transposition table ------------------------------------------------ */
+
+#define TT_EXACT 0
+#define TT_LOWER 1
+#define TT_UPPER 2
+#define MATE_SCORE 30000
+#define INF_SCORE 32000
+
+typedef struct {
+    uint64_t key;
+    int32_t score;
+    uint32_t best;
+    int16_t depth;
+    uint8_t flag;
+    uint8_t pad;
+} TtEntry;
+
+static TtEntry *tt_table;
+static uint64_t tt_mask;
+static uint64_t tt_entries;
+
+/* Allocates the largest power-of-two entry count fitting in `mb` megabytes. */
+int tt_alloc(int mb)
+{
+    uint64_t want, n = 1;
+    if (mb < 1) mb = 1;
+    want = ((uint64_t)mb * 1024u * 1024u) / sizeof(TtEntry);
+    while (n * 2 <= want) n *= 2;
+    if (tt_table) free(tt_table);
+    tt_table = (TtEntry *)calloc((size_t)n, sizeof(TtEntry));
+    if (!tt_table) { tt_entries = tt_mask = 0; return 0; }
+    tt_entries = n;
+    tt_mask = n - 1;
+    return 1;
+}
+
+void tt_clear(void)
+{
+    if (tt_table) memset(tt_table, 0, (size_t)tt_entries * sizeof(TtEntry));
+}
+
+uint64_t tt_size(void) { return tt_entries; }
+
+/* --- search ------------------------------------------------------------- */
+
+static uint32_t search_buf[MAX_DEPTH][MAX_MOVES];
+static int32_t order_buf[MAX_DEPTH][MAX_MOVES];
+static uint64_t search_nodes;
+static uint64_t search_limit;
+static int search_aborted;
+
+static inline int is_capture(const TtBoard *b, uint32_t m)
+{
+    return b->sq[MV_TO(m)] != 0 || MV_FLAG(m) == F_EP;
+}
+
+/* MVV-LVA, with the transposition move first. Quiet moves keep generation
+ * order -- killers and history are Phase 7 work, behind their own A/B. */
+static void score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
+                        int n, uint32_t ttmove)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        uint32_t m = moves[i];
+        int32_t s = 0;
+        if (m == ttmove) {
+            s = 1 << 24;
+        } else if (is_capture(b, m)) {
+            uint8_t victim = b->sq[MV_TO(m)];
+            int vv = victim ? P.piece_value[P.pc_type[victim]]
+                            : P.piece_value[PAWN];
+            int av = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
+            s = (1 << 16) + vv * 16 - av;
+        }
+        if (MV_PROMO(m)) s += (1 << 15);
+        scores[i] = s;
+    }
+}
+
+/* Selection sort one move at a time: most of the list is never reached after
+ * a cutoff, so sorting it all up front would be wasted work. */
+static void pick_move(uint32_t *moves, int32_t *scores, int n, int i)
+{
+    int best = i, j;
+    for (j = i + 1; j < n; j++)
+        if (scores[j] > scores[best]) best = j;
+    if (best != i) {
+        uint32_t tm = moves[i]; moves[i] = moves[best]; moves[best] = tm;
+        int32_t ts = scores[i]; scores[i] = scores[best]; scores[best] = ts;
+    }
+}
+
+static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
+{
+    uint32_t *moves;
+    int32_t *scores;
+    TtUndo u;
+    int n, i, me = b->turn;
+    int32_t stand;
+
+    if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
+    if (ply >= MAX_DEPTH - 2) return tt_eval(b);
+
+    stand = tt_eval(b);
+    if (stand >= beta) return stand;
+    if (stand > alpha) alpha = stand;
+
+    /* Captures are filtered out of the full pseudo-legal list rather than
+     * produced by a second, captures-only generator. That generator would be
+     * invisible to perft and to the bench signature, and would need its own
+     * differential gate; not having it is cheaper than gating it. */
+    moves = search_buf[ply];
+    scores = order_buf[ply];
+    n = tt_gen_pseudo(b, moves);
+    score_moves(b, moves, scores, n, 0);
+
+    for (i = 0; i < n; i++) {
+        int king;
+        pick_move(moves, scores, n, i);
+        if (!is_capture(b, moves[i])) continue;
+        tt_make(b, moves[i], &u);
+        king = b->kings[me];
+        if (king >= 0 && tt_is_attacked(b, king, me)) {
+            tt_unmake(b, moves[i], &u);
+            continue;
+        }
+        int32_t score = -qsearch(b, -beta, -alpha, ply + 1);
+        tt_unmake(b, moves[i], &u);
+        if (search_aborted) return 0;
+        if (score >= beta) return score;
+        if (score > alpha) alpha = score;
+    }
+    return alpha;
+}
+
+static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
+                         int ply)
+{
+    uint32_t *moves, ttmove = 0, best_move = 0;
+    int32_t *scores, best = -INF_SCORE, orig_alpha = alpha;
+    TtUndo u;
+    TtEntry *slot = 0;
+    int n, i, legal = 0, me = b->turn, in_chk;
+
+    if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
+
+    if (tt_table) {
+        slot = &tt_table[b->key & tt_mask];
+        if (slot->key == b->key) {
+            ttmove = slot->best;
+            if (slot->depth >= depth && ply > 0) {
+                /* A mate score is stored relative to the mating node, not the
+                 * root, or the same entry reports a different distance at every
+                 * depth it is probed from. */
+                int32_t s = slot->score;
+                if (s > MATE_SCORE - MAX_DEPTH) s -= ply;
+                else if (s < -(MATE_SCORE - MAX_DEPTH)) s += ply;
+                if (slot->flag == TT_EXACT) return s;
+                if (slot->flag == TT_LOWER && s >= beta) return s;
+                if (slot->flag == TT_UPPER && s <= alpha) return s;
+            }
+        }
+    }
+
+    if (depth <= 0) return qsearch(b, alpha, beta, ply);
+    if (ply >= MAX_DEPTH - 2) return tt_eval(b);
+
+    in_chk = tt_in_check(b, me);
+    moves = search_buf[ply];
+    scores = order_buf[ply];
+    n = tt_gen_pseudo(b, moves);
+    score_moves(b, moves, scores, n, ttmove);
+
+    for (i = 0; i < n; i++) {
+        int king;
+        int32_t score;
+        pick_move(moves, scores, n, i);
+        tt_make(b, moves[i], &u);
+        king = b->kings[me];
+        if (king >= 0 && tt_is_attacked(b, king, me)) {
+            tt_unmake(b, moves[i], &u);
+            continue;
+        }
+        legal++;
+        score = -alphabeta(b, depth - 1, -beta, -alpha, ply + 1);
+        tt_unmake(b, moves[i], &u);
+        if (search_aborted) return 0;
+        if (score > best) {
+            best = score;
+            best_move = moves[i];
+            if (score > alpha) alpha = score;
+            if (alpha >= beta) break;
+        }
+    }
+
+    if (!legal) {
+        /* Checkmate ends the game for the whole team in Teams (§7); stalemate
+         * on your own turn is a draw. */
+        return in_chk ? -(MATE_SCORE - ply) : 0;
+    }
+
+    if (slot) {
+        int32_t s = best;
+        if (s > MATE_SCORE - MAX_DEPTH) s += ply;
+        else if (s < -(MATE_SCORE - MAX_DEPTH)) s -= ply;
+        slot->key = b->key;
+        slot->score = s;
+        slot->best = best_move;
+        slot->depth = (int16_t)depth;
+        slot->flag = (uint8_t)(best <= orig_alpha ? TT_UPPER
+                               : (best >= beta ? TT_LOWER : TT_EXACT));
+    }
+    return best;
+}
+
+typedef struct {
+    uint64_t nodes;
+    int32_t score;
+    uint32_t best;
+    int32_t depth;
+    int32_t aborted;
+    int32_t pad;
+} TtResult;
+
+int tt_result_size(void) { return (int)sizeof(TtResult); }
+
+/* One fixed-depth search. Iterative deepening and time management live in
+ * Python at the root, per the architecture; this is the per-node loop only. */
+void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
+{
+    uint32_t *moves, best_move = 0;
+    int32_t *scores, best = -INF_SCORE, alpha = -INF_SCORE;
+    TtUndo u;
+    int n, i, legal = 0, me = b->turn;
+
+    search_nodes = 0;
+    search_limit = node_limit ? node_limit : (uint64_t)-1;
+    search_aborted = 0;
+
+    moves = search_buf[0];
+    scores = order_buf[0];
+    n = tt_gen_pseudo(b, moves);
+    score_moves(b, moves, scores, n,
+                (tt_table && tt_table[b->key & tt_mask].key == b->key)
+                ? tt_table[b->key & tt_mask].best : 0);
+
+    for (i = 0; i < n; i++) {
+        int king;
+        int32_t score;
+        pick_move(moves, scores, n, i);
+        tt_make(b, moves[i], &u);
+        king = b->kings[me];
+        if (king >= 0 && tt_is_attacked(b, king, me)) {
+            tt_unmake(b, moves[i], &u);
+            continue;
+        }
+        legal++;
+        score = -alphabeta(b, depth - 1, -INF_SCORE, -alpha, 1);
+        tt_unmake(b, moves[i], &u);
+        if (search_aborted) break;
+        if (score > best) {
+            best = score;
+            best_move = moves[i];
+            if (score > alpha) alpha = score;
+        }
+    }
+
+    out->nodes = search_nodes;
+    out->score = legal ? best : (tt_in_check(b, me) ? -MATE_SCORE : 0);
+    out->best = best_move;
+    out->depth = depth;
+    out->aborted = search_aborted;
 }

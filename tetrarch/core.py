@@ -16,10 +16,12 @@ import ctypes
 import os
 
 from . import board as B
+from . import eval_hand
 
 NSQ = B.NSQ
 NPIECE = B.NPIECE
 MAX_MOVES = 1024
+DEFAULT_TT_MB = 64
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 LIB_PATH = os.path.join(os.path.dirname(_HERE), "build", "libtetrarch.so")
@@ -50,6 +52,19 @@ class TtParams(ctypes.Structure):
         ("n_promo_choices", ctypes.c_int32 * 2),
         ("king_home", ctypes.c_int32 * 2 * 4),
         ("castle", ctypes.c_int32 * 10 * 2 * 2 * 4),
+        ("piece_value", ctypes.c_int32 * B.NTYPE),
+        ("king_danger", ctypes.c_int32),
+    ]
+
+
+class TtResult(ctypes.Structure):
+    _fields_ = [
+        ("nodes", ctypes.c_uint64),
+        ("score", ctypes.c_int32),
+        ("best", ctypes.c_uint32),
+        ("depth", ctypes.c_int32),
+        ("aborted", ctypes.c_int32),
+        ("pad", ctypes.c_int32),
     ]
 
 
@@ -141,6 +156,11 @@ def build_params():
                     g[4 + i] = sq
                 for i, sq in enumerate(safe):
                     g[7 + i] = sq
+
+    # throwaway: deleted at Phase 4 along with eval_hand.py
+    for t in range(B.NTYPE):
+        p.piece_value[t] = eval_hand.PIECE_VALUE[t]
+    p.king_danger = eval_hand.KING_DANGER
     return p
 
 
@@ -174,6 +194,14 @@ def load(path=None):
                                    ctypes.c_int]
     lib.tt_key_check.restype = ctypes.c_uint64
     lib.tt_key_check.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
+    lib.tt_eval.restype = ctypes.c_int32
+    lib.tt_eval.argtypes = [ctypes.POINTER(TtBoard)]
+    lib.tt_alloc.restype = ctypes.c_int
+    lib.tt_alloc.argtypes = [ctypes.c_int]
+    lib.tt_size.restype = ctypes.c_uint64
+    lib.tt_result_size.restype = ctypes.c_int
+    lib.tt_search.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
+                              ctypes.c_uint64, ctypes.POINTER(TtResult)]
     lib.tt_divide.restype = ctypes.c_int
     lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.POINTER(ctypes.c_uint32),
@@ -186,13 +214,50 @@ def load(path=None):
     if lib.tt_board_size() != ctypes.sizeof(TtBoard):
         raise CoreUnavailable("TtBoard layout mismatch: C %d, Python %d"
                               % (lib.tt_board_size(), ctypes.sizeof(TtBoard)))
+    if lib.tt_result_size() != ctypes.sizeof(TtResult):
+        raise CoreUnavailable("TtResult layout mismatch: C %d, Python %d"
+                              % (lib.tt_result_size(), ctypes.sizeof(TtResult)))
 
     params = build_params()
     lib.tt_init(ctypes.byref(params))
     if not lib.tt_ready():
         raise CoreUnavailable("tt_init did not take")
+    if not lib.tt_alloc(DEFAULT_TT_MB):
+        raise CoreUnavailable("could not allocate the transposition table")
     _lib = lib
     return lib
+
+
+def set_hash(mb):
+    """Resize and clear the transposition table."""
+    lib = load()
+    if not lib.tt_alloc(int(mb)):
+        raise CoreUnavailable("could not allocate a %d MB transposition table" % mb)
+    return int(lib.tt_size())
+
+
+def clear_hash():
+    load().tt_clear()
+
+
+def evaluate(b):
+    """The C core's evaluation, for the bit-exactness assertion."""
+    lib = load()
+    cb = to_c(b)
+    return int(lib.tt_eval(ctypes.byref(cb)))
+
+
+def search(b, depth, node_limit=0):
+    """One fixed-depth search. Returns a TtResult.
+
+    Iterative deepening and time management stay in Python at the root; this
+    is the per-node loop only.
+    """
+    lib = load()
+    cb = to_c(b)
+    out = TtResult()
+    lib.tt_search(ctypes.byref(cb), depth, node_limit, ctypes.byref(out))
+    return out
 
 
 def available():

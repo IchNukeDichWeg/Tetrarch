@@ -7,8 +7,9 @@ A C shared library owns the per-node loop: board, movegen, ordering, TT, pruning
 quiescence, NNUE inference. A pure-Python reference engine is the source of truth and
 stays correct forever; `selftest.py` asserts the C core agrees with it.
 
-Status: **Phase 2** — C core ported and agreeing with the Python reference
-node-for-node; perft exact against Athena to depth 7. No search and no eval yet.
+Status: **Phase 3** — alpha-beta with a transposition table and quiescence in
+the C core, Teams mode, throwaway eval, UCI-ish protocol and a headless match
+runner. Beats a random mover 100/100.
 
 ```bash
 python3 selftest.py
@@ -46,39 +47,39 @@ chess.com's own default since 2022 and must stay correct for real-opponent play.
 
 ## Layout
 
-Proposed. Only the Phase 0 files exist today; the rest arrive with the phase that
-needs them, not before.
+Items marked `done` exist; the rest arrive with the phase that needs them, not
+before.
 
 ```
 setup.sh                  build the .so's; re-runnable
 Makefile                  distributable binary                      (Phase 3)
 selftest.py               the ladder — runs before every commit     done
 bench.py                  fixed-position node/nps benchmark         done
-match.py                  headless engine-vs-engine, seat rotation  (Phase 3)
+match.py                  headless engine-vs-engine, seat rotation  done
 sprt.py                   GSPRT, pentanomial, opt-in                (Phase 4)
 gen_data.py               self-play position generation             (Phase 4)
 train.py                  NNUE trainer                              (Phase 4)
 tune.py                   Texel-style tuner for non-net scalars     (Phase 7)
-uci.py                    the protocol                              (Phase 3)
+uci.py                    the protocol                              done
 
 tetrarch/                 the Python engine + reference
     board.py              14×14 padded mailbox, FEN4 I/O            done
     movegen.py            fast generator                            done
     movegen_slow.py       independent slow-obvious generator        done
-    search.py             root: iterative deepening, time mgmt      (Phase 3)
-    eval_hand.py          throwaway — deleted at Phase 4            (Phase 3)
+    search.py             root: iterative deepening, time mgmt      done
+    eval_hand.py          throwaway — deleted at Phase 4            done
     nnue.py               feature extraction, inference reference   (Phase 4)
     core.py               ctypes binding to the C library           done
 
 src/c/                    the accelerator
-    tetrarch.c            board, movegen, perft; TT/search/NNUE later  done
+    tetrarch.c            board, movegen, perft, eval, TT, search   done
 
 gui/                      Flask + one page + one canvas             (Phase 6)
 
 docs/
     RULES.md              normative rules, with sources             done
     PERFT.md              pinned perft numbers, named machine       done
-    PROTOCOL.md           UCI divergences                           (Phase 3)
+    PROTOCOL.md           UCI divergences                           done
 
 tests/data/               positions, opening seeds
 ```
