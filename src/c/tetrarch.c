@@ -84,6 +84,8 @@ typedef struct {
     int32_t castle[4][2][2][10];
     int32_t piece_value[NTYPE];   /* throwaway eval: deleted at Phase 4 */
     int32_t king_danger;
+    uint8_t rot_to_persp[4][NSQ]; /* board turned so `persp` sits where Red is */
+    int32_t feature_type[NTYPE];  /* PQUEEN folds onto QUEEN */
 } TtParams;
 
 typedef struct {
@@ -657,7 +659,152 @@ int tt_divide(TtBoard *b, int depth, uint32_t *moves, uint64_t *nodes)
  * one), so plain negamax applies with no special casing (§2).
  */
 
-int32_t tt_eval(const TtBoard *b)
+/* --- NNUE ---------------------------------------------------------------- *
+ *
+ * Geometry and quantisation mirror tetrarch/nnue.py, which is the definition.
+ * The net itself is pushed across by the binding rather than read from disk
+ * here: parsing the file in one place means C and Python can never disagree
+ * about what a net contains, the same argument as for every other table.
+ *
+ * This refreshes the whole accumulator on every call. Incremental update on
+ * make/unmake is the point of NNUE and is the next step, but it gets its own
+ * differential gate first -- an incremental accumulator that drifts is exactly
+ * the kind of bug perft and node pins cannot see.
+ */
+
+#define NN_FEATURES 3840
+#define NN_L1 256
+#define NN_EXTRA 7
+#define NN_L2 32
+#define NN_L3 32
+#define NN_SHIFT1 6
+#define NN_SHIFT2 6
+#define NN_SHIFT_OUT 6
+#define NN_CRELU 127
+#define NN_EXTRA_CLAMP 127
+
+typedef struct {
+    const int16_t *w1;
+    const int32_t *b1;
+    const int8_t *w2;
+    const int32_t *b2;
+    const int8_t *w3;
+    const int32_t *b3;
+    const int8_t *w4;
+    const int32_t *b4;
+} TtNetView;
+
+static int16_t *nn_w1;
+static int32_t nn_b1[NN_L1];
+static int8_t nn_w2[NN_L2 * (NN_L1 + NN_EXTRA)];
+static int32_t nn_b2[NN_L2];
+static int8_t nn_w3[NN_L3 * NN_L2];
+static int32_t nn_b3[NN_L3];
+static int8_t nn_w4[NN_L3];
+static int32_t nn_b4;
+static int nn_loaded = 0;
+
+int tt_net_view_size(void) { return (int)sizeof(TtNetView); }
+
+/* dims: features, l1, extra, l2, l3, shift1, shift2, shift_out */
+void tt_nnue_dims(int32_t *out)
+{
+    out[0] = NN_FEATURES; out[1] = NN_L1; out[2] = NN_EXTRA;
+    out[3] = NN_L2; out[4] = NN_L3;
+    out[5] = NN_SHIFT1; out[6] = NN_SHIFT2; out[7] = NN_SHIFT_OUT;
+}
+
+int tt_load_net(const TtNetView *v)
+{
+    if (!nn_w1) {
+        nn_w1 = (int16_t *)malloc((size_t)NN_FEATURES * NN_L1 * sizeof(int16_t));
+        if (!nn_w1) return 0;
+    }
+    memcpy(nn_w1, v->w1, (size_t)NN_FEATURES * NN_L1 * sizeof(int16_t));
+    memcpy(nn_b1, v->b1, sizeof(nn_b1));
+    memcpy(nn_w2, v->w2, sizeof(nn_w2));
+    memcpy(nn_b2, v->b2, sizeof(nn_b2));
+    memcpy(nn_w3, v->w3, sizeof(nn_w3));
+    memcpy(nn_b3, v->b3, sizeof(nn_b3));
+    memcpy(nn_w4, v->w4, sizeof(nn_w4));
+    nn_b4 = v->b4[0];
+    nn_loaded = 1;
+    return 1;
+}
+
+void tt_unload_net(void) { nn_loaded = 0; }
+
+int tt_net_loaded(void) { return nn_loaded; }
+
+static inline int32_t nn_crelu(int32_t x, int shift)
+{
+    x >>= shift;
+    if (x < 0) return 0;
+    return x > NN_CRELU ? NN_CRELU : x;
+}
+
+/* The seven values that bypass the accumulator, rotated to `persp`. */
+static void nn_extras(const TtBoard *b, int persp, int32_t *out)
+{
+    int k;
+    for (k = 0; k < 4; k++) out[k] = b->alive[(persp + k) & 3] ? 1 : 0;
+    for (k = 1; k < 4; k++) {
+        int32_t diff = (int32_t)b->points[persp]
+                     - (int32_t)b->points[(persp + k) & 3];
+        if (diff > NN_EXTRA_CLAMP) diff = NN_EXTRA_CLAMP;
+        if (diff < -NN_EXTRA_CLAMP) diff = -NN_EXTRA_CLAMP;
+        out[3 + k] = diff;
+    }
+}
+
+static int32_t nnue_eval(const TtBoard *b)
+{
+    int32_t acc[NN_L1];
+    int32_t x[NN_L1 + NN_EXTRA];
+    int32_t h1[NN_L2], h2[NN_L3];
+    int32_t out;
+    int sq, j, k, persp = b->turn;
+
+    memcpy(acc, nn_b1, sizeof(acc));
+    for (sq = 0; sq < NSQ; sq++) {
+        uint8_t p;
+        int color, rel, feature;
+        const int16_t *row;
+        if (!P.valid[sq]) continue;
+        p = b->sq[sq];
+        if (!p) continue;
+        color = P.pc_color[p];
+        /* A piece with no recorded origin has no colour to make relative, so
+         * it switches on no feature (nnue.py does the same). */
+        if (color == DEAD_UNKNOWN) continue;
+        rel = (color - persp) & 3;
+        feature = (rel * 6 + P.feature_type[P.pc_type[p]]) * 160
+                  + P.compact[P.rot_to_persp[persp][sq]];
+        row = nn_w1 + (size_t)feature * NN_L1;
+        for (j = 0; j < NN_L1; j++) acc[j] += row[j];
+    }
+
+    for (j = 0; j < NN_L1; j++) x[j] = nn_crelu(acc[j], NN_SHIFT1);
+    nn_extras(b, persp, x + NN_L1);
+
+    for (k = 0; k < NN_L2; k++) {
+        const int8_t *row = nn_w2 + (size_t)k * (NN_L1 + NN_EXTRA);
+        int32_t z = nn_b2[k];
+        for (j = 0; j < NN_L1 + NN_EXTRA; j++) z += x[j] * row[j];
+        h1[k] = nn_crelu(z, NN_SHIFT2);
+    }
+    for (k = 0; k < NN_L3; k++) {
+        const int8_t *row = nn_w3 + (size_t)k * NN_L2;
+        int32_t z = nn_b3[k];
+        for (j = 0; j < NN_L2; j++) z += h1[j] * row[j];
+        h2[k] = nn_crelu(z, NN_SHIFT2);
+    }
+    out = nn_b4;
+    for (j = 0; j < NN_L3; j++) out += h2[j] * nn_w4[j];
+    return out >> NN_SHIFT_OUT;
+}
+
+static int32_t hand_eval(const TtBoard *b)
 {
     int me = b->turn & 1;
     int32_t total = 0;
@@ -689,6 +836,13 @@ int32_t tt_eval(const TtBoard *b)
         total += ((c & 1) == me ? -1 : 1) * danger * P.king_danger;
     }
     return total;
+}
+
+/* One binary, two evals: a net is loaded or it is not. That is what makes the
+ * NNUE-vs-hand A/B a single setoption apart rather than two builds. */
+int32_t tt_eval(const TtBoard *b)
+{
+    return nn_loaded ? nnue_eval(b) : hand_eval(b);
 }
 
 /* --- transposition table ------------------------------------------------ */

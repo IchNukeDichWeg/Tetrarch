@@ -54,6 +54,23 @@ class TtParams(ctypes.Structure):
         ("castle", ctypes.c_int32 * 10 * 2 * 2 * 4),
         ("piece_value", ctypes.c_int32 * B.NTYPE),
         ("king_danger", ctypes.c_int32),
+        ("rot_to_persp", ctypes.c_uint8 * NSQ * 4),
+        ("feature_type", ctypes.c_int32 * B.NTYPE),
+    ]
+
+
+class TtNetView(ctypes.Structure):
+    """Pointers to a net's arrays. The C side memcpys immediately, so the
+    numpy arrays only have to outlive the call."""
+    _fields_ = [
+        ("w1", ctypes.POINTER(ctypes.c_int16)),
+        ("b1", ctypes.POINTER(ctypes.c_int32)),
+        ("w2", ctypes.POINTER(ctypes.c_int8)),
+        ("b2", ctypes.POINTER(ctypes.c_int32)),
+        ("w3", ctypes.POINTER(ctypes.c_int8)),
+        ("b3", ctypes.POINTER(ctypes.c_int32)),
+        ("w4", ctypes.POINTER(ctypes.c_int8)),
+        ("b4", ctypes.POINTER(ctypes.c_int32)),
     ]
 
 
@@ -161,6 +178,14 @@ def build_params():
     for t in range(B.NTYPE):
         p.piece_value[t] = eval_hand.PIECE_VALUE[t]
     p.king_danger = eval_hand.KING_DANGER
+
+    # NNUE geometry, from the same definition the trainer uses.
+    from . import nnue
+    for persp in range(4):
+        for sq in range(NSQ):
+            p.rot_to_persp[persp][sq] = nnue.ROT_TO_PERSP[persp][sq]
+    for t in range(B.NTYPE):
+        p.feature_type[t] = nnue.FEATURE_TYPE[t]
     return p
 
 
@@ -202,6 +227,10 @@ def load(path=None):
     lib.tt_result_size.restype = ctypes.c_int
     lib.tt_search.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.c_uint64, ctypes.POINTER(TtResult)]
+    lib.tt_nnue_dims.argtypes = [ctypes.POINTER(ctypes.c_int32)]
+    lib.tt_load_net.restype = ctypes.c_int
+    lib.tt_load_net.argtypes = [ctypes.POINTER(TtNetView)]
+    lib.tt_net_loaded.restype = ctypes.c_int
     lib.tt_divide.restype = ctypes.c_int
     lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.POINTER(ctypes.c_uint32),
@@ -217,6 +246,18 @@ def load(path=None):
     if lib.tt_result_size() != ctypes.sizeof(TtResult):
         raise CoreUnavailable("TtResult layout mismatch: C %d, Python %d"
                               % (lib.tt_result_size(), ctypes.sizeof(TtResult)))
+
+    # NNUE geometry has to be a compile-time constant in C, so it is declared
+    # in both places; a mismatch is a loud startup failure rather than a net
+    # that reads its own weights wrong.
+    from . import nnue
+    dims = (ctypes.c_int32 * 8)()
+    lib.tt_nnue_dims(dims)
+    want = (nnue.NFEATURES, nnue.L1, nnue.NEXTRA, nnue.L2, nnue.L3,
+            nnue.SHIFT1, nnue.SHIFT2, nnue.SHIFT_OUT)
+    if tuple(dims) != want:
+        raise CoreUnavailable("NNUE geometry mismatch: C %s, Python %s"
+                              % (tuple(dims), want))
 
     params = build_params()
     lib.tt_init(ctypes.byref(params))
@@ -238,6 +279,44 @@ def set_hash(mb):
 
 def clear_hash():
     load().tt_clear()
+
+
+def load_net(net):
+    """Push a `nnue.Net` into the C core. From then on tt_eval is the net."""
+    import numpy as np
+    lib = load()
+    arrays = [np.ascontiguousarray(net.w1, dtype=np.int16),
+              np.ascontiguousarray(net.b1, dtype=np.int32),
+              np.ascontiguousarray(net.w2, dtype=np.int8),
+              np.ascontiguousarray(net.b2, dtype=np.int32),
+              np.ascontiguousarray(net.w3, dtype=np.int8),
+              np.ascontiguousarray(net.b3, dtype=np.int32),
+              np.ascontiguousarray(net.w4, dtype=np.int8),
+              np.ascontiguousarray(net.b4, dtype=np.int32)]
+    types = [ctypes.c_int16, ctypes.c_int32, ctypes.c_int8, ctypes.c_int32,
+             ctypes.c_int8, ctypes.c_int32, ctypes.c_int8, ctypes.c_int32]
+    view = TtNetView(*[a.ctypes.data_as(ctypes.POINTER(t))
+                       for a, t in zip(arrays, types)])
+    if not lib.tt_load_net(ctypes.byref(view)):
+        raise CoreUnavailable("could not allocate the net")
+    # Every stored score was produced by the previous evaluation function, so
+    # the table is now poison: probes would serve NNUE scores to a hand-eval
+    # search and the other way round. Costs nothing here and silently corrupts
+    # any A/B that switches eval at runtime if forgotten.
+    lib.tt_clear()
+    return True
+
+
+def unload_net():
+    """Back to the throwaway hand eval. Clears the table for the same reason
+    load_net does."""
+    lib = load()
+    lib.tt_unload_net()
+    lib.tt_clear()
+
+
+def net_loaded():
+    return bool(load().tt_net_loaded())
 
 
 def evaluate(b):

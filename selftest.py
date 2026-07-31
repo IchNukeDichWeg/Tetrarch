@@ -941,6 +941,44 @@ def test_nnue():
     check("extras carry points differentials",
           nnue.extra_inputs(b, 0)[4:] == [10 - 4, 10 - 0, 10 - 1])
 
+    if HAVE_C:
+        # The whole point of the C inference: it must agree with the reference
+        # forward pass exactly, not approximately. Integer arithmetic
+        # throughout, so "close" would mean a real bug.
+        probe = nnue.Net.random(seed=4)
+        core.load_net(probe)
+        check("loading a net switches the C eval", core.net_loaded())
+        rng = random.Random(41)
+        bad = 0
+        for _ in range(250):
+            b = random_position(rng)
+            if probe.evaluate(b) != core.evaluate(b):
+                bad += 1
+        check("C and Python NNUE eval agree bit for bit", bad == 0,
+              "%d of 250 differ" % bad)
+
+        # Swapping the eval must invalidate the table. Every stored score came
+        # from the other evaluation function, and a stale probe would serve it
+        # straight back -- which is silent, and would corrupt an A/B.
+        core.set_hash(1)
+        core.clear_hash()
+        start = start_board("classic")
+        core.search(start, 5)
+        core.unload_net()
+        hand_nodes = core.search(start, 5).nodes
+        core.load_net(probe)
+        core.unload_net()
+        again = core.search(start, 5).nodes
+        check("loading a net clears the transposition table",
+              hand_nodes == again and hand_nodes > 1000,
+              "%d then %d" % (hand_nodes, again))
+        core.set_hash(core.DEFAULT_TT_MB)
+
+        core.unload_net()
+        check("unloading restores the hand eval",
+              not core.net_loaded()
+              and core.evaluate(start) == eval_hand.evaluate(start))
+
     net = nnue.Net.random(seed=1)
     path = os.path.join(SCRATCH, "selftest-net.nnue")
     net.save(path)

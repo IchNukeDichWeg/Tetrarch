@@ -121,12 +121,20 @@ def active_features(board, persp):
     return out
 
 
+#: Points differentials are clamped so the hidden-layer accumulation stays in
+#: int32 no matter how lopsided an FFA game gets, and so the net sees a bounded
+#: input like every other one. In Teams every seat has 0 points, so this only
+#: bites in FFA.
+EXTRA_CLAMP = 127
+
+
 def extra_inputs(board, persp):
     """The seven values that bypass the accumulator, rotated to `persp`."""
     out = [1 if board.alive[(persp + k) & 3] else 0 for k in range(4)]
     mine = board.points[persp]
     for k in range(1, 4):
-        out.append(mine - board.points[(persp + k) & 3])
+        diff = mine - board.points[(persp + k) & 3]
+        out.append(max(-EXTRA_CLAMP, min(EXTRA_CLAMP, diff)))
     return out
 
 

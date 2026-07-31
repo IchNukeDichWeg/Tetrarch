@@ -35,6 +35,7 @@ class Engine:
         self.setup = DEFAULT_SETUP
         self.mode = MODE_TEAMS
         self.hash_mb = core.DEFAULT_TT_MB
+        self.net = None
         self.board = start_board(self.setup, self.mode)
 
     # -- protocol ---------------------------------------------------------
@@ -47,6 +48,9 @@ class Engine:
         print("option name Mode type combo default teams var teams var ffa")
         print("option name Hash type spin default %d min 1 max 4096"
               % core.DEFAULT_TT_MB)
+        # No net loaded means the throwaway hand eval. One binary, two evals,
+        # so the NNUE-vs-hand A/B is a single setoption apart.
+        print("option name Net type string default <none>")
         print("uciok")
 
     def cmd_isready(self, _args):
@@ -73,6 +77,19 @@ class Engine:
         elif name == "hash":
             self.hash_mb = max(1, int(value))
             core.set_hash(self.hash_mb)
+        elif name == "net":
+            if value.strip().lower() in ("", "<none>", "none"):
+                core.unload_net()
+                self.net = None
+                print("info string net unloaded; using the throwaway hand eval")
+                return
+            try:
+                from tetrarch import nnue
+                core.load_net(nnue.Net.load(value.strip()))
+                self.net = value.strip()
+                print("info string net loaded: %s" % self.net)
+            except Exception as exc:                        # noqa: BLE001
+                print("info string could not load net %s: %s" % (value, exc))
 
     def cmd_ucinewgame(self, _args):
         core.clear_hash()
