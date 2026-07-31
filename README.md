@@ -7,9 +7,13 @@ A C shared library owns the per-node loop: board, movegen, ordering, TT, pruning
 quiescence, NNUE inference. A pure-Python reference engine is the source of truth and
 stays correct forever; `selftest.py` asserts the C core agrees with it.
 
-Status: **Phase 4** — NNUE inference in the C core, bit-exact with the Python
-reference; net v0 trained on 3.9M self-play positions and shipped in `nets/`.
-The A/B against the hand-eval build is the outstanding gate.
+Status: **v3**. Three confirmed Elo gains — killers +50.42, late move
+reductions +35.07, lazy evaluation +42.88, each over 10,000 games against a
+certified null. Phase 4's gate is still open: net v0 lost its A/B at −40.13, so
+the engine still plays on the throwaway eval.
+
+One release per confirmed gain — see [`docs/RELEASING.md`](docs/RELEASING.md)
+and the full campaign record in [`docs/AB.md`](docs/AB.md).
 
 ```bash
 python3 selftest.py
@@ -94,6 +98,8 @@ tests/js_replay_check.js  viewer replay vs pgn4.py, run by selftest  done
 
 docs/
     RULES.md              normative rules, with sources             done
+    AB.md                 every measured result and verdict         done
+    RELEASING.md          one release per confirmed Elo gain        done
     PERFT.md              pinned perft numbers, named machine       done
     PROTOCOL.md           UCI divergences                           done
 

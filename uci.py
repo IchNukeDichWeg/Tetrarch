@@ -26,7 +26,9 @@ from tetrarch import movegen as gen
 from tetrarch.search import Limits, search, MATE_SCORE
 
 NAME = "Tetrarch"
-VERSION = "0.3.0"
+#: Integer release number. Incremented once per CONFIRMED Elo gain, never
+#: for a dormant toggle or a tooling change. See docs/RELEASING.md.
+VERSION = "3"
 AUTHOR = "IchNukeDichWeg"
 
 
