@@ -189,3 +189,34 @@ Half a ply of mean depth, and the tail reaches 6–7 where it previously never
 passed 5. **LMR is not exact** — it can miss a line the full search would find —
 so the reduction is not automatically Elo, and this one genuinely needs the
 games.
+
+**Screened +24.53 ± 14.19** over 2,000 games (Dist: 17, 2, 93, 5, 212, 8, 126,
+2, 35). Positive at 1.7σ — not conclusive, not remotely "clearly negative", so
+it earns the 10,000-game confirm.
+
+### Lazy evaluation — built, needs a FIXED-TIME screen
+
+`setoption name LazyEval`, default **off**. Computes material first and skips
+the king-danger term when material alone settles the bound by more than
+`4 × 8 × king_danger = 384`, which is the most the danger term can move it.
+
+**Not exact.** Every cutoff decision is identical — the margin guarantees that
+— but a bail returns the material term rather than the true eval, and fail-soft
+propagates that value. Measured node-identical anyway over 80 positions (20
+start positions across five setups at depths 4–7, plus 60 random midgame
+positions at depth 5), which suggests the difference is always absorbed by the
+cutoff cascade that follows. Empirical, not a theorem; `selftest` watches it.
+
+| | search nps at depth 7, classic |
+|---|---:|
+| off | 1,418,577 |
+| on | **1,620,220** (+14.2%) |
+
+**This one must be screened on fixed time, not fixed nodes.** It changes speed
+and not the tree, so a fixed-nodes campaign would report exactly zero — the
+instrument would under-credit the entire gain.
+
+And a fixed-time run needs **far fewer workers than cores**. Two engine
+subprocesses per worker means 111 workers on a 111-core box gives each engine
+about half a core, and the timing becomes noise. Around 40 workers keeps every
+engine on its own core.

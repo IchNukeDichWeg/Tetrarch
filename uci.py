@@ -61,6 +61,7 @@ class Engine:
         print("option name LMR type check default false")
         print("option name LMRMinDepth type spin default 3 min 1 max 16")
         print("option name LMRMinMove type spin default 3 min 1 max 32")
+        print("option name LazyEval type check default false")
         print("uciok")
 
     def cmd_isready(self, _args):
@@ -95,6 +96,8 @@ class Engine:
             core.set_pvs(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "lmr":
             core.set_lmr(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "lazyeval":
+            core.set_lazy_eval(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name in ("lmrmindepth", "lmrminmove"):
             self.lmr_min_depth = (int(value) if name == "lmrmindepth"
                                   else self.lmr_min_depth)

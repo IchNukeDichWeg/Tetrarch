@@ -921,6 +921,7 @@ def test_search(workers=1):
     check("history default off (dormant)", not core.history_enabled())
     check("pvs default off (dormant)", not core.pvs_enabled())
     check("lmr default off (dormant)", not core.lmr_enabled())
+    check("lazy eval default off (dormant)", not core.lazy_eval_enabled())
 
     core.set_hash(16)
     pins = []
@@ -1008,6 +1009,22 @@ def test_search(workers=1):
     core.clear_hash()
     check("lmr off leaves the pinned tree alone",
           core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
+
+    # Lazy eval is a speed change, so the thing to pin is that it does NOT
+    # move the tree. It is not exact by construction -- a bail returns the
+    # material term rather than the true eval -- so this is an empirical
+    # property worth watching rather than a guarantee.
+    moved = []
+    for setup in SETUPS:
+        core.set_lazy_eval(False)
+        core.clear_hash()
+        plain = core.search(start_board(setup), 5).nodes
+        core.set_lazy_eval(True)
+        core.clear_hash()
+        lazy = core.search(start_board(setup), 5).nodes
+        moved.append((setup, plain == lazy))
+    core.set_lazy_eval(False)
+    check_all("lazy eval leaves the tree unchanged", moved)
 
     core.set_hash(core.DEFAULT_TT_MB)
 

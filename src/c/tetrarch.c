@@ -805,11 +805,12 @@ static int32_t nnue_eval(const TtBoard *b)
     return out >> NN_SHIFT_OUT;
 }
 
-static int32_t hand_eval(const TtBoard *b)
+/* The cheap half: material only. */
+static int32_t hand_material(const TtBoard *b)
 {
     int me = b->turn & 1;
     int32_t total = 0;
-    int sq, c, i;
+    int sq;
 
     for (sq = 0; sq < NSQ; sq++) {
         uint8_t p;
@@ -824,6 +825,17 @@ static int32_t hand_eval(const TtBoard *b)
         if (pc == DEAD_UNKNOWN || !b->alive[pc]) continue;
         total += ((pc & 1) == me ? 1 : -1) * P.piece_value[P.pc_type[p]];
     }
+    return total;
+}
+
+/* The expensive half: 32 tt_is_attacked calls, which measured as 54% of all
+ * search time. Bounded by 4 seats x 8 squares x king_danger, which is what
+ * makes a lazy bail sound. */
+static int32_t hand_danger(const TtBoard *b)
+{
+    int me = b->turn & 1;
+    int32_t total = 0;
+    int c, i;
 
     for (c = 0; c < 4; c++) {
         int k, danger = 0;
@@ -839,11 +851,49 @@ static int32_t hand_eval(const TtBoard *b)
     return total;
 }
 
+static int32_t hand_eval(const TtBoard *b)
+{
+    return hand_material(b) + hand_danger(b);
+}
+
+/* --- lazy evaluation (toggle: off by default) -----------------------------
+ *
+ * Compute material first and skip the king-danger term when the cheap half
+ * already settles the bound by more than the expensive half could possibly
+ * move it.
+ *
+ * NOT exact. Every cutoff DECISION is identical -- the margin guarantees that
+ * -- but the value returned on a bail is the material term rather than the
+ * true eval, and fail-soft propagates it. So the tree changes and this needs
+ * an A/B like anything else.
+ */
+static int use_lazy_eval = 0;
+
+void tt_set_lazy_eval(int on) { use_lazy_eval = on ? 1 : 0; }
+int tt_get_lazy_eval(void) { return use_lazy_eval; }
+
+static int32_t lazy_margin(void) { return 4 * 8 * P.king_danger; }
+
 /* One binary, two evals: a net is loaded or it is not. That is what makes the
  * NNUE-vs-hand A/B a single setoption apart rather than two builds. */
 int32_t tt_eval(const TtBoard *b)
 {
     return nn_loaded ? nnue_eval(b) : hand_eval(b);
+}
+
+/* Same value as tt_eval unless the lazy toggle is on and the bound is already
+ * settled. NNUE has no cheap/expensive split, so it is unaffected. */
+static inline int32_t tt_eval_bounded(const TtBoard *b, int32_t alpha,
+                                      int32_t beta)
+{
+    int32_t material, margin;
+    if (nn_loaded) return nnue_eval(b);
+    if (!use_lazy_eval) return hand_eval(b);
+    material = hand_material(b);
+    margin = lazy_margin();
+    if (material - margin >= beta) return material;
+    if (material + margin <= alpha) return material;
+    return material + hand_danger(b);
 }
 
 /* --- transposition table ------------------------------------------------ */
@@ -1085,7 +1135,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
     if (ply >= MAX_DEPTH - 2) return tt_eval(b);
 
-    stand = tt_eval(b);
+    stand = tt_eval_bounded(b, alpha, beta);
     if (stand >= beta) return stand;
     if (stand > alpha) alpha = stand;
 

@@ -240,6 +240,8 @@ def load(path=None):
     lib.tt_set_lmr.argtypes = [ctypes.c_int]
     lib.tt_get_lmr.restype = ctypes.c_int
     lib.tt_set_lmr_params.argtypes = [ctypes.c_int, ctypes.c_int]
+    lib.tt_set_lazy_eval.argtypes = [ctypes.c_int]
+    lib.tt_get_lazy_eval.restype = ctypes.c_int
     lib.tt_divide.restype = ctypes.c_int
     lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.POINTER(ctypes.c_uint32),
@@ -372,6 +374,20 @@ def lmr_enabled():
 
 def set_lmr_params(min_depth, min_move):
     load().tt_set_lmr_params(int(min_depth), int(min_move))
+
+
+def set_lazy_eval(on):
+    """Skip the king-danger term when material already settles the bound.
+
+    Every cutoff decision is identical, but the value returned on a bail is
+    the material term rather than the true eval, so this is not exact. It
+    measured node-identical over 80 positions all the same (docs/AB.md).
+    """
+    load().tt_set_lazy_eval(1 if on else 0)
+
+
+def lazy_eval_enabled():
+    return bool(load().tt_get_lazy_eval())
 
 
 def evaluate(b):
