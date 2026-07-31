@@ -31,8 +31,14 @@ figure — always report the machine with an NPS claim, and use
 ./setup.sh
 ```
 
-Re-runnable. Verifies the toolchain, creates `.venv` with numpy and flask, and builds
-every `src/c/*.c` into `build/lib<name>.so` with `-O3 -march=native -shared -fPIC`.
+Re-runnable, and it is the whole of a fresh-box setup: it installs a compiler and
+numpy/flask if they are missing, builds every `src/c/*.c` into
+`build/lib<name>.so` with `-O3 -march=native -shared -fPIC`, then loads the
+result and runs a perft — a setup that reports success and leaves a broken `.so`
+costs a whole campaign to discover. `--no-install` builds without touching the
+system.
+
+No virtualenv: everything is a plain `python3 something.py`.
 
 ## Rules
 
