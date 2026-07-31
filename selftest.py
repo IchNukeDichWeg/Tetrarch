@@ -20,8 +20,10 @@ Two things this file is deliberately built around:
 """
 
 import argparse
+import os
 import random
 import sys
+import tempfile
 import time
 
 from tetrarch.board import (
@@ -42,6 +44,8 @@ from tetrarch import eval_hand
 from tetrarch import search
 
 HAVE_C = core.available()
+
+SCRATCH = tempfile.gettempdir()
 
 FAILURES = []
 CHECKS = [0]
@@ -880,6 +884,80 @@ def _sparse_teams(rng):
     return b
 
 
+def test_nnue():
+    section("NNUE features and net format (Phase 4)")
+    from tetrarch import nnue
+    import numpy as np
+
+    check("3840 features", nnue.NFEATURES == 3840, str(nnue.NFEATURES))
+    indices = set()
+    for persp in range(4):
+        for color in range(4):
+            for ptype in range(7):
+                for sq in SQUARES:
+                    f = nnue.feature_index(ptype, color, sq, persp)
+                    if not 0 <= f < nnue.NFEATURES:
+                        check("feature index in range", False, str(f))
+                        return
+                    indices.add(f)
+    check("every feature index is reachable", len(indices) == nnue.NFEATURES,
+          str(len(indices)))
+
+    # A promoted queen indexes as a queen: same movement, and its 1-point value
+    # is a points matter that reaches the net through the extra inputs (§8.1).
+    check("a promoted queen indexes as a queen",
+          nnue.feature_index(PQUEEN, RED, sq_from_name("h7"), 0)
+          == nnue.feature_index(QUEEN, RED, sq_from_name("h7"), 0))
+
+    # The whole point of one weight set for four seats: rotating the board by k
+    # and looking from perspective k must give the identical feature set. This
+    # is also where the 4x training augmentation comes from.
+    for setup in SETUPS:
+        b = start_board(setup)
+        sets = [sorted(nnue.active_features(rotate(b, k), k)) for k in range(4)]
+        check("%s features are rotation invariant" % setup,
+              all(s == sets[0] for s in sets))
+        check("%s has 64 active features at the start" % setup,
+              len(sets[0]) == 64, str(len(sets[0])))
+
+    rng = random.Random(31)
+    bad = 0
+    for _ in range(80):
+        b = random_position(rng)
+        sets = [sorted(nnue.active_features(rotate(b, k), k)) for k in range(4)]
+        if any(s != sets[0] for s in sets):
+            bad += 1
+    check("rotation invariance holds on random positions", bad == 0,
+          "%d positions" % bad)
+
+    # Extra inputs: alive mask and points differentials, rotated to perspective.
+    b = position({"h1": (RED, KING), "a8": (BLUE, KING), "g14": (YELLOW, KING),
+                  "n7": (GREEN, KING)}, alive=(1, 1, 0, 1))
+    b.points = [10, 4, 0, 1]
+    check("extras carry the alive mask rotated",
+          nnue.extra_inputs(b, 0)[:4] == [1, 1, 0, 1])
+    check("extras rotate with the perspective",
+          nnue.extra_inputs(b, 1)[:4] == [1, 0, 1, 1])
+    check("extras carry points differentials",
+          nnue.extra_inputs(b, 0)[4:] == [10 - 4, 10 - 0, 10 - 1])
+
+    net = nnue.Net.random(seed=1)
+    path = os.path.join(SCRATCH, "selftest-net.nnue")
+    net.save(path)
+    back = nnue.Net.load(path)
+    check("net round trips through the file format",
+          all(np.array_equal(getattr(net, a), getattr(back, a))
+              for a in ("w1", "b1", "w2", "b2", "w3", "b3", "w4", "b4")))
+    check("net evaluation is an int",
+          isinstance(net.evaluate(start_board("classic")), int))
+    # Same position, four perspectives, one weight set: identical score.
+    start = start_board("modern")
+    scores = [net.evaluate(rotate(start, k), k) for k in range(4)]
+    check("one weight set gives one score from all four seats",
+          len(set(scores)) == 1, str(scores))
+    os.remove(path)
+
+
 def perft_deep():
     section("deep perft -- all setups, both modes, to depth 5")
     print("  %-9s %-6s %12s %12s %8s" % ("setup", "mode", "depth 4", "depth 5",
@@ -1167,6 +1245,7 @@ def main():
     test_rotation()
     test_eval()
     test_search()
+    test_nnue()
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, args.workers, args.quiet)
     if args.perft_deep:
