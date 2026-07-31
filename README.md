@@ -39,13 +39,18 @@ against a null self-test of −2.64 ± 6.24 on the same harness.
 
 | release | feature | Elo | instrument |
 |---|---|---|---|
+| [v5](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v5) | quiescence check evasions | **+106.78 ± 6.88** | fixed nodes |
 | [v4](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v4) | late move pruning | +36.09 ± 6.69 | fixed nodes |
 | [v3](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v3) | lazy evaluation | +42.88 ± 6.50 | fixed time |
 | [v2](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v2) | late move reductions | +35.07 ± 6.51 | fixed nodes |
 | [v1](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v1) | killer moves | +50.42 ± 6.41 | fixed nodes |
 
-Since v0 the search tree at classic depth 5 has gone from 228,628 nodes to 7,449,
+Since v0 the search tree at classic depth 5 has gone from 228,628 nodes to 7,669,
 and mean depth at a 20,000-node budget from 3.73 to 5.25.
+
+The largest gain is the one that was predicted to be negative. Chess intuition
+about a feature's value does not survive the move to four seats — see
+[`docs/AB.md`](docs/AB.md).
 
 Rejections are recorded too — see [`docs/AB.md`](docs/AB.md). Two features were
 closed without spending a single game because a cheap measurement showed their
@@ -123,9 +128,9 @@ docs/               rules, results, perft, protocol, releasing
 
 **Phase 4 is open.** The engine still plays on a hand-written evaluation that is
 marked for deletion: net v0 was trained on 3.9 M self-play positions and lost its
-A/B at −40.13 ± 7.01. Four confirmed search gains since then have made the engine a
-substantially stronger teacher, so the next step is regenerating data with it and
-retraining.
+A/B at −40.13 ± 7.01. Five confirmed search gains since then — +271 Elo of
+self-relative improvement — have made the engine a substantially stronger teacher,
+so the next step is regenerating data with it and retraining.
 
 Not yet built: FFA paranoid search, repetition detection, an opening book, and
 multithreading.

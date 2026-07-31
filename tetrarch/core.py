@@ -415,8 +415,7 @@ def set_lmp_params(max_depth, base):
 
 def set_qs_evasions(on):
     """Search every legal move in quiescence when in check, instead of
-    standing pat. Off by default pending its A/B: it is a correctness fix that
-    costs nodes, and nodes are depth (docs/AB.md)."""
+    standing pat. CONFIRMED +106.78 +/- 6.88, default on (docs/AB.md)."""
     load().tt_set_qs_evasions(1 if on else 0)
 
 

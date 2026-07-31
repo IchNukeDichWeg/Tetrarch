@@ -868,14 +868,15 @@ def test_eval():
 #: not drift across microarchitectures -- but they DO move whenever ordering,
 #: pruning or the table changes, which is the point of pinning them.
 #: Re-pinned whenever a feature is confirmed into the default (docs/AB.md).
-#: Killers, then LMR. A confirmed feature changes the tree, so the pins move
+#: Killers, LMR, LMP, then quiescence evasions. A confirmed feature changes
+#: the tree, so the pins move
 #: with it -- the point is to re-measure, never to relax them.
 SEARCH_PINS = {
-    "classic": [40, 84, 311, 3516, 7449],
-    "modern": [40, 86, 322, 2228, 4729],
-    "by": [40, 86, 322, 2137, 7861],
-    "byg": [40, 86, 322, 1782, 6904],
-    "rg": [40, 80, 342, 3259, 7547],
+    "classic": [40, 84, 311, 3614, 7669],
+    "modern": [40, 86, 322, 3016, 5057],
+    "by": [40, 86, 322, 3043, 8747],
+    "byg": [40, 86, 322, 2829, 8232],
+    "rg": [40, 80, 342, 4597, 14169],
 }
 
 
@@ -929,8 +930,8 @@ def test_search(workers=1):
     check("lmr default on (confirmed)", core.lmr_enabled())
     check("lazy eval default on (confirmed)", core.lazy_eval_enabled())
     check("lmp default on (confirmed)", core.lmp_enabled())
-    check("qsearch evasions default off (dormant)",
-          not core.qs_evasions_enabled())
+    check("qsearch evasions default on (confirmed)",
+          core.qs_evasions_enabled())
 
     core.set_hash(16)
     pins = []
@@ -1081,11 +1082,11 @@ def test_search(workers=1):
         with_ev = core.search(b, 2).score
         if abs(with_ev) >= 29900 and abs(without) < 29900:
             only_with += 1
-    core.set_qs_evasions(False)          # restore the default
+    core.set_qs_evasions(True)           # restore the default
     check("quiescence sees mates only with evasions on", only_with > 0,
           "%d of %d in-check positions" % (only_with, examined))
     core.clear_hash()
-    check("qsearch evasions off leaves the pinned tree alone",
+    check("qsearch evasions on matches the pinned tree",
           core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
 
     core.set_hash(core.DEFAULT_TT_MB)

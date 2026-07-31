@@ -125,24 +125,38 @@ def search(board, limits, info=None):
 
 # --- reference, used only by selftest ---------------------------------------
 
-def _quiesce(board, alpha, beta):
-    """Unpruned quiescence: stand pat, then every capture."""
-    stand = evaluate(board)
-    if stand >= beta:
-        return stand
-    if stand > alpha:
-        alpha = stand
+def _quiesce(board, alpha, beta, ply=0):
+    """Unpruned quiescence: stand pat, then every capture.
+
+    In check it searches every legal move instead of standing pat, and reports
+    mate when there are none -- mirroring QSEvasions, which is CONFIRMED into
+    the C default (+106.78 +/- 6.88, docs/AB.md). The oracle has to model the
+    default, or the theorem it proves is about a search nobody runs.
+    """
+    in_chk = gen.in_check(board, board.turn)
+    if in_chk:
+        stand = -INF                    # a check cannot be declined
+    else:
+        stand = evaluate(board)
+        if stand >= beta:
+            return stand
+        if stand > alpha:
+            alpha = stand
+    legal = 0
     for m in gen.gen_legal(board):
         to = (m >> 8) & 255
-        if not board.sq[to] and ((m >> 16) & 15) != 2:      # not a capture
-            continue
+        if not in_chk and not board.sq[to] and ((m >> 16) & 15) != 2:
+            continue                                        # not a capture
+        legal += 1
         undo = board.make(m)
-        score = -_quiesce(board, -beta, -alpha)
+        score = -_quiesce(board, -beta, -alpha, ply + 1)
         board.unmake(m, undo)
         if score >= beta:
             return score
         if score > alpha:
             alpha = score
+    if in_chk and legal == 0:
+        return -(MATE_SCORE - ply)
     return alpha
 
 
@@ -153,7 +167,7 @@ def reference_score(board, depth, ply=0):
     correctness oracle, not an engine.
     """
     if depth <= 0:
-        return _quiesce(board, -INF, INF)
+        return _quiesce(board, -INF, INF, ply)
     legal = gen.gen_legal(board)
     if not legal:
         return -(MATE_SCORE - ply) if gen.in_check(board, board.turn) else 0

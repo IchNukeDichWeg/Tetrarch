@@ -1163,18 +1163,28 @@ static void pick_move(uint32_t *moves, int32_t *scores, int n, int i)
     }
 }
 
-/* --- quiescence check evasions (toggle: off by default) -------------------
+/* --- quiescence check evasions --------------------------------------------
+ *
+ * CONFIRMED and default ON. Teams / classic, fixed nodes 20,000:
+ *   +106.78 +/- 6.88 Elo over 10,000 games
+ *   Dist: 28, 6, 224, 30, 832, 40, 895, 22, 423
+ * The largest single gain in the engine, and it was predicted to be NEGATIVE:
+ * it costs depth and wins nothing on node count. That reasoning came from
+ * two-player chess. In 4PC a seat can be checked by three opponents rather
+ * than one, so checks are far more frequent and a quiescence that mishandles
+ * them is proportionally more broken. See docs/AB.md.
  *
  * Standing pat means "I could just do nothing here", which is exactly what a
  * side in check may not do. Without this, quiescence evaluates positions it
  * has no right to and can score a lost position as quiet.
  *
  * When in check it searches every legal move rather than captures only, and
- * reports mate if there are none -- quiescence currently cannot see a mate at
- * all. That is a wider search, so it is a toggle with an A/B rather than a
- * free correctness win: it costs nodes, and nodes are depth.
+ * reports mate if there are none -- without it quiescence cannot see a mate at
+ * all. It costs nodes, and nodes are depth, so it was gated behind an A/B
+ * rather than taken as a free correctness win. It won that A/B by more than
+ * any other feature here.
  */
-static int use_qs_evasions = 0;
+static int use_qs_evasions = 1;
 
 void tt_set_qs_evasions(int on) { use_qs_evasions = on ? 1 : 0; }
 int tt_get_qs_evasions(void) { return use_qs_evasions; }

@@ -74,7 +74,7 @@ The net stays in `nets/` so the result is reproducible.
 | Dist | 57, 8, 388, 31, 969, 47, 763, 21, 216 |
 | Null on the same harness | −2.64 ± 6.24 |
 
-Two killer moves per ply, `setoption name Killers`. About 8σ; screened at
+Two killer moves per ply, `setoption name Killers`, default **on**. About 8σ; screened at
 +40.66 ± 14.50 over 2,000 games first, and the confirm came in higher rather
 than regressing to zero.
 
@@ -161,7 +161,7 @@ refinements.
 
 ### Late move reductions — CONFIRMED, default on
 
-`setoption name LMR`, default **off**, with `LMRMinDepth` (3) and `LMRMinMove`
+`setoption name LMR`, default **on**, with `LMRMinDepth` (3) and `LMRMinMove`
 (3). Reduction table is `0.75 + log(depth)·log(move)/2.25`.
 
 Node counts at fixed depth, classic + modern:
@@ -206,7 +206,7 @@ against a search that is deliberately allowed to differ.
 
 ### Lazy evaluation — CONFIRMED, default on
 
-`setoption name LazyEval`, default **off**. Computes material first and skips
+`setoption name LazyEval`, default **on**. Computes material first and skips
 the king-danger term when material alone settles the bound by more than
 `4 × 8 × king_danger = 384`, which is the most the danger term can move it.
 
@@ -252,7 +252,7 @@ between finishing an iteration and not.
 
 ### Late move pruning — CONFIRMED, default on
 
-`setoption name LMP`, default **off**, with `LMPMaxDepth` (3) and `LMPBase` (4).
+`setoption name LMP`, default **on**, with `LMPMaxDepth` (3) and `LMPBase` (4).
 Drops quiet moves outright once `LMPBase + depth²` of them have been tried
 without a cutoff, at shallow depth, not in check.
 
@@ -290,9 +290,9 @@ checkmate. selftest pins the never-invents property.
 Screened +36.62 ± 15.43 over 2,000 first — the confirm landed almost exactly on
 the screen. Released as **v4**.
 
-### Quiescence check evasions — SCREENED +104.68, confirm pending
+### Quiescence check evasions — CONFIRMED, default on
 
-`setoption name QSEvasions`, default **off**. When the side to move is in check
+`setoption name QSEvasions`, default **on**. When the side to move is in check
 quiescence searches every legal move instead of captures only, does not stand
 pat, and reports mate when there are none.
 
@@ -326,7 +326,21 @@ than one**, so checks are far more frequent, and a quiescence that mis-handles
 check is proportionally more broken. Standard chess intuition understates this
 feature here.
 
-Awaiting the 10,000-game confirm.
+| | |
+|---|---|
+| Instrument | fixed nodes 20,000 |
+| Games | 10,000 (2,500 openings × 4) |
+| Elo | **+106.78 ± 6.88** |
+| Dist | 28, 6, 224, 30, 832, 40, 895, 22, 423 |
+
+About 15.5σ, and the confirm came in **above** the screen. The largest single
+gain in the engine, on the one feature predicted to lose. Released as **v5**.
+
+The general lesson is worth keeping: **chess intuition about the relative value
+of a feature does not transfer to a four-seat game.** History and PVS both
+underperformed their chess reputations here; check evasions massively
+overperformed. All three were misjudged in the same direction — by assuming
+chess proportions.
 
 ---
 

@@ -8,6 +8,24 @@ See [`docs/RELEASING.md`](docs/RELEASING.md) for the rules and
 Distribution shown is the nine-bucket seat rotation (score sums 0, 0.5, 1 … 4),
 never a pentanomial — one opening here is four games, not two.
 
+## v5 — quiescence check evasions
+
+**+106.78 ± 6.88** · 10,000 games · fixed nodes 20,000 · Dist 28, 6, 224, 30,
+832, 40, 895, 22, 423
+
+When the side to move is in check, quiescence searches every legal move instead
+of standing pat, and reports mate when there are none. Previously quiescence
+could not see a mate at all.
+
+The largest single gain in the engine, on the one feature predicted to lose:
+it costs nodes and wins nothing on node count. That prediction came from
+two-player chess, where checks are rarer. A seat here can be checked by three
+opponents.
+
+- `search.py`'s reference quiescence mirrors it, so the minimax oracle still
+  proves a theorem about the search that actually ships.
+- `SEARCH_PINS` re-measured; classic depth 5 7,449 → 7,669.
+
 ## v4 — late move pruning
 
 **+36.09 ± 6.69** · 10,000 games · fixed nodes 20,000 · Dist 96, 6, 437, 36,

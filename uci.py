@@ -28,7 +28,7 @@ from tetrarch.search import Limits, search, MATE_SCORE
 NAME = "Tetrarch"
 #: Integer release number. Incremented once per CONFIRMED Elo gain, never
 #: for a dormant toggle or a tooling change. See docs/RELEASING.md.
-VERSION = "4"
+VERSION = "5"
 AUTHOR = "IchNukeDichWeg"
 
 
@@ -69,7 +69,7 @@ class Engine:
         print("option name LMP type check default true")
         print("option name LMPMaxDepth type spin default 3 min 0 max 8")
         print("option name LMPBase type spin default 4 min 1 max 32")
-        print("option name QSEvasions type check default false")
+        print("option name QSEvasions type check default true")
         print("uciok")
 
     def cmd_isready(self, _args):
