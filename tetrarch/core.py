@@ -382,9 +382,9 @@ def set_lmr_params(min_depth, min_move):
 def set_lazy_eval(on):
     """Skip the king-danger term when material already settles the bound.
 
-    Every cutoff decision is identical, but the value returned on a bail is
-    the material term rather than the true eval, so this is not exact. It
-    measured node-identical over 80 positions all the same (docs/AB.md).
+    CONFIRMED +42.88 +/- 6.50 on fixed time, default on (docs/AB.md). Not
+    exact -- a bail returns the material term rather than the true eval -- but
+    it measured node-identical over 80 positions, which selftest watches.
     """
     load().tt_set_lazy_eval(1 if on else 0)
 

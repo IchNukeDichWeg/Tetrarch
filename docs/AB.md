@@ -204,7 +204,7 @@ The minimax oracle in `selftest.py` turns LMR off for its comparison: the
 reductions are inexact, so the oracle would otherwise be checking alpha-beta
 against a search that is deliberately allowed to differ.
 
-### Lazy evaluation — built, needs a FIXED-TIME screen
+### Lazy evaluation — CONFIRMED, default on
 
 `setoption name LazyEval`, default **off**. Computes material first and skips
 the king-danger term when material alone settles the bound by more than
@@ -231,14 +231,24 @@ subprocesses per worker means 111 workers on a 111-core box gives each engine
 about half a core, and the timing becomes noise. Around 40 workers keeps every
 engine on its own core.
 
-**Screened +64.66 ± 15.12** over 2,000 games at `movetime 200`, 40 workers
-(Dist: 13, 1, 64, 10, 187, 22, 133, 7, 63). About 4.3σ.
+| | |
+|---|---|
+| Instrument | **fixed time**, `movetime 200`, 100 workers |
+| Games | 10,000 (2,500 openings × 4) |
+| Elo | **+42.88 ± 6.50** |
+| Dist | 61, 13, 428, 44, 953, 46, 719, 17, 219 |
 
-Larger than +14% NPS would usually buy, and the likely reason is depth
-granularity: at a median of 4 plies, 14% more nodes is often the difference
-between finishing an iteration and not, and a whole extra ply is worth far more
-than 14%. Awaiting a 10,000-game confirm — which will run against the new
-LMR-on baseline, not the one it was screened on.
+About 6.6σ. Screened +64.66 ± 15.12 over 2,000 games first, and the confirm came
+in **lower** — as expected, because the confirm ran against the new LMR-on
+baseline, and LMR had already bought some of the depth lazy eval was buying.
+Confirming against the current default rather than the one a feature was
+screened on is the point; the number moving down is not a regression.
+
+`SEARCH_PINS` needed no change: the tree is unmoved, only the clock.
+
+Still larger than +14% NPS would normally buy, and the likely reason is depth
+granularity — at a median of 4–5 plies, 14% more nodes is often the difference
+between finishing an iteration and not.
 
 ### Late move pruning — built, READY TO SCREEN
 

@@ -63,7 +63,7 @@ class Engine:
         print("option name LMR type check default true")
         print("option name LMRMinDepth type spin default 3 min 1 max 16")
         print("option name LMRMinMove type spin default 3 min 1 max 32")
-        print("option name LazyEval type check default false")
+        print("option name LazyEval type check default true")
         print("option name LMP type check default false")
         print("option name LMPMaxDepth type spin default 3 min 0 max 8")
         print("option name LMPBase type spin default 4 min 1 max 32")

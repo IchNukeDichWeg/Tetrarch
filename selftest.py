@@ -923,7 +923,7 @@ def test_search(workers=1):
     check("history default off (dormant)", not core.history_enabled())
     check("pvs default off (dormant)", not core.pvs_enabled())
     check("lmr default on (confirmed)", core.lmr_enabled())
-    check("lazy eval default off (dormant)", not core.lazy_eval_enabled())
+    check("lazy eval default on (confirmed)", core.lazy_eval_enabled())
     check("lmp default off (dormant)", not core.lmp_enabled())
 
     core.set_hash(16)
@@ -1025,7 +1025,6 @@ def test_search(workers=1):
         core.clear_hash()
         lazy = core.search(start_board(setup), 5).nodes
         moved.append((setup, plain == lazy))
-    core.set_lazy_eval(False)
     check_all("lazy eval leaves the tree unchanged", moved)
 
     # LMP drops moves outright. It may MISS a mate -- that is the trade -- but
