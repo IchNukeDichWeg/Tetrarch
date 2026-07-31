@@ -919,6 +919,7 @@ def test_search(workers=1):
     # measured, so the default itself is pinned.
     check("killers default on (confirmed)", core.killers_enabled())
     check("history default off (dormant)", not core.history_enabled())
+    check("pvs default off (dormant)", not core.pvs_enabled())
 
     core.set_hash(16)
     pins = []
@@ -973,6 +974,23 @@ def test_search(workers=1):
           "%d on, %d off at depth 7" % (with_hist, base))
     check("history off leaves the pinned tree alone",
           core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
+
+    # PVS must return the SAME score as plain alpha-beta -- it is a node
+    # reduction, not a different search. If it ever disagrees, the window
+    # handling is wrong and the null-window re-search condition is the suspect.
+    core.set_pvs(True)
+    same = True
+    for setup in SETUPS:
+        core.clear_hash()
+        a = core.search(start_board(setup), 5).score
+        core.set_pvs(False)
+        core.clear_hash()
+        b_ = core.search(start_board(setup), 5).score
+        core.set_pvs(True)
+        if a != b_:
+            same = False
+    core.set_pvs(False)
+    check("pvs returns the same score as plain alpha-beta", same)
 
     core.set_hash(core.DEFAULT_TT_MB)
 

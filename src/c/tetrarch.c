@@ -897,6 +897,19 @@ uint64_t tt_size(void) { return tt_entries; }
 
 /* --- search ------------------------------------------------------------- */
 
+/* --- principal variation search (toggle: off by default) ------------------
+ *
+ * Search the first move with a full window, then test the rest with a null
+ * window and re-search only the ones that beat alpha. Returns the same value
+ * as plain alpha-beta -- selftest's minimax oracle covers that -- so this is
+ * purely a node reduction, and it pays exactly as far as the move ordering is
+ * good enough that the first move usually is best.
+ */
+static int use_pvs = 0;
+
+void tt_set_pvs(int on) { use_pvs = on ? 1 : 0; }
+int tt_get_pvs(void) { return use_pvs; }
+
 static uint32_t search_buf[MAX_DEPTH][MAX_MOVES];
 static int32_t order_buf[MAX_DEPTH][MAX_MOVES];
 static uint64_t search_nodes;
@@ -1111,7 +1124,13 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
             continue;
         }
         legal++;
-        score = -alphabeta(b, depth - 1, -beta, -alpha, ply + 1);
+        if (!use_pvs || legal == 1) {
+            score = -alphabeta(b, depth - 1, -beta, -alpha, ply + 1);
+        } else {
+            score = -alphabeta(b, depth - 1, -alpha - 1, -alpha, ply + 1);
+            if (!search_aborted && score > alpha && score < beta)
+                score = -alphabeta(b, depth - 1, -beta, -alpha, ply + 1);
+        }
         tt_unmake(b, moves[i], &u);
         if (search_aborted) return 0;
         if (score > best) {

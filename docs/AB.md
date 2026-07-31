@@ -122,3 +122,39 @@ engine plays there; not worth spending to confirm a null.
 
 Left dormant with this note attached, per the doctrine on closing a
 structurally dead gate before spending A/B time.
+
+### Principal variation search — built, NOT screened: negative at this depth
+
+`setoption name PVS`, default **off**. Correct (returns the same score as plain
+alpha-beta, pinned in selftest) and off is byte-identical to the pinned tree.
+
+Node counts at fixed depth, classic + modern:
+
+| depth | off | on | |
+|---:|---:|---:|---|
+| 4 | 19,318 | 22,977 | **118.9%** |
+| 5 | 143,774 | 165,817 | **115.3%** |
+| 6 | 513,485 | 540,697 | 105.3% |
+| 7 | 2,704,547 | 2,546,724 | 94.2% |
+
+It makes the tree **bigger** at the depths this engine actually searches. That
+is not a defect: PVS pays for a re-search whenever a later move beats alpha, so
+it only wins when the ordering is good enough that the first move usually is
+best. At a branching factor near 60 with only two killers ordering the quiets,
+the re-searches cost more than the null windows save.
+
+Not screened. It would lose, and losing would tell us about the ordering rather
+than about PVS. Revisit after the ordering improves or the search reaches
+depth 7.
+
+### The pattern in these two
+
+History and PVS are both dead for the same reason: **the search reaches median
+depth 4 at 20,000 nodes** — one round of four seats. Both are refinements that
+assume depth and good ordering.
+
+What limits depth here is the branching factor (~60 legal moves a seat) and the
+cost of a node, of which the throwaway eval is 77% — its king-danger term alone
+is 54% of all search time. So the work that buys depth is pruning that engages
+at shallow depth (LMP, LMR) and a cheaper eval, not window or ordering
+refinements.

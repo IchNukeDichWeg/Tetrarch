@@ -55,6 +55,7 @@ class Engine:
         # Dormant: correct, but structurally dead at the depths
         # this engine reaches. See docs/AB.md.
         print("option name History type check default false")
+        print("option name PVS type check default false")
         print("uciok")
 
     def cmd_isready(self, _args):
@@ -85,6 +86,8 @@ class Engine:
             core.set_killers(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "history":
             core.set_history(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "pvs":
+            core.set_pvs(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "net":
             if value.strip().lower() in ("", "<none>", "none"):
                 core.unload_net()

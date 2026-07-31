@@ -235,6 +235,8 @@ def load(path=None):
     lib.tt_get_killers.restype = ctypes.c_int
     lib.tt_set_history.argtypes = [ctypes.c_int]
     lib.tt_get_history.restype = ctypes.c_int
+    lib.tt_set_pvs.argtypes = [ctypes.c_int]
+    lib.tt_get_pvs.restype = ctypes.c_int
     lib.tt_divide.restype = ctypes.c_int
     lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.POINTER(ctypes.c_uint32),
@@ -340,6 +342,16 @@ def set_history(on):
 
 def history_enabled():
     return bool(load().tt_get_history())
+
+
+def set_pvs(on):
+    """Principal variation search. Off by default: it costs nodes rather than
+    saving them at the depths this engine reaches (docs/AB.md)."""
+    load().tt_set_pvs(1 if on else 0)
+
+
+def pvs_enabled():
+    return bool(load().tt_get_pvs())
 
 
 def evaluate(b):
