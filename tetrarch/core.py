@@ -231,6 +231,13 @@ def load(path=None):
     lib.tt_load_net.restype = ctypes.c_int
     lib.tt_load_net.argtypes = [ctypes.POINTER(TtNetView)]
     lib.tt_net_loaded.restype = ctypes.c_int
+    lib.tt_nnue_acc_matches.restype = ctypes.c_int
+    lib.tt_nnue_acc_matches.argtypes = [ctypes.POINTER(TtBoard)]
+    lib.tt_undo_size.restype = ctypes.c_int
+    lib.tt_make.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_uint32,
+                            ctypes.c_void_p]
+    lib.tt_unmake.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_uint32,
+                              ctypes.c_void_p]
     lib.tt_set_killers.argtypes = [ctypes.c_int]
     lib.tt_get_killers.restype = ctypes.c_int
     lib.tt_set_history.argtypes = [ctypes.c_int]
@@ -333,6 +340,54 @@ def unload_net():
 
 def net_loaded():
     return bool(load().tt_net_loaded())
+
+
+class CBoard:
+    """A TtBoard the C core mutates in place, so make/unmake run the same code
+    path the search runs. Only selftest needs this -- the engine never drives
+    the C board move by move from Python."""
+
+    def __init__(self, board):
+        self.lib = load()
+        self.b = to_c(board)
+        # One undo record per ply, exactly as the C search keeps on its stack.
+        # A single shared buffer would be overwritten by every make, and
+        # unwinding would then replay the last move's record repeatedly.
+        self._undo = []
+
+    def make(self, move):
+        self._undo.append(
+            ctypes.create_string_buffer(self.lib.tt_undo_size()))
+        self.lib.tt_make(ctypes.byref(self.b), ctypes.c_uint32(move),
+                         ctypes.cast(self._undo[-1], ctypes.c_void_p))
+
+    def unmake(self, move):
+        undo = self._undo.pop()
+        self.lib.tt_unmake(ctypes.byref(self.b), ctypes.c_uint32(move),
+                           ctypes.cast(undo, ctypes.c_void_p))
+
+    def acc_matches(self):
+        r = self.lib.tt_nnue_acc_matches(ctypes.byref(self.b))
+        return None if r < 0 else bool(r)
+
+    def legal(self):
+        buf = (ctypes.c_uint32 * MAX_MOVES)()
+        n = self.lib.tt_gen_legal(ctypes.byref(self.b), buf)
+        return [buf[i] for i in range(n)]
+
+    def eval(self):
+        return self.lib.tt_eval(ctypes.byref(self.b))
+
+
+def nnue_acc_matches(board):
+    """Does the incrementally maintained accumulator equal a rebuild from the
+    board? None when nothing is being maintained (no net, or no eval yet).
+
+    The differential gate for the incremental update: perft and node pins
+    cannot see a wrong accumulator, because it changes evaluations rather than
+    the shape of the tree."""
+    r = load().tt_nnue_acc_matches(ctypes.byref(to_c(board)))
+    return None if r < 0 else bool(r)
 
 
 def set_killers(on):

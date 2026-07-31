@@ -122,6 +122,12 @@ typedef struct {
 static TtParams P;
 static int initialised = 0;
 
+/* NNUE accumulator hooks. The net itself is defined further down; the deltas
+ * are applied here, where the board actually changes. */
+static int  nn_delta_on(void);
+static void nn_toggle(uint8_t piece, int sq, int sign);
+static void nn_acc_set_key(uint64_t key);
+
 /* --- introspection, so the binding can assert layout agreement ---------- */
 
 int tt_params_size(void) { return (int)sizeof(TtParams); }
@@ -404,6 +410,7 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
     uint64_t key;
     int victim_sq = -1;
     uint8_t victim = 0;
+    int nn = nn_delta_on();
 
     if (flag == F_EP) {
         /* The pawn removed sits on the recorded victim square, not the square
@@ -441,13 +448,16 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
     }
 
     if (captured) key ^= P.zob_piece[captured][to];
+    if (nn && captured) nn_toggle(captured, to, -1);
     key ^= P.zob_piece[piece][frm];
+    if (nn) nn_toggle(piece, frm, -1);
     b->sq[frm] = 0;
 
     placed = promo ? (uint8_t)(1 + mover * NTYPE + promo) : piece;
 
     if (flag == F_EP) {
         key ^= P.zob_piece[victim][victim_sq];
+        if (nn) nn_toggle(victim, victim_sq, -1);
         b->sq[victim_sq] = 0;
         for (c = 0; c < 4; c++) {
             if (b->ep_target[c] >= 0 && b->ep_victim[c] == victim_sq) {
@@ -458,9 +468,11 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
         }
         b->sq[to] = placed;
         key ^= P.zob_piece[placed][to];
+        if (nn) nn_toggle(placed, to, +1);
     } else {
         b->sq[to] = placed;
         key ^= P.zob_piece[placed][to];
+        if (nn) nn_toggle(placed, to, +1);
         if (flag == F_DOUBLE) {
             int target = (frm + to) / 2;
             b->ep_target[mover] = (int16_t)target;
@@ -473,6 +485,10 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
             b->sq[g[C_ROOK_FROM]] = 0;
             b->sq[g[C_ROOK_TO]] = r;
             key ^= P.zob_piece[r][g[C_ROOK_FROM]] ^ P.zob_piece[r][g[C_ROOK_TO]];
+            if (nn) {
+                nn_toggle(r, g[C_ROOK_FROM], -1);
+                nn_toggle(r, g[C_ROOK_TO], +1);
+            }
         }
     }
 
@@ -522,12 +538,34 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
     b->turn = (uint8_t)t;
     key ^= P.zob_turn[b->turn];
     b->key = key;
+    if (nn) nn_acc_set_key(key);
 }
 
 void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
 {
     int frm = MV_FROM(m), to = MV_TO(m), flag = MV_FLAG(m), promo = MV_PROMO(m);
     int mover = u->mover;
+
+    /* Before anything moves: integer add/subtract is exactly invertible, so
+     * undoing make's toggles restores the accumulator make was handed. */
+    if (nn_delta_on()) {
+        uint8_t placed = b->sq[to];
+        uint8_t orig = promo ? (uint8_t)(1 + mover * NTYPE + PAWN) : placed;
+        nn_toggle(placed, to, -1);
+        nn_toggle(orig, frm, +1);
+        if (u->captured) nn_toggle(u->captured, to, +1);
+        if (flag == F_EP) {
+            nn_toggle(u->victim, u->victim_sq, +1);
+        } else if (flag == F_CASTLE_SHORT || flag == F_CASTLE_LONG) {
+            int home = (P.king_home[mover][0] == frm) ? 0 : 1;
+            const int32_t *g =
+                P.castle[mover][home][flag == F_CASTLE_SHORT ? 0 : 1];
+            uint8_t r = b->sq[g[C_ROOK_TO]];
+            nn_toggle(r, g[C_ROOK_TO], -1);
+            nn_toggle(r, g[C_ROOK_FROM], +1);
+        }
+        nn_acc_set_key(u->key);
+    }
 
     if (promo) b->sq[frm] = (uint8_t)(1 + mover * NTYPE + PAWN);
     else b->sq[frm] = b->sq[to];
@@ -667,10 +705,21 @@ int tt_divide(TtBoard *b, int depth, uint32_t *moves, uint64_t *nodes)
  * here: parsing the file in one place means C and Python can never disagree
  * about what a net contains, the same argument as for every other table.
  *
- * This refreshes the whole accumulator on every call. Incremental update on
- * make/unmake is the point of NNUE and is the next step, but it gets its own
- * differential gate first -- an incremental accumulator that drifts is exactly
- * the kind of bug perft and node pins cannot see.
+ * The accumulator is maintained incrementally across make/unmake. All four
+ * perspectives are kept, because the seat to move changes every ply and a
+ * perspective's features are a permutation no other perspective can supply.
+ *
+ * The deltas hang off exactly the sites where tt_make already XORs a Zobrist
+ * key for a (piece, square). That is deliberate: the two updates then have
+ * identical trigger conditions, so a missed toggle also corrupts the key, and
+ * selftest already checks keys bit for bit against the Python reference.
+ *
+ * Correctness rests on integer add/subtract being exactly invertible, so
+ * unmake restores the accumulator to the value make found -- there is no
+ * accumulating error term. What can still go wrong is a MISSED or WRONG
+ * toggle, which perft and node pins cannot see, so tt_nnue_acc_matches()
+ * exposes a differential check and selftest runs it after every move of
+ * random games.
  */
 
 #define NN_FEATURES 3840
@@ -705,6 +754,73 @@ static int8_t nn_w4[NN_L3];
 static int32_t nn_b4;
 static int nn_loaded = 0;
 
+/* The maintained accumulator, one per perspective, plus the board key it
+ * belongs to. The key is the validity token: anything that reaches a board
+ * without going through make/unmake fails the comparison and forces a
+ * refresh, so a missed path degrades to the old cost rather than to a wrong
+ * evaluation. */
+static int32_t nn_acc[4][NN_L1];
+static uint64_t nn_acc_key;
+static int nn_acc_ok = 0;
+
+/* Add (sign +1) or remove (sign -1) one piece's contribution, in all four
+ * perspectives at once. */
+static void nn_toggle(uint8_t piece, int sq, int sign)
+{
+    int persp, j, color = P.pc_color[piece], type;
+    /* A piece with no recorded origin has no colour to make relative, so it
+     * switches on no feature -- the same rule the full refresh applies. */
+    if (color == DEAD_UNKNOWN) return;
+    type = P.feature_type[P.pc_type[piece]];
+    for (persp = 0; persp < 4; persp++) {
+        int rel = (color - persp) & 3;
+        int feature = (rel * 6 + type) * 160
+                      + P.compact[P.rot_to_persp[persp][sq]];
+        const int16_t *row = nn_w1 + (size_t)feature * NN_L1;
+        int32_t *acc = nn_acc[persp];
+        if (sign > 0) { for (j = 0; j < NN_L1; j++) acc[j] += row[j]; }
+        else          { for (j = 0; j < NN_L1; j++) acc[j] -= row[j]; }
+    }
+}
+
+static int nn_delta_on(void) { return nn_loaded && nn_acc_ok; }
+static void nn_acc_set_key(uint64_t key) { nn_acc_key = key; }
+
+/* Rebuild all four perspectives from the board. The oracle the incremental
+ * path is checked against, and the fallback whenever the key does not match. */
+static void nn_refresh(const TtBoard *b)
+{
+    int persp, sq;
+    for (persp = 0; persp < 4; persp++)
+        memcpy(nn_acc[persp], nn_b1, sizeof(nn_b1));
+    for (sq = 0; sq < NSQ; sq++) {
+        uint8_t p;
+        if (!P.valid[sq]) continue;
+        p = b->sq[sq];
+        if (p) nn_toggle(p, sq, +1);
+    }
+    nn_acc_key = b->key;
+    nn_acc_ok = 1;
+}
+
+/* Differential check for selftest: does the maintained accumulator equal a
+ * rebuild from the board? Returns -1 when nothing is being maintained. The
+ * maintained value is restored either way, so a chain of moves keeps being
+ * tested rather than being silently repaired mid-game. */
+int tt_nnue_acc_matches(const TtBoard *b)
+{
+    int32_t save[4][NN_L1];
+    uint64_t save_key = nn_acc_key;
+    int ok;
+    if (!nn_loaded || !nn_acc_ok) return -1;
+    memcpy(save, nn_acc, sizeof(save));
+    nn_refresh(b);
+    ok = memcmp(save, nn_acc, sizeof(save)) == 0;
+    memcpy(nn_acc, save, sizeof(save));
+    nn_acc_key = save_key;
+    return ok;
+}
+
 int tt_net_view_size(void) { return (int)sizeof(TtNetView); }
 
 /* dims: features, l1, extra, l2, l3, shift1, shift2, shift_out */
@@ -730,10 +846,11 @@ int tt_load_net(const TtNetView *v)
     memcpy(nn_w4, v->w4, sizeof(nn_w4));
     nn_b4 = v->b4[0];
     nn_loaded = 1;
+    nn_acc_ok = 0;                 /* different weights: rebuild on next eval */
     return 1;
 }
 
-void tt_unload_net(void) { nn_loaded = 0; }
+void tt_unload_net(void) { nn_loaded = 0; nn_acc_ok = 0; }
 
 int tt_net_loaded(void) { return nn_loaded; }
 
@@ -760,30 +877,14 @@ static void nn_extras(const TtBoard *b, int persp, int32_t *out)
 
 static int32_t nnue_eval(const TtBoard *b)
 {
-    int32_t acc[NN_L1];
+    const int32_t *acc;
     int32_t x[NN_L1 + NN_EXTRA];
     int32_t h1[NN_L2], h2[NN_L3];
     int32_t out;
-    int sq, j, k, persp = b->turn;
+    int j, k, persp = b->turn;
 
-    memcpy(acc, nn_b1, sizeof(acc));
-    for (sq = 0; sq < NSQ; sq++) {
-        uint8_t p;
-        int color, rel, feature;
-        const int16_t *row;
-        if (!P.valid[sq]) continue;
-        p = b->sq[sq];
-        if (!p) continue;
-        color = P.pc_color[p];
-        /* A piece with no recorded origin has no colour to make relative, so
-         * it switches on no feature (nnue.py does the same). */
-        if (color == DEAD_UNKNOWN) continue;
-        rel = (color - persp) & 3;
-        feature = (rel * 6 + P.feature_type[P.pc_type[p]]) * 160
-                  + P.compact[P.rot_to_persp[persp][sq]];
-        row = nn_w1 + (size_t)feature * NN_L1;
-        for (j = 0; j < NN_L1; j++) acc[j] += row[j];
-    }
+    if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
+    acc = nn_acc[persp];
 
     for (j = 0; j < NN_L1; j++) x[j] = nn_crelu(acc[j], NN_SHIFT1);
     nn_extras(b, persp, x + NN_L1);

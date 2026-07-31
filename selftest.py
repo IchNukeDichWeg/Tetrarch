@@ -1226,6 +1226,56 @@ def test_nnue():
     scores = [net.evaluate(rotate(start, k), k) for k in range(4)]
     check("one weight set gives one score from all four seats",
           len(set(scores)) == 1, str(scores))
+
+    # --- the incremental accumulator ------------------------------------
+    #
+    # The search maintains all four accumulators across make/unmake instead of
+    # rebuilding them per evaluation. Neither perft nor the pinned node counts
+    # can see a wrong accumulator: it changes evaluations, not the shape of
+    # the tree. So it gets its own differential gate against a rebuild.
+    #
+    # The moves are driven through the C core, not the Python board, because
+    # the incremental path only exists in C -- replaying in Python would test
+    # the rebuild and report success.
+    if HAVE_C:
+        core.load_net(net)
+        rng = random.Random(21)
+        pairs = deep = 0
+        bad_pair = bad_deep = 0
+        for g in range(12):
+            b = start_board(SETUPS[g % len(SETUPS)])
+            cb = core.CBoard(b)
+            cb.eval()                       # establishes the accumulator
+            played = []
+            for _ply in range(40):
+                legal = cb.legal()
+                if not legal:
+                    break
+                # Every legal move made and immediately unmade: this is what
+                # catches a move type whose delta is wrong (castling moves two
+                # pieces, en passant removes one that is not on the target).
+                for m in legal:
+                    cb.make(m)
+                    if cb.acc_matches() is not True:
+                        bad_pair += 1
+                    cb.unmake(m)
+                    if cb.acc_matches() is not True:
+                        bad_pair += 1
+                    pairs += 1
+                m = rng.choice(legal)
+                cb.make(m)
+                played.append(m)
+            # And a deep unwind, which is what catches an asymmetry that only
+            # shows up once the stack is more than one move deep.
+            for m in reversed(played):
+                cb.unmake(m)
+                if cb.acc_matches() is not True:
+                    bad_deep += 1
+                deep += 1
+        check("incremental accumulator matches a rebuild, make/unmake",
+              bad_pair == 0, "%d pairs" % pairs)
+        check("and through a deep unwind", bad_deep == 0, "%d moves" % deep)
+        core.unload_net()
     os.remove(path)
 
 
