@@ -7,9 +7,9 @@ A C shared library owns the per-node loop: board, movegen, ordering, TT, pruning
 quiescence, NNUE inference. A pure-Python reference engine is the source of truth and
 stays correct forever; `selftest.py` asserts the C core agrees with it.
 
-Status: **Phase 3** — alpha-beta with a transposition table and quiescence in
-the C core, Teams mode, throwaway eval, UCI-ish protocol and a headless match
-runner. Beats a random mover 100/100.
+Status: **Phase 4** — NNUE inference in the C core, bit-exact with the Python
+reference; net v0 trained on 3.9M self-play positions and shipped in `nets/`.
+The A/B against the hand-eval build is the outstanding gate.
 
 ```bash
 python3 selftest.py
@@ -33,8 +33,8 @@ figure — always report the machine with an NPS claim, and use
 
 Re-runnable, and it is the whole of a fresh-box setup: it installs a compiler and
 numpy/flask if they are missing, builds every `src/c/*.c` into
-`build/lib<name>.so` with `-O3 -march=native -shared -fPIC`, then loads the
-runs the whole `selftest.py` ladder — a setup that reports success and leaves a
+`build/lib<name>.so` with `-O3 -march=native -shared -fPIC`, then runs the whole
+`selftest.py` ladder — a setup that reports success and leaves a
 broken `.so` costs a whole campaign to discover, and on a new architecture the
 ladder is the only thing that proves the C core still agrees with the Python
 reference. `--no-install` skips touching the system; `--no-test` skips the
@@ -64,9 +64,9 @@ Makefile                  distributable binary                      (Phase 3)
 selftest.py               the ladder — runs before every commit     done
 bench.py                  fixed-position node/nps benchmark         done
 match.py                  headless engine-vs-engine, seat rotation  done
-sprt.py                   GSPRT, pentanomial, opt-in                (Phase 4)
-gen_data.py               self-play position generation             (Phase 4)
-train.py                  NNUE trainer                              (Phase 4)
+sprt.py                   GSPRT, nine-bucket, opt-in                (Phase 4)
+gen_data.py               self-play position generation             done
+train.py                  NNUE trainer                              done
 tune.py                   Texel-style tuner for non-net scalars     (Phase 7)
 uci.py                    the protocol                              done
 
