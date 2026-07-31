@@ -14,3 +14,4 @@ scratch/
 *.nnue
 !nets/*.nnue
 *.pgn4
+tetrarch-v*.tar.gz

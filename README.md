@@ -1,113 +1,138 @@
 # Tetrarch
 
-A four-player chess engine for chess.com 4PC — 14×14, four seats, FFA and Teams.
+A four-player chess engine for [chess.com 4PC](https://www.chess.com/4-player-chess) — 14×14, four seats, Teams and FFA.
 
-Python owns the root: iterative deepening, time management, protocol, tooling.
-A C shared library owns the per-node loop: board, movegen, ordering, TT, pruning,
-quiescence, NNUE inference. A pure-Python reference engine is the source of truth and
-stays correct forever; `selftest.py` asserts the C core agrees with it.
+[![release](https://img.shields.io/github/v/release/IchNukeDichWeg/Tetrarch?label=release)](https://github.com/IchNukeDichWeg/Tetrarch/releases)
+[![license](https://img.shields.io/github/license/IchNukeDichWeg/Tetrarch)](LICENSE)
 
-Status: **v3**. Three confirmed Elo gains — killers +50.42, late move
-reductions +35.07, lazy evaluation +42.88, each over 10,000 games against a
-certified null. Phase 4's gate is still open: net v0 lost its A/B at −40.13, so
-the engine still plays on the throwaway eval.
+Python owns the root — iterative deepening, time management, protocol, tooling.
+A C shared library owns the per-node loop — board, movegen, ordering, transposition
+table, pruning, quiescence, NNUE inference. A pure-Python reference engine is the
+source of truth, and `selftest.py` asserts the C core agrees with it bit for bit.
 
-One release per confirmed gain — see [`docs/RELEASING.md`](docs/RELEASING.md)
-and the full campaign record in [`docs/AB.md`](docs/AB.md).
+## Quick start
 
 ```bash
-python3 selftest.py
-```
-
-Bench signature (depth 5, five frozen positions, `bench.py`):
-
-```
-93846865 nodes 27492167 nps
-```
-
-The node count is exact and machine-independent. The nps is an Apple M2 Pro
-figure — always report the machine with an NPS claim, and use
-`bench.py --rounds 9` for anything under 1 %.
-
-## Setup
-
-```bash
+git clone https://github.com/IchNukeDichWeg/Tetrarch.git
+cd Tetrarch
 ./setup.sh
 ```
 
-Re-runnable, and it is the whole of a fresh-box setup: it installs a compiler and
-numpy/flask if they are missing, builds every `src/c/*.c` into
-`build/lib<name>.so` with `-O3 -march=native -shared -fPIC`, then runs the whole
-`selftest.py` ladder — a setup that reports success and leaves a
-broken `.so` costs a whole campaign to discover, and on a new architecture the
-ladder is the only thing that proves the C core still agrees with the Python
-reference. `--no-install` skips touching the system; `--no-test` skips the
-ladder for a fast rebuild loop.
+That is the whole of a fresh-machine setup: it installs a compiler and numpy/flask
+if they are missing, builds the C core, and then runs the full test ladder — a setup
+that reports success and leaves a broken build costs a whole campaign to discover.
 
-No virtualenv: everything is a plain `python3 something.py`.
+No virtualenv. Everything is a plain `python3 something.py`.
 
-## Rules
+```bash
+python3 uci.py                 # the engine, speaking the protocol
+python3 selftest.py            # 427 checks, ~13s
+python3 gui/app.py             # the viewer, http://127.0.0.1:7442
+```
+
+`gui/viewer.html` also opens straight off disk with no server at all.
+
+## Strength
+
+Every gain below is measured over 10,000 games with a full four-game seat rotation,
+against a null self-test of −2.64 ± 6.24 on the same harness.
+
+| release | feature | Elo | instrument |
+|---|---|---|---|
+| [v4](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v4) | late move pruning | +36.09 ± 6.69 | fixed nodes |
+| [v3](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v3) | lazy evaluation | +42.88 ± 6.50 | fixed time |
+| [v2](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v2) | late move reductions | +35.07 ± 6.51 | fixed nodes |
+| [v1](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v1) | killer moves | +50.42 ± 6.41 | fixed nodes |
+
+Since v0 the search tree at classic depth 5 has gone from 228,628 nodes to 7,449,
+and mean depth at a 20,000-node budget from 3.73 to 5.25.
+
+Rejections are recorded too — see [`docs/AB.md`](docs/AB.md). Two features were
+closed without spending a single game because a cheap measurement showed their
+gate was structurally dead.
+
+## The game
+
+chess.com offers five starting setups — `classic`, `modern`, `by`, `byg`, `rg` —
+differing only in each seat's king/queen placement. All five are supported.
+**Tetrarch defaults to `classic`**, where the theory and the strong opposition are;
+`modern` has been chess.com's own default since 2022.
 
 [`docs/RULES.md`](docs/RULES.md) is the normative rules reference. Every rule carries
 its source; anything unconfirmed is an explicit `ASSUMPTION:` with the cheapest
-experiment that would settle it. Read it before touching engine code.
+experiment that would settle it. Read it before touching engine code — four-player
+en passant, per-seat castling and dead-seat scoring are all places where the obvious
+guess is wrong.
 
-chess.com offers five starting setups — `classic`, `modern`, `by`, `byg`, `rg` — which
-differ only in each seat's king/queen placement. All five are supported. **Tetrarch
-defaults to `classic`**, where the theory and the strong opposition are; `modern` is
-chess.com's own default since 2022 and must stay correct for real-opponent play.
+Move generation is verified two ways: two independently written generators agreeing
+over 10,000,000 random positions, and perft exact against
+[Athena](https://github.com/arianahejazyan/Athena) to depth 7 (1,735,784,286 nodes).
+
+## Documentation
+
+| | |
+|---|---|
+| [`docs/RULES.md`](docs/RULES.md) | the normative rules, with sources and assumptions |
+| [`docs/AB.md`](docs/AB.md) | every measured result, rejection and harness bug |
+| [`docs/PERFT.md`](docs/PERFT.md) | pinned node counts and the reference machine |
+| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | how the protocol diverges from UCI, and why |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | what earns a version number |
+| [`CHANGELOG.md`](CHANGELOG.md) | one entry per confirmed gain |
+
+## Development
+
+```bash
+make            # build the C core
+make test       # the selftest ladder
+make bench      # the bench signature
+make dist       # source tarball
+```
+
+`selftest.py` runs before every commit, including pure-Python ones. It pins perft,
+cross-checks both move generators, asserts the C core and the Python reference agree
+on eval and Zobrist keys bit for bit, and checks that every dormant toggle is really
+dormant — a toggle that silently flipped would make every later A/B a comparison
+against something nobody measured.
+
+Measuring a change:
+
+```bash
+python3 match.py 500 --log screen.jsonl --opt-a LMP=true --nodes 20000 --workers 0
+```
+
+The positional argument is **opening positions, not games** — each is played four
+times as a full seat rotation, because seat identity is worth more Elo than most
+engine changes. Results are reported as Elo with its error margin plus the
+nine-bucket rotation distribution, never a bare Elo and never a pentanomial.
 
 ## Layout
 
-Items marked `done` exist; the rest arrive with the phase that needs them, not
-before.
-
 ```
-setup.sh                  build the .so's; re-runnable
-Makefile                  distributable binary                      (Phase 3)
-selftest.py               the ladder — runs before every commit     done
-bench.py                  fixed-position node/nps benchmark         done
-match.py                  headless engine-vs-engine, seat rotation  done
-sprt.py                   GSPRT, nine-bucket, opt-in                (Phase 4)
-gen_data.py               self-play position generation             done
-train.py                  NNUE trainer                              done
-tune.py                   Texel-style tuner for non-net scalars     (Phase 7)
-uci.py                    the protocol                              done
+uci.py              the protocol            match.py     engine-vs-engine, seat rotation
+selftest.py         the test ladder         bench.py     node/nps benchmark
+gen_data.py         self-play positions     train.py     NNUE trainer
 
-tetrarch/                 the Python engine + reference
-    board.py              14×14 padded mailbox, FEN4 I/O            done
-    movegen.py            fast generator                            done
-    movegen_slow.py       independent slow-obvious generator        done
-    search.py             root: iterative deepening, time mgmt      done
-    eval_hand.py          throwaway — deleted at Phase 4            done
-    nnue.py               features, net format, reference forward   done
-    pgn4.py               PGN4 read/write                           done
-    core.py               ctypes binding to the C library           done
-
-src/c/                    the accelerator
-    tetrarch.c            board, movegen, perft, eval, TT, search   done
-
-nets/                     quantised nets the engine loads
-    net-v0.nnue           first net; bootstrap off the throwaway eval  done
-
-gui/                      paste PGN4, step a game                   done
-    viewer.html           standalone: open it from disk, no server
-    app.py                serves the same file plus an engine endpoint
-
-tests/js_replay_check.js  viewer replay vs pgn4.py, run by selftest  done
-
-docs/
-    RULES.md              normative rules, with sources             done
-    AB.md                 every measured result and verdict         done
-    RELEASING.md          one release per confirmed Elo gain        done
-    PERFT.md              pinned perft numbers, named machine       done
-    PROTOCOL.md           UCI divergences                           done
-
-tests/data/               positions, opening seeds
+tetrarch/           board, movegen x2, search root, eval, NNUE, PGN4, C binding
+src/c/tetrarch.c    board, movegen, perft, eval, transposition table, search
+nets/               quantised nets the engine loads
+gui/                viewer.html (standalone) + app.py (adds an engine endpoint)
+docs/               rules, results, perft, protocol, releasing
 ```
 
-## Doctrine
+## Status
 
-One logical change per commit. `python3 selftest.py` before every commit, including
-pure-Python ones. One search feature at a time, behind a toggle, A/B'd before the next.
-Every output path in every tool is a CLI argument with no repo default.
+**Phase 4 is open.** The engine still plays on a hand-written evaluation that is
+marked for deletion: net v0 was trained on 3.9 M self-play positions and lost its
+A/B at −40.13 ± 7.01. Four confirmed search gains since then have made the engine a
+substantially stronger teacher, so the next step is regenerating data with it and
+retraining.
+
+Not yet built: FFA paranoid search, repetition detection, an opening book, and
+multithreading.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+Prior art read before designing this, and worth reading: `arianahejazyan/Athena`,
+`obryanlouis/4pchess`, `TheThirdOne/fen4`.
