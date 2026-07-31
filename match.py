@@ -12,15 +12,19 @@ THE ROTATION
     Seat identity is worth more Elo than most engine changes, so a result that
     has not cancelled it is not a result. Each opening is played four times:
 
-        rotation 0  board as generated      engine A plays team R+Y
-        rotation 1  board turned 90 deg     engine A plays team B+G
-        rotation 2  board turned 180 deg    engine A plays team R+Y
-        rotation 3  board turned 270 deg    engine A plays team B+G
+        rotation 0  board as generated   A gets the ORIGINAL R+Y armies
+        rotation 1  board turned 90 deg   A gets the ORIGINAL R+Y armies
+        rotation 2  board turned 180 deg  A gets the ORIGINAL B+G armies
+        rotation 3  board turned 270 deg  A gets the ORIGINAL B+G armies
 
-    So each engine plays each team twice and the opening is seen from all four
-    orientations. Score sum per opening runs 0..4 in half-point steps, which is
-    the nine-bucket distribution reported below -- NOT a pentanomial, which
-    would assume two games per opening.
+    What matters is which ORIGINAL armies an engine receives, not which seat
+    index it is handed. Rotating the board shifts every seat's colour, so
+    rotating the team assignment along with it cancels nothing -- see play_game.
+    A also moves first in exactly two of the four.
+
+    Score sum per opening runs 0..4 in half-point steps, which is the
+    nine-bucket distribution reported below -- NOT a pentanomial, which would
+    assume two games per opening.
 
 THREE IMPLEMENTATION NOTES, each of which cost real money to learn elsewhere
     * Workers are fed from a generator through Pool.imap_unordered, whose task
@@ -124,15 +128,18 @@ class UciEngine:
 _ENGINE_CACHE = {}
 
 
-def get_engine(command, setup, mode, hash_mb=16, net=None, opts=()):
-    """One subprocess per command per worker, reused across games.
+def get_engine(side, command, setup, mode, hash_mb=16, net=None, opts=()):
+    """One subprocess per side per worker, reused across games.
 
-    Reuse is per *version*: a different command is a different subprocess, so
-    two versions never share an address space.
+    Keyed on `side` as well as configuration. Without it a null self-test --
+    identical command, net and options on both sides -- collapses into a single
+    process, so all four seats share one transposition table and the run
+    validates a setup no real A/B ever uses. Every A/B that differs in a net or
+    an option got two processes and was measuring something else.
     """
     if command == RANDOM_ENGINE:
         return RANDOM_ENGINE
-    key = (command, setup, mode, hash_mb, net, opts)
+    key = (side, command, setup, mode, hash_mb, net, opts)
     if key not in _ENGINE_CACHE:
         _ENGINE_CACHE[key] = UciEngine(command, setup, mode, hash_mb, net, opts)
     engine = _ENGINE_CACHE[key]
@@ -182,9 +189,10 @@ def play_game(job):
     a_team = original_team ^ (rotation & 1)
     engines = {}
     try:
-        engines[a_team] = get_engine(cmd_a, setup, mode, hash_mb, net_a, opts_a)
-        engines[1 - a_team] = get_engine(cmd_b, setup, mode, hash_mb, net_b,
-                                         opts_b)
+        engines[a_team] = get_engine("A", cmd_a, setup, mode, hash_mb,
+                                     net_a, opts_a)
+        engines[1 - a_team] = get_engine("B", cmd_b, setup, mode, hash_mb,
+                                         net_b, opts_b)
     except Exception as exc:                                   # noqa: BLE001
         return {"index": index, "error": "engine start: %r" % (exc,)}
 
