@@ -66,7 +66,7 @@ RANDOM_ENGINE = "random"
 class UciEngine:
     """One engine subprocess speaking the protocol in docs/PROTOCOL.md."""
 
-    def __init__(self, command, setup, mode, hash_mb=16, net=None):
+    def __init__(self, command, setup, mode, hash_mb=16, net=None, opts=()):
         self.command = command
         self.proc = subprocess.Popen(
             command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -79,6 +79,10 @@ class UciEngine:
         # No net means the throwaway hand eval. One binary, two evals, so the
         # NNUE-vs-hand A/B differs by exactly this line.
         self._send("setoption name Net value %s" % (net if net else "none"))
+        # Arbitrary per-side options, so a new search toggle is A/B-able
+        # without editing this file again.
+        for name, value in opts:
+            self._send("setoption name %s value %s" % (name, value))
         self._send("isready")
         self._wait_for("readyok")
 
@@ -120,7 +124,7 @@ class UciEngine:
 _ENGINE_CACHE = {}
 
 
-def get_engine(command, setup, mode, hash_mb=16, net=None):
+def get_engine(command, setup, mode, hash_mb=16, net=None, opts=()):
     """One subprocess per command per worker, reused across games.
 
     Reuse is per *version*: a different command is a different subprocess, so
@@ -128,9 +132,9 @@ def get_engine(command, setup, mode, hash_mb=16, net=None):
     """
     if command == RANDOM_ENGINE:
         return RANDOM_ENGINE
-    key = (command, setup, mode, hash_mb, net)
+    key = (command, setup, mode, hash_mb, net, opts)
     if key not in _ENGINE_CACHE:
-        _ENGINE_CACHE[key] = UciEngine(command, setup, mode, hash_mb, net)
+        _ENGINE_CACHE[key] = UciEngine(command, setup, mode, hash_mb, net, opts)
     engine = _ENGINE_CACHE[key]
     engine.newgame()
     return engine
@@ -157,7 +161,7 @@ def make_opening(setup, mode, plies, seed):
 def play_game(job):
     """Play one game. Returns a dict; never raises past a forfeit."""
     (index, opening_seed, rotation, setup, mode, plies, cmd_a, cmd_b,
-     go_string, seed, want_pgn4, net_a, net_b, hash_mb) = job
+     go_string, seed, want_pgn4, net_a, net_b, hash_mb, opts_a, opts_b) = job
 
     base = make_opening(setup, mode, plies, opening_seed)
     if base is None:
@@ -169,8 +173,9 @@ def play_game(job):
     a_team = rotation & 1
     engines = {}
     try:
-        engines[a_team] = get_engine(cmd_a, setup, mode, hash_mb, net_a)
-        engines[1 - a_team] = get_engine(cmd_b, setup, mode, hash_mb, net_b)
+        engines[a_team] = get_engine(cmd_a, setup, mode, hash_mb, net_a, opts_a)
+        engines[1 - a_team] = get_engine(cmd_b, setup, mode, hash_mb, net_b,
+                                         opts_b)
     except Exception as exc:                                   # noqa: BLE001
         return {"index": index, "error": "engine start: %r" % (exc,)}
 
@@ -294,7 +299,8 @@ def jobs(count, args):
             yield (index, args.seed * 7919 + i, rotation, args.setup,
                    MODE_TEAMS, args.opening_plies, args.engine_a,
                    args.engine_b, args.go_string, args.seed * 104729 + index,
-                   bool(args.pgn4), args.net_a, args.net_b, args.hash)
+                   bool(args.pgn4), args.net_a, args.net_b, args.hash,
+                   args.opts_a, args.opts_b)
             index += 1
 
 
@@ -321,6 +327,10 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--workers", type=int, default=1,
                     help="0 means every core")
+    ap.add_argument("--opt-a", action="append", default=[], metavar="NAME=VALUE",
+                    help="extra setoption for engine A; repeatable")
+    ap.add_argument("--opt-b", action="append", default=[], metavar="NAME=VALUE",
+                    help="extra setoption for engine B; repeatable")
     ap.add_argument("--net-a", metavar="PATH",
                     help="net for engine A; omitted means the hand eval")
     ap.add_argument("--net-b", metavar="PATH",
@@ -348,6 +358,18 @@ def main():
     for path in (args.log, args.pgn4):
         if path:
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    def parse_opts(raw):
+        out = []
+        for item in raw:
+            if "=" not in item:
+                ap.error("--opt expects NAME=VALUE, got %r" % item)
+            name, value = item.split("=", 1)
+            out.append((name.strip(), value.strip()))
+        return tuple(out)
+
+    args.opts_a = parse_opts(args.opt_a)
+    args.opts_b = parse_opts(args.opt_b)
+
     if os.path.exists(args.log):
         ap.error("%s already exists; pick a fresh path" % args.log)
 
@@ -355,8 +377,13 @@ def main():
     total = args.positions * ROTATIONS
     print("setup %s teams | %s | %d openings x %d = %d games | %d workers"
           % (args.setup, args.go_string, args.positions, ROTATIONS, total, nproc))
-    print("  A: %s  net=%s" % (args.engine_a, args.net_a or "none (hand eval)"))
-    print("  B: %s  net=%s" % (args.engine_b, args.net_b or "none (hand eval)"))
+    def describe(cmd, net, opts):
+        bits = ["net=%s" % (net or "none (hand eval)")]
+        bits += ["%s=%s" % kv for kv in opts]
+        return "%s  %s" % (cmd, "  ".join(bits))
+
+    print("  A: %s" % describe(args.engine_a, args.net_a, args.opts_a))
+    print("  B: %s" % describe(args.engine_b, args.net_b, args.opts_b))
 
     games = []
     by_opening = {}

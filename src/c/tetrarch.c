@@ -901,23 +901,53 @@ static inline int is_capture(const TtBoard *b, uint32_t m)
     return b->sq[MV_TO(m)] != 0 || MV_FLAG(m) == F_EP;
 }
 
-/* MVV-LVA, with the transposition move first. Quiet moves keep generation
- * order -- killers and history are Phase 7 work, behind their own A/B. */
+/* --- killer moves (toggle: off by default, pending its A/B) --------------- *
+ *
+ * Two quiet moves per ply that last caused a beta cutoff there. The search has
+ * no other quiet ordering at all, so this is the largest single ordering gap.
+ *
+ * Scores sit strictly between quiet (0) and capture (1<<16), and are only
+ * added when the toggle is on -- with it off, score_moves produces byte-
+ * identical output to before, which selftest pins.
+ */
+#define KILLERS_PER_PLY 2
+#define KILLER_BASE (1 << 14)
+
+static uint32_t killers[MAX_DEPTH][KILLERS_PER_PLY];
+static int use_killers = 0;
+
+void tt_set_killers(int on) { use_killers = on ? 1 : 0; }
+int tt_get_killers(void) { return use_killers; }
+
+static void killers_clear(void) { memset(killers, 0, sizeof(killers)); }
+
+static void killer_store(int ply, uint32_t m)
+{
+    if (ply >= MAX_DEPTH || killers[ply][0] == m) return;
+    killers[ply][1] = killers[ply][0];
+    killers[ply][0] = m;
+}
+
+/* MVV-LVA, with the transposition move first. */
 static void score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
-                        int n, uint32_t ttmove)
+                        int n, uint32_t ttmove, int ply)
 {
     int i;
     for (i = 0; i < n; i++) {
         uint32_t m = moves[i];
         int32_t s = 0;
+        int capture = is_capture(b, m);
         if (m == ttmove) {
             s = 1 << 24;
-        } else if (is_capture(b, m)) {
+        } else if (capture) {
             uint8_t victim = b->sq[MV_TO(m)];
             int vv = victim ? P.piece_value[P.pc_type[victim]]
                             : P.piece_value[PAWN];
             int av = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
             s = (1 << 16) + vv * 16 - av;
+        } else if (use_killers && ply < MAX_DEPTH) {
+            if (m == killers[ply][0]) s = KILLER_BASE + 1;
+            else if (m == killers[ply][1]) s = KILLER_BASE;
         }
         if (MV_PROMO(m)) s += (1 << 15);
         scores[i] = s;
@@ -959,7 +989,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, 0);
+    score_moves(b, moves, scores, n, 0, -1);
 
     for (i = 0; i < n; i++) {
         int king;
@@ -1016,12 +1046,14 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, ttmove);
+    score_moves(b, moves, scores, n, ttmove, ply);
 
     for (i = 0; i < n; i++) {
         int king;
         int32_t score;
+        int is_capture_before;
         pick_move(moves, scores, n, i);
+        is_capture_before = is_capture(b, moves[i]);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
         if (king >= 0 && tt_is_attacked(b, king, me)) {
@@ -1036,7 +1068,13 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
             best = score;
             best_move = moves[i];
             if (score > alpha) alpha = score;
-            if (alpha >= beta) break;
+            if (alpha >= beta) {
+                /* Only quiet moves become killers: a capture is already
+                 * ordered ahead of them by MVV-LVA, so storing one would
+                 * displace a useful quiet for no gain. */
+                if (use_killers && !is_capture_before) killer_store(ply, moves[i]);
+                break;
+            }
         }
     }
 
@@ -1083,13 +1121,16 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     search_nodes = 0;
     search_limit = node_limit ? node_limit : (uint64_t)-1;
     search_aborted = 0;
+    /* Killers are per-search, not per-game: a stale table from another
+     * position orders by moves that meant something somewhere else. */
+    if (use_killers) killers_clear();
 
     moves = search_buf[0];
     scores = order_buf[0];
     n = tt_gen_pseudo(b, moves);
     score_moves(b, moves, scores, n,
                 (tt_table && tt_table[b->key & tt_mask].key == b->key)
-                ? tt_table[b->key & tt_mask].best : 0);
+                ? tt_table[b->key & tt_mask].best : 0, 0);
 
     for (i = 0; i < n; i++) {
         int king;

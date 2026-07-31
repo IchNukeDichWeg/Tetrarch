@@ -231,6 +231,8 @@ def load(path=None):
     lib.tt_load_net.restype = ctypes.c_int
     lib.tt_load_net.argtypes = [ctypes.POINTER(TtNetView)]
     lib.tt_net_loaded.restype = ctypes.c_int
+    lib.tt_set_killers.argtypes = [ctypes.c_int]
+    lib.tt_get_killers.restype = ctypes.c_int
     lib.tt_divide.restype = ctypes.c_int
     lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.POINTER(ctypes.c_uint32),
@@ -317,6 +319,15 @@ def unload_net():
 
 def net_loaded():
     return bool(load().tt_net_loaded())
+
+
+def set_killers(on):
+    """Killer-move ordering. Off by default until its A/B (§ doctrine)."""
+    load().tt_set_killers(1 if on else 0)
+
+
+def killers_enabled():
+    return bool(load().tt_get_killers())
 
 
 def evaluate(b):

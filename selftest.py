@@ -910,6 +910,11 @@ def test_search(workers=1):
         check("C core is built", False, "run ./setup.sh")
         return
 
+    # Dormant features must default off, and off must be byte-identical to
+    # the pinned tree. A toggle that quietly changes the baseline makes every
+    # later A/B a comparison against something nobody measured.
+    check("killers default off", not core.killers_enabled())
+
     core.set_hash(16)
     pins = []
     for setup in SETUPS:
@@ -936,6 +941,19 @@ def test_search(workers=1):
     r = core.search(mate, 3)
     check("a forced mate scores as a mate", r.score > 29000 - 100
           or r.score < -(29000 - 100), "score %d" % r.score)
+
+    # ...and turning it on must actually change the tree, or the toggle is
+    # wired to nothing.
+    core.set_killers(True)
+    core.clear_hash()
+    on = core.search(start_board("classic"), 5).nodes
+    core.set_killers(False)
+    core.clear_hash()
+    off = core.search(start_board("classic"), 5).nodes
+    check("the killers toggle reaches the search", on != off,
+          "%d on, %d off" % (on, off))
+    check("killers reduce the tree", on < off,
+          "%.1f%% of baseline" % (100.0 * on / off))
 
     core.set_hash(core.DEFAULT_TT_MB)
 
