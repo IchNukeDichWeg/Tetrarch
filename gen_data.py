@@ -24,10 +24,15 @@ WHAT IS STORED
     search reports them. The trainer decides how to blend them with the game
     result; that is a training decision and does not belong in the data.
 
-THE ENGINE THIS USES IS THE THROWAWAY
-    Net v0 is bootstrapped from the hand eval (project brief). The data is only
-    as good as the engine that made it, which is the entire reason this step
-    exists and the entire reason it is thrown away afterwards.
+WHICH ENGINE LABELS THE DATA
+    --net decides. Without it the throwaway hand eval plays, which is how net
+    v0 and v1 were bootstrapped (project brief).
+
+    With it, the named net plays and the loop compounds: the labels are search
+    scores, and a depth-5 search over a net's own evaluations is better than
+    that net evaluating directly. Training on them is what lets generation N+1
+    exceed generation N, rather than converging on whatever taught it. Data
+    labelled by the hand eval caps a net at roughly the hand eval.
 """
 
 import argparse
@@ -122,8 +127,18 @@ def jobs(start, count, args):
                args.nodes, args.depth)
 
 
-def _ignore_sigint():
+def _worker_init(net_path):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # Once per worker, never per game: loading a net clears the transposition
+    # table, so doing it inside play_one would throw away the table every game
+    # and quietly change what the node budget buys.
+    if net_path:
+        _load_net(net_path)
+
+
+def _load_net(path):
+    from tetrarch import nnue
+    core.load_net(nnue.Net.load(path))
 
 
 def main():
@@ -141,6 +156,8 @@ def main():
     ap.add_argument("--setup", default=DEFAULT_SETUP, choices=SETUPS)
     ap.add_argument("--opening-plies", type=int, default=10)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--net", metavar="PATH",
+                    help="net that plays; omitted means the throwaway hand eval")
     ap.add_argument("--workers", type=int, default=1, help="0 means every core")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
@@ -163,9 +180,13 @@ def main():
         print("%s already has %d games" % (args.out, done))
         return 0
 
+    if args.net and not os.path.exists(args.net):
+        ap.error("no such net: %s" % args.net)
+
     nproc = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
-    print("%d games (%d remaining) | %s teams | nodes %d depth %d"
-          % (args.games, remaining, args.setup, args.nodes, args.depth))
+    print("%d games (%d remaining) | %s teams | nodes %d depth %d | eval %s"
+          % (args.games, remaining, args.setup, args.nodes, args.depth,
+             args.net if args.net else "hand (throwaway)"))
 
     started = time.time()
     written = 0
@@ -192,10 +213,13 @@ def main():
 
     try:
         if nproc == 1:
+            if args.net:
+                _load_net(args.net)
             for job in jobs(done, remaining, args):
                 absorb(play_one(job))
         else:
-            with multiprocessing.Pool(nproc, initializer=_ignore_sigint) as pool:
+            with multiprocessing.Pool(nproc, initializer=_worker_init,
+                                      initargs=(args.net,)) as pool:
                 for game in pool.imap_unordered(play_one,
                                                 jobs(done, remaining, args),
                                                 chunksize=4):
