@@ -958,6 +958,79 @@ def test_nnue():
     os.remove(path)
 
 
+#: The example from the Wikibooks notation page -- real chess.com output, and
+#: the era when `classic` was the default. `Qa7-b8` and `Qn8-m8` only resolve
+#: on classic, which is an independent check of §3.
+WIKIBOOK_PGN4 = """[Variant "Teams"]
+[Result "0-1"]
+[Site "www.chess.com/4-player-chess"]
+
+1. d2-d4 .. b8-c8 .. k13-k11 .. m8-l8
+2. d4-d5 .. b4-d4 .. k11-k10 .. Qn8-m8
+3. e2-e4 .. Qa7-b8 .. g13-g12 .. Nn5-l6
+"""
+
+
+def test_pgn4():
+    section("PGN4 (§11.5)")
+    from tetrarch import pgn4
+
+    game = pgn4.parse(WIKIBOOK_PGN4)
+    check("tags parse", game.tags.get("Result") == "0-1")
+    check("Variant Teams maps to the Teams mode", game.mode == MODE_TEAMS)
+    check("12 move tokens", len(game.tokens) == 12, str(len(game.tokens)))
+    frames, terminations = pgn4.replay(game)
+    check("real chess.com movetext replays", len(frames) == 13,
+          str(len(frames)))
+    check("and it only resolves on classic", game.setup == "classic")
+    check("no terminations in an unfinished game", terminations == [])
+
+    # Write then read: every move must survive as the same move.
+    rng = random.Random(5)
+    for setup in SETUPS:
+        b = start_board(setup)
+        moves = []
+        for _ in range(30):
+            legal = fast.gen_legal(b)
+            if not legal:
+                break
+            m = rng.choice(legal)
+            moves.append(m)
+            b.make(m)
+        text = pgn4.write(start_board(setup), moves, {"Result": "*"})
+        back = pgn4.parse(text)
+        replayed, _ = pgn4.replay(back)
+        check("%s PGN4 round trips" % setup,
+              len(back.tokens) == len(moves)
+              and replayed[-1]["fen4"] == b.to_fen4().replace("\n", ""))
+
+    # Terminators are seat eliminations, not moves (§9).
+    ended = pgn4.parse(WIKIBOOK_PGN4 + "4. R .. T\n")
+    check("resign and timeout tokens are read", ended.tokens[-2:] == ["R", "T"])
+    frames, terminations = pgn4.replay(ended)
+    check("a terminator eliminates its seat",
+          [t["reason"] for t in terminations] == ["resign", "timeout"],
+          str(terminations))
+    check("and the eliminated seats are marked dead",
+          frames[-1]["alive"].count(False) == 2, str(frames[-1]["alive"]))
+
+    # A move that is not legal names the ply it failed at rather than vanishing.
+    try:
+        pgn4.replay(pgn4.parse('[Variant "Teams"]\n\n1. d2-d9\n'))
+        check("an illegal move is reported", False)
+    except pgn4.Pgn4Error as exc:
+        check("an illegal move is reported", "not legal" in str(exc))
+
+    # Long algebraic always carries both squares, so a two-digit rank must not
+    # be mis-split.
+    b = start_board("classic")
+    b.turn = 2
+    b.recompute_key()
+    token = pgn4.move_token(b, next(m for m in fast.gen_legal(b)
+                                    if move_str(m) == "k13k11"))
+    check("two-digit ranks survive tokenising", token == "k13-k11", token)
+
+
 def perft_deep():
     section("deep perft -- all setups, both modes, to depth 5")
     print("  %-9s %-6s %12s %12s %8s" % ("setup", "mode", "depth 4", "depth 5",
@@ -1246,6 +1319,7 @@ def main():
     test_eval()
     test_search()
     test_nnue()
+    test_pgn4()
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, args.workers, args.quiet)
     if args.perft_deep:
