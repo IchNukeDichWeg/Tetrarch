@@ -378,9 +378,12 @@ the two that attack `M`.
 *any* pawn that attacks `M` may capture; the pawn removed is always the one recorded
 at `T`. Both flanks generated, correct pawn removed in both cases.
 
-> **Consequence for the Phase 2 gate:** Tetrarch will diverge from [athena]'s perft
-> at the first depth containing a two-flank en passant. See §12 — it does not affect
-> the depths currently pinned, but the divergence is expected, not a regression.
+> **Perft cannot test this.** Measured through depth 7 (1.7 billion nodes), Tetrarch
+> and [athena] agree exactly, and they always will here: the case needs two of your
+> own pawns attacking the same skipped square, which costs six pawn moves at minimum
+> — ply 21 or later. See `PERFT.md` for the counting. The differential gate against
+> the slow reference generator, which reaches such positions by scattering rather
+> than by playing to them, is the only check that covers this rule.
 
 ### 5.5 [C] An en passant capture can take two pieces
 

@@ -7,12 +7,22 @@ A C shared library owns the per-node loop: board, movegen, ordering, TT, pruning
 quiescence, NNUE inference. A pure-Python reference engine is the source of truth and
 stays correct forever; `selftest.py` asserts the C core agrees with it.
 
-Status: **Phase 1** — board, both movegens and FEN4 I/O done; perft recorded in
-[`docs/PERFT.md`](docs/PERFT.md). No search, no eval, no C core yet.
+Status: **Phase 2** — C core ported and agreeing with the Python reference
+node-for-node; perft exact against Athena to depth 7. No search and no eval yet.
 
 ```bash
 python3 selftest.py
 ```
+
+Bench signature (depth 5, five frozen positions, `bench.py`):
+
+```
+93846865 nodes 27492167 nps
+```
+
+The node count is exact and machine-independent. The nps is an Apple M2 Pro
+figure — always report the machine with an NPS claim, and use
+`bench.py --rounds 9` for anything under 1 %.
 
 ## Setup
 
@@ -43,7 +53,7 @@ needs them, not before.
 setup.sh                  build the .so's; re-runnable
 Makefile                  distributable binary                      (Phase 3)
 selftest.py               the ladder — runs before every commit     done
-bench.py                  fixed-position node/nps benchmark         (Phase 2)
+bench.py                  fixed-position node/nps benchmark         done
 match.py                  headless engine-vs-engine, seat rotation  (Phase 3)
 sprt.py                   GSPRT, pentanomial, opt-in                (Phase 4)
 gen_data.py               self-play position generation             (Phase 4)
@@ -58,10 +68,10 @@ tetrarch/                 the Python engine + reference
     search.py             root: iterative deepening, time mgmt      (Phase 3)
     eval_hand.py          throwaway — deleted at Phase 4            (Phase 3)
     nnue.py               feature extraction, inference reference   (Phase 4)
-    core.py               ctypes binding to the C library           (Phase 2)
+    core.py               ctypes binding to the C library           done
 
 src/c/                    the accelerator
-    tetrarch.c            board, movegen, TT, search, NNUE          (Phase 2)
+    tetrarch.c            board, movegen, perft; TT/search/NNUE later  done
 
 gui/                      Flask + one page + one canvas             (Phase 6)
 

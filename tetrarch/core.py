@@ -1,0 +1,286 @@
+"""ctypes binding to the C core.
+
+The C library declares no chess constants of its own. Everything it needs --
+VALID, COMPACT, the Zobrist keys, the piece encoding, pawn geometry, promotion
+ranks and castling squares -- is built here from `board.py` and pushed across
+in one `tt_init` call. `board.py` stays the single definition; a duplicated
+table is a divergence waiting for one side to be edited.
+
+Struct layouts are asserted against the C `sizeof` at load time, so a mismatch
+is a loud startup failure rather than silently misread memory.
+
+The library is located relative to this file, never from a hardcoded path.
+"""
+
+import ctypes
+import os
+
+from . import board as B
+
+NSQ = B.NSQ
+NPIECE = B.NPIECE
+MAX_MOVES = 1024
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+LIB_PATH = os.path.join(os.path.dirname(_HERE), "build", "libtetrarch.so")
+
+
+class TtParams(ctypes.Structure):
+    _fields_ = [
+        ("zob_piece", ctypes.c_uint64 * NSQ * NPIECE),
+        ("zob_ep", ctypes.c_uint64 * NSQ * 4),
+        ("zob_turn", ctypes.c_uint64 * 4),
+        ("zob_ck", ctypes.c_uint64 * 4),
+        ("zob_cq", ctypes.c_uint64 * 4),
+        ("zob_alive", ctypes.c_uint64 * 4),
+        ("valid", ctypes.c_uint8 * NSQ),
+        ("compact", ctypes.c_uint8 * NSQ),
+        ("pc_color", ctypes.c_uint8 * NPIECE),
+        ("pc_type", ctypes.c_uint8 * NPIECE),
+        ("pawn_coord", ctypes.c_uint8 * NSQ * 4),
+        ("rook_home", ctypes.c_uint8 * NSQ),
+        ("pawn_push", ctypes.c_int32 * 4),
+        ("pawn_takes", ctypes.c_int32 * 2 * 4),
+        ("knight_deltas", ctypes.c_int32 * 8),
+        ("queen_dirs", ctypes.c_int32 * 8),
+        ("diag", ctypes.c_int32 * 4),
+        ("ortho", ctypes.c_int32 * 4),
+        ("promo_coord", ctypes.c_int32 * 2),
+        ("promo_choices", ctypes.c_int32 * 4 * 2),
+        ("n_promo_choices", ctypes.c_int32 * 2),
+        ("king_home", ctypes.c_int32 * 2 * 4),
+        ("castle", ctypes.c_int32 * 10 * 2 * 2 * 4),
+    ]
+
+
+class TtBoard(ctypes.Structure):
+    _fields_ = [
+        ("key", ctypes.c_uint64),
+        ("halfmove", ctypes.c_int32),
+        ("ep_target", ctypes.c_int16 * 4),
+        ("ep_victim", ctypes.c_int16 * 4),
+        ("kings", ctypes.c_int16 * 4),
+        ("points", ctypes.c_uint16 * 4),
+        ("sq", ctypes.c_uint8 * NSQ),
+        ("turn", ctypes.c_uint8),
+        ("mode", ctypes.c_uint8),
+        ("pawn_base_rank", ctypes.c_uint8),
+        ("alive", ctypes.c_uint8 * 4),
+        ("ck", ctypes.c_uint8 * 4),
+        ("cq", ctypes.c_uint8 * 4),
+    ]
+
+
+class CoreUnavailable(RuntimeError):
+    pass
+
+
+_lib = None
+
+
+def build_params():
+    """Every parameter the C core runs on, derived from the Python reference."""
+    p = TtParams()
+
+    for piece in range(NPIECE):
+        for sq in range(NSQ):
+            p.zob_piece[piece][sq] = B.ZOB_PIECE[piece][sq]
+    for c in range(4):
+        for sq in range(NSQ):
+            p.zob_ep[c][sq] = B.ZOB_EP[c][sq]
+        p.zob_turn[c] = B.ZOB_TURN[c]
+        p.zob_ck[c] = B.ZOB_CK[c]
+        p.zob_cq[c] = B.ZOB_CQ[c]
+        p.zob_alive[c] = B.ZOB_ALIVE[c]
+
+    for sq in range(NSQ):
+        p.valid[sq] = B.VALID[sq]
+        p.compact[sq] = B.COMPACT[sq]
+        p.rook_home[sq] = B.ROOK_HOME.get(sq, -1) + 1
+        for c in range(4):
+            p.pawn_coord[c][sq] = B.pawn_coord(c, sq) & 0xFF
+    for i in range(NPIECE):
+        p.pc_color[i] = B.PC_COLOR[i]
+        p.pc_type[i] = B.PC_TYPE[i]
+
+    for c in range(4):
+        p.pawn_push[c] = B.PAWN_PUSH[c]
+        for i in range(2):
+            p.pawn_takes[c][i] = B.PAWN_TAKES[c][i]
+    for i in range(8):
+        p.knight_deltas[i] = B.KNIGHT_DELTAS[i]
+        p.queen_dirs[i] = B.QUEEN_DIRS[i]
+    for i in range(4):
+        p.diag[i] = B.DIAG[i]
+        p.ortho[i] = B.ORTHO[i]
+
+    for mode in (B.MODE_FFA, B.MODE_TEAMS):
+        p.promo_coord[mode] = B.PROMO_COORD[mode]
+        choices = B.PROMO_CHOICES[mode]
+        p.n_promo_choices[mode] = len(choices)
+        for i, choice in enumerate(choices):
+            p.promo_choices[mode][i] = choice
+
+    # Castling geometry, in the order the C core indexes it: the seat's two
+    # possible king homes, low square first, then short side then long.
+    for c in range(4):
+        homes = sorted(k for (cc, k) in B.CASTLE_GEO if cc == c)
+        assert len(homes) == 2, homes
+        for h, king_sq in enumerate(homes):
+            p.king_home[c][h] = king_sq
+            sides = B.CASTLE_GEO[(c, king_sq)]
+            for side in (B.SHORT, B.LONG):
+                rook_from, king_to, rook_to, between, safe = sides[side]
+                assert len(between) <= 3 and len(safe) == 3
+                g = p.castle[c][h][side]
+                g[0] = rook_from
+                g[1] = king_to
+                g[2] = rook_to
+                g[3] = len(between)
+                for i, sq in enumerate(between):
+                    g[4 + i] = sq
+                for i, sq in enumerate(safe):
+                    g[7 + i] = sq
+    return p
+
+
+def load(path=None):
+    """Load and initialise the C core. Idempotent; raises if unavailable."""
+    global _lib
+    if _lib is not None:
+        return _lib
+    lib_path = path or LIB_PATH
+    if not os.path.exists(lib_path):
+        raise CoreUnavailable(
+            "%s not built -- run ./setup.sh" % os.path.basename(lib_path))
+    lib = ctypes.CDLL(lib_path)
+
+    lib.tt_params_size.restype = ctypes.c_int
+    lib.tt_board_size.restype = ctypes.c_int
+    lib.tt_ready.restype = ctypes.c_int
+    lib.tt_init.argtypes = [ctypes.POINTER(TtParams)]
+    lib.tt_perft.restype = ctypes.c_uint64
+    lib.tt_perft.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
+    lib.tt_gen_legal.restype = ctypes.c_int
+    lib.tt_gen_legal.argtypes = [ctypes.POINTER(TtBoard),
+                                 ctypes.POINTER(ctypes.c_uint32)]
+    lib.tt_gen_pseudo.restype = ctypes.c_int
+    lib.tt_gen_pseudo.argtypes = [ctypes.POINTER(TtBoard),
+                                  ctypes.POINTER(ctypes.c_uint32)]
+    lib.tt_recompute_key.restype = ctypes.c_uint64
+    lib.tt_recompute_key.argtypes = [ctypes.POINTER(TtBoard)]
+    lib.tt_is_attacked.restype = ctypes.c_int
+    lib.tt_is_attacked.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
+                                   ctypes.c_int]
+    lib.tt_key_check.restype = ctypes.c_uint64
+    lib.tt_key_check.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
+    lib.tt_divide.restype = ctypes.c_int
+    lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
+                              ctypes.POINTER(ctypes.c_uint32),
+                              ctypes.POINTER(ctypes.c_uint64)]
+
+    # Layout agreement. A silent mismatch here would misread every field.
+    if lib.tt_params_size() != ctypes.sizeof(TtParams):
+        raise CoreUnavailable("TtParams layout mismatch: C %d, Python %d"
+                              % (lib.tt_params_size(), ctypes.sizeof(TtParams)))
+    if lib.tt_board_size() != ctypes.sizeof(TtBoard):
+        raise CoreUnavailable("TtBoard layout mismatch: C %d, Python %d"
+                              % (lib.tt_board_size(), ctypes.sizeof(TtBoard)))
+
+    params = build_params()
+    lib.tt_init(ctypes.byref(params))
+    if not lib.tt_ready():
+        raise CoreUnavailable("tt_init did not take")
+    _lib = lib
+    return lib
+
+
+def available():
+    try:
+        load()
+        return True
+    except (CoreUnavailable, OSError):
+        return False
+
+
+def to_c(b):
+    """Convert a Python Board into the C representation."""
+    cb = TtBoard()
+    cb.key = b.key
+    cb.halfmove = b.halfmove
+    cb.turn = b.turn
+    cb.mode = b.mode
+    cb.pawn_base_rank = b.pawn_base_rank
+    for i in range(NSQ):
+        cb.sq[i] = b.sq[i]
+    for c in range(4):
+        cb.alive[c] = 1 if b.alive[c] else 0
+        cb.ck[c] = 1 if b.ck[c] else 0
+        cb.cq[c] = 1 if b.cq[c] else 0
+        cb.kings[c] = b.kings[c]
+        cb.points[c] = b.points[c]
+        if b.ep[c] is None:
+            cb.ep_target[c] = -1
+            cb.ep_victim[c] = -1
+        else:
+            cb.ep_target[c] = b.ep[c][0]
+            cb.ep_victim[c] = b.ep[c][1]
+    return cb
+
+
+def gen_legal(b):
+    lib = load()
+    cb = to_c(b)
+    buf = (ctypes.c_uint32 * MAX_MOVES)()
+    n = lib.tt_gen_legal(ctypes.byref(cb), buf)
+    return [buf[i] for i in range(n)]
+
+
+def gen_pseudo(b):
+    lib = load()
+    cb = to_c(b)
+    buf = (ctypes.c_uint32 * MAX_MOVES)()
+    n = lib.tt_gen_pseudo(ctypes.byref(cb), buf)
+    return [buf[i] for i in range(n)]
+
+
+def perft(b, depth):
+    lib = load()
+    cb = to_c(b)
+    return int(lib.tt_perft(ctypes.byref(cb), depth))
+
+
+def recompute_key(b):
+    lib = load()
+    cb = to_c(b)
+    return int(lib.tt_recompute_key(ctypes.byref(cb)))
+
+
+def is_attacked(b, sq, me):
+    lib = load()
+    cb = to_c(b)
+    return bool(lib.tt_is_attacked(ctypes.byref(cb), sq, me))
+
+
+def in_check(b, color):
+    king = b.kings[color]
+    if king < 0:
+        return False
+    return is_attacked(b, king, color)
+
+
+def key_check(b, depth):
+    """Mismatches between the incremental Zobrist key and a full recompute,
+    plus unmake failures, over the whole legal tree to `depth`. 0 is correct."""
+    lib = load()
+    cb = to_c(b)
+    return int(lib.tt_key_check(ctypes.byref(cb), depth))
+
+
+def divide(b, depth):
+    lib = load()
+    cb = to_c(b)
+    moves = (ctypes.c_uint32 * MAX_MOVES)()
+    nodes = (ctypes.c_uint64 * MAX_MOVES)()
+    n = lib.tt_divide(ctypes.byref(cb), depth, moves, nodes)
+    return {B.move_str(moves[i]): int(nodes[i]) for i in range(n)}

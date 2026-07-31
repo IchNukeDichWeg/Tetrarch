@@ -36,6 +36,9 @@ from tetrarch.board import (
 )
 from tetrarch import movegen as fast
 from tetrarch import movegen_slow as slow
+from tetrarch import core
+
+HAVE_C = core.available()
 
 FAILURES = []
 CHECKS = [0]
@@ -661,6 +664,65 @@ def test_perft(depth=4):
               slow.perft(b.copy(), 3) == fast.perft(b.copy(), 3))
 
 
+def test_c_core(deep=False):
+    section("C core agreement (Phase 2 gate)")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+    import ctypes
+    lib = core.load()
+    check("TtParams layout agrees",
+          lib.tt_params_size() == ctypes.sizeof(core.TtParams))
+    check("TtBoard layout agrees",
+          lib.tt_board_size() == ctypes.sizeof(core.TtBoard))
+
+    # Node-for-node: identical counts at every depth, every setup, both modes.
+    for setup in SETUPS:
+        pins = PERFT_PINS[setup]
+        for mode in (MODE_TEAMS, MODE_FFA):
+            for d in range(1, len(pins)):
+                b = start_board(setup, mode)
+                got = core.perft(b, d)
+                check("C %s/%s perft(%d)" % (setup, MODE_NAMES[mode], d),
+                      got == pins[d], "%d != %d" % (got, pins[d]))
+
+    check("C matches Athena at depth 5 on modern",
+          core.perft(start_board("modern"), 5) == ATHENA_MODERN[5])
+    if deep:
+        for d in (6, 7):
+            got = core.perft(start_board("modern"), d)
+            check("C matches Athena at depth %d on modern" % d,
+                  got == ATHENA_MODERN[d],
+                  "%d != %d" % (got, ATHENA_MODERN[d]))
+
+    # Perft cannot see a bad incremental key or a bad unmake -- it counts the
+    # right number of nodes either way. This walks the tree checking both.
+    for setup in SETUPS:
+        for mode in (MODE_TEAMS, MODE_FFA):
+            bad = core.key_check(start_board(setup, mode), 3)
+            check("C key/unmake integrity %s/%s" % (setup, MODE_NAMES[mode]),
+                  bad == 0, "%d mismatches" % bad)
+
+    # The Zobrist tables really crossed the boundary intact.
+    rng = random.Random(7)
+    key_bad = attack_bad = move_bad = 0
+    for _ in range(150):
+        b = random_position(rng)
+        if core.recompute_key(b) != b.recompute_key():
+            key_bad += 1
+        if sorted(core.gen_legal(b)) != sorted(fast.gen_legal(b)):
+            move_bad += 1
+        for sq in random.Random(_).sample(list(SQUARES), 12):
+            if core.is_attacked(b, sq, b.turn) != fast.is_attacked(b, sq, b.turn):
+                attack_bad += 1
+    check("C and Python Zobrist keys agree bit-for-bit", key_bad == 0,
+          "%d differ" % key_bad)
+    check("C and Python agree on is_attacked", attack_bad == 0,
+          "%d differ" % attack_bad)
+    check("C and Python agree on legal moves", move_bad == 0,
+          "%d positions differ" % move_bad)
+
+
 def perft_deep():
     section("deep perft -- all setups, both modes, to depth 5")
     print("  %-9s %-6s %12s %12s %8s" % ("setup", "mode", "depth 4", "depth 5",
@@ -819,14 +881,18 @@ def crosscheck_chunk(args):
             try:
                 a = sorted(fast.gen_legal(b))
                 c = sorted(slow.gen_legal(b))
+                d = sorted(core.gen_legal(b)) if HAVE_C else a
             except Exception as exc:                     # noqa: BLE001
                 disagreements.append((b.to_fen4(), "exception: %r" % (exc,)))
                 break
-            if a != c:
-                only_a = [move_str(m) for m in a if m not in c]
-                only_c = [move_str(m) for m in c if m not in a]
+            if a != c or a != d:
+                who = "slow" if a != c else "C"
+                other = c if a != c else d
+                only_a = [move_str(m) for m in a if m not in other]
+                only_o = [move_str(m) for m in other if m not in a]
                 disagreements.append(
-                    (b.to_fen4(), "fast-only=%s slow-only=%s" % (only_a, only_c)))
+                    (b.to_fen4(), "fast-only=%s %s-only=%s"
+                     % (only_a, who, only_o)))
                 if len(disagreements) > 4:
                     break
             if not a:
@@ -940,6 +1006,7 @@ def main():
     test_dead_seats()
     test_castling()
     test_perft(args.perft)
+    test_c_core(args.perft_deep)
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, args.workers, args.quiet)
     if args.perft_deep:

@@ -53,22 +53,29 @@ difference can bite this shallow.
 | 3 | 7,800 | 7,800 | match |
 | 4 | 152,050 | 152,050 | match |
 | 5 | 3,452,310 | 3,452,310 | match |
-| 6 | 77,430,383 | — | not yet run |
-| 7 | 1,735,784,286 | — | not yet run |
+| 6 | 77,430,383 | 77,430,383 | match |
+| 7 | 1,735,784,286 | 1,735,784,286 | match |
 
-**Exact through depth 5.** En passant first occurs at depth 4, so this confirms
-the en-passant lifetime model (§5.1) and the basic capture geometry against an
-independent implementation.
+**Exact through depth 7.** Depths 6 and 7 were run through the C core (3.0 s and
+68.7 s); pure Python would have taken ~12 min and ~4.5 h.
 
-The two-flank divergence predicted in §5.4 did **not** appear by depth 5. That
-is consistent rather than contradictory: two of your own pawns must simultaneously
-attack the same skipped square, which needs more development than five plies
-allows. Depths 6 and 7 are where it would first show, and Tetrarch is expected to
-differ there — see §5.4 before treating any such difference as a regression.
+En passant first occurs at depth 4, so this confirms the en-passant lifetime
+model (§5.1) and the capture geometry against an independent implementation
+across 1.7 billion nodes.
 
-Depths 6 and 7 are not reachable in pure Python at any sensible wall time
-(depth 6 would be ~11 minutes, depth 7 ~4 hours). They are a Phase 2 gate, once
-the C core exists.
+### The two-flank divergence is not testable by perft
+
+§5.4 predicted Tetrarch would diverge from Athena once two of your own pawns
+attack the same skipped square. It did not appear at depth 6 or 7, and it never
+can: the case needs, for example, Blue to double-push b6–d6 while Red has pawns
+on **both** b5 and d5. Red's pawns start on files d–k, so putting one on file b
+costs two captures plus a push — six Red moves at minimum, which is ply 21 or
+later. Every other seat pairing is worse.
+
+So **no reachable perft can distinguish the two implementations here**, and
+Athena's numbers matching is not evidence either way. The differential gate
+against the slow reference generator, which reaches these positions by
+scattering rather than by playing to them, is the only check that covers it.
 
 ## Why the setups differ
 
@@ -151,3 +158,49 @@ cross-check that never generated an en-passant capture would pass vacuously.
 Both Phase 1 gate conditions are therefore met: the two independently written
 generators agree over 10 M random positions, and perft to depth 5 is recorded
 above for all five setups with `modern` matching Athena exactly.
+
+## Phase 2 gate: PASSED
+
+The C core (`src/c/tetrarch.c`, reached through `tetrarch/core.py`) declares no
+chess constants of its own — every table is pushed in from `board.py` at
+startup, and the struct layouts are asserted against the C `sizeof` at load
+time.
+
+* **Node-for-node with Python**: identical perft at every depth 1–5, for all
+  five setups, in both modes. 50 comparisons, 0 differences.
+* **Depths 6 and 7 against Athena**: exact, as tabulated above.
+* **Zobrist keys agree bit-for-bit** between C and Python over random positions.
+* **`is_attacked` agrees** between C and Python over random positions and squares.
+* **Move lists agree** — the cross-check is now three-way (fast Python, slow
+  Python, C), so a C-only bug is caught by the same gate.
+
+### Key and unmake integrity
+
+Perft is blind to two failures that matter later: a wrong *incremental* Zobrist
+key still counts the right number of nodes, and it only surfaces once the
+transposition table starts trusting it. `tt_key_check` walks the whole legal
+tree checking, after every make, that the incremental key equals a full
+recompute, and after every unmake that the piece array is restored exactly.
+
+Depth 3, all five setups, both modes: **0 mismatches** in all ten runs.
+
+### Speed
+
+| | nodes/s |
+|---|---:|
+| Python reference (`tetrarch/movegen.py`) | ~105,000 |
+| C core (`src/c/tetrarch.c`) | **~27,500,000** |
+
+About 260×. Athena reports ~120 Mnps with 256-bit bitboards; Tetrarch is mailbox
+by design (see the project brief) and porting to bitboards stays a later option
+behind the same interface, if profiling ever says so.
+
+Bench signature at depth 5 over the five frozen positions in `bench.py`:
+
+```
+93846865 nodes 27492167 nps
+```
+
+The node count is exact and machine-independent; the nps is the M2 Pro figure
+above. `bench.py --rounds 9` discards round 1 and reports the median with its
+spread — use that, not the single-round number, for any NPS claim under 1 %.
