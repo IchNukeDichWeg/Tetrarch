@@ -240,6 +240,37 @@ between finishing an iteration and not, and a whole extra ply is worth far more
 than 14%. Awaiting a 10,000-game confirm — which will run against the new
 LMR-on baseline, not the one it was screened on.
 
+### Late move pruning — built, READY TO SCREEN
+
+`setoption name LMP`, default **off**, with `LMPMaxDepth` (3) and `LMPBase` (4).
+Drops quiet moves outright once `LMPBase + depth²` of them have been tried
+without a cutoff, at shallow depth, not in check.
+
+Nodes at fixed depth, classic + modern:
+
+| depth | off | on | |
+|---:|---:|---:|---|
+| 4 | 13,451 | 5,744 | **42.7%** |
+| 5 | 31,359 | 12,178 | **38.8%** |
+| 6 | 154,319 | 71,296 | 46.2% |
+| 7 | 397,384 | 224,196 | 56.4% |
+
+Depth at 20,000 nodes over 40 positions:
+
+| | median | mean | distribution |
+|---|---:|---:|---|
+| off | 4 | 4.25 | 2:1, 3:8, 4:15, 5:13, 6:2, 7:1 |
+| on | **5** | **5.25** | 4:5, 5:21, 6:13, 7:1 |
+
+A full extra ply, and the shallow tail (depth 2–3) disappears entirely. Larger
+than LMR's gain (3.73 → 4.25) on the same measurement.
+
+**It is a hard prune**, so it can miss things. Over 84 comparable positions it
+missed a mate the full search finds 3 times, and **invented one 0 times** — the
+`legal >= 1` guard is what prevents a node pruning every move and then claiming
+checkmate. selftest pins the never-invents property; missing is the trade the
+games have to price.
+
 ---
 
 ## A property of the harness worth knowing

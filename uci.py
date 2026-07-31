@@ -38,6 +38,8 @@ class Engine:
         self.net = None
         self.lmr_min_depth = 3
         self.lmr_min_move = 3
+        self.lmp_max_depth = 3
+        self.lmp_base = 4
         self.board = start_board(self.setup, self.mode)
 
     # -- protocol ---------------------------------------------------------
@@ -62,6 +64,9 @@ class Engine:
         print("option name LMRMinDepth type spin default 3 min 1 max 16")
         print("option name LMRMinMove type spin default 3 min 1 max 32")
         print("option name LazyEval type check default false")
+        print("option name LMP type check default false")
+        print("option name LMPMaxDepth type spin default 3 min 0 max 8")
+        print("option name LMPBase type spin default 4 min 1 max 32")
         print("uciok")
 
     def cmd_isready(self, _args):
@@ -98,6 +103,13 @@ class Engine:
             core.set_lmr(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "lazyeval":
             core.set_lazy_eval(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "lmp":
+            core.set_lmp(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name in ("lmpmaxdepth", "lmpbase"):
+            self.lmp_max_depth = (int(value) if name == "lmpmaxdepth"
+                                  else self.lmp_max_depth)
+            self.lmp_base = (int(value) if name == "lmpbase" else self.lmp_base)
+            core.set_lmp_params(self.lmp_max_depth, self.lmp_base)
         elif name in ("lmrmindepth", "lmrminmove"):
             self.lmr_min_depth = (int(value) if name == "lmrmindepth"
                                   else self.lmr_min_depth)

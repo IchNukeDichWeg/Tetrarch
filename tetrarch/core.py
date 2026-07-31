@@ -242,6 +242,9 @@ def load(path=None):
     lib.tt_set_lmr_params.argtypes = [ctypes.c_int, ctypes.c_int]
     lib.tt_set_lazy_eval.argtypes = [ctypes.c_int]
     lib.tt_get_lazy_eval.restype = ctypes.c_int
+    lib.tt_set_lmp.argtypes = [ctypes.c_int]
+    lib.tt_get_lmp.restype = ctypes.c_int
+    lib.tt_set_lmp_params.argtypes = [ctypes.c_int, ctypes.c_int]
     lib.tt_divide.restype = ctypes.c_int
     lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.POINTER(ctypes.c_uint32),
@@ -388,6 +391,24 @@ def set_lazy_eval(on):
 
 def lazy_eval_enabled():
     return bool(load().tt_get_lazy_eval())
+
+
+def set_lmp(on):
+    """Late move pruning. Off by default pending its A/B.
+
+    A hard prune: it drops moves outright, so it can miss a mate the full
+    search finds. It never invents one -- pruning requires a legal move to
+    already have been found.
+    """
+    load().tt_set_lmp(1 if on else 0)
+
+
+def lmp_enabled():
+    return bool(load().tt_get_lmp())
+
+
+def set_lmp_params(max_depth, base):
+    load().tt_set_lmp_params(int(max_depth), int(base))
 
 
 def evaluate(b):

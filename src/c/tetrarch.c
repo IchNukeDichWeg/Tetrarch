@@ -1008,6 +1008,30 @@ void tt_set_lmr_params(int min_depth, int min_move)
     lmr_min_move = min_move < 1 ? 1 : min_move;
 }
 
+/* --- late move pruning (toggle: off by default) ---------------------------
+ *
+ * LMR searches the quiet tail shallower; this drops it entirely at shallow
+ * depth once enough quiet moves have been tried without a cutoff. At a
+ * branching factor near 60 the tail is most of the tree.
+ *
+ * The guard that matters: never prune before at least one legal move has been
+ * found. Pruning every move at a node would leave `legal` at zero and the node
+ * would report checkmate -- inventing a mate that is not there, which is far
+ * worse than searching too much.
+ */
+static int use_lmp = 0;
+static int lmp_max_depth = 3;
+static int lmp_base = 4;
+
+void tt_set_lmp(int on) { use_lmp = on ? 1 : 0; }
+int tt_get_lmp(void) { return use_lmp; }
+
+void tt_set_lmp_params(int max_depth, int base)
+{
+    lmp_max_depth = max_depth < 0 ? 0 : max_depth;
+    lmp_base = base < 1 ? 1 : base;
+}
+
 static uint32_t search_buf[MAX_DEPTH][MAX_MOVES];
 static int32_t order_buf[MAX_DEPTH][MAX_MOVES];
 static uint64_t search_nodes;
@@ -1178,7 +1202,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     int32_t *scores, best = -INF_SCORE, orig_alpha = alpha;
     TtUndo u;
     TtEntry *slot = 0;
-    int n, i, legal = 0, me = b->turn, in_chk;
+    int n, i, legal = 0, quiets = 0, me = b->turn, in_chk;
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
 
@@ -1215,6 +1239,17 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         int is_capture_before, reduction;
         pick_move(moves, scores, n, i);
         is_capture_before = is_capture(b, moves[i]);
+
+        /* Drop the quiet tail without even making the move. `legal >= 1` is
+         * not an optimisation: without it a node could prune every move and
+         * then claim checkmate. */
+        if (use_lmp && legal >= 1 && depth <= lmp_max_depth && !in_chk
+            && !is_capture_before && !MV_PROMO(moves[i])
+            && quiets >= lmp_base + depth * depth) {
+            continue;
+        }
+        if (!is_capture_before) quiets++;
+
         tt_make(b, moves[i], &u);
         king = b->kings[me];
         if (king >= 0 && tt_is_attacked(b, king, me)) {

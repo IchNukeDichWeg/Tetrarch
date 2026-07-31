@@ -924,6 +924,7 @@ def test_search(workers=1):
     check("pvs default off (dormant)", not core.pvs_enabled())
     check("lmr default on (confirmed)", core.lmr_enabled())
     check("lazy eval default off (dormant)", not core.lazy_eval_enabled())
+    check("lmp default off (dormant)", not core.lmp_enabled())
 
     core.set_hash(16)
     pins = []
@@ -1026,6 +1027,31 @@ def test_search(workers=1):
         moved.append((setup, plain == lazy))
     core.set_lazy_eval(False)
     check_all("lazy eval leaves the tree unchanged", moved)
+
+    # LMP drops moves outright. It may MISS a mate -- that is the trade -- but
+    # it must never INVENT one, which is what would happen if a node pruned
+    # every move and then reported no legal moves.
+    rng = random.Random(88)
+    invented = compared = 0
+    for _ in range(120):
+        b = random_position(rng)
+        if b.mode != MODE_TEAMS or not all(b.alive) or not fast.gen_legal(b):
+            continue
+        compared += 1
+        core.set_lmp(False)
+        core.clear_hash()
+        plain = core.search(b, 4).score
+        core.set_lmp(True)
+        core.clear_hash()
+        pruned = core.search(b, 4).score
+        if abs(pruned) >= 29900 and abs(plain) < 29900:
+            invented += 1
+    core.set_lmp(False)
+    check("lmp never invents a mate", invented == 0,
+          "%d of %d positions" % (invented, compared))
+    core.clear_hash()
+    check("lmp off leaves the pinned tree alone",
+          core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
 
     core.set_hash(core.DEFAULT_TT_MB)
 
