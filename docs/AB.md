@@ -250,7 +250,7 @@ Still larger than +14% NPS would normally buy, and the likely reason is depth
 granularity — at a median of 4–5 plies, 14% more nodes is often the difference
 between finishing an iteration and not.
 
-### Late move pruning — built, READY TO SCREEN
+### Late move pruning — CONFIRMED, default on
 
 `setoption name LMP`, default **off**, with `LMPMaxDepth` (3) and `LMPBase` (4).
 Drops quiet moves outright once `LMPBase + depth²` of them have been tried
@@ -278,10 +278,19 @@ than LMR's gain (3.73 → 4.25) on the same measurement.
 **It is a hard prune**, so it can miss things. Over 84 comparable positions it
 missed a mate the full search finds 3 times, and **invented one 0 times** — the
 `legal >= 1` guard is what prevents a node pruning every move and then claiming
-checkmate. selftest pins the never-invents property; missing is the trade the
-games have to price.
+checkmate. selftest pins the never-invents property.
 
-### Quiescence check evasions — built, READY TO SCREEN
+| | |
+|---|---|
+| Instrument | fixed nodes 20,000 |
+| Games | 10,000 (2,500 openings × 4) |
+| Elo | **+36.09 ± 6.69** |
+| Dist | 96, 6, 437, 36, 968, 33, 683, 16, 225 |
+
+Screened +36.62 ± 15.43 over 2,000 first — the confirm landed almost exactly on
+the screen. Released as **v4**.
+
+### Quiescence check evasions — SCREENED +104.68, confirm pending
 
 `setoption name QSEvasions`, default **off**. When the side to move is in check
 quiescence searches every legal move instead of captures only, does not stand
@@ -305,11 +314,19 @@ What it costs:
 
 Mean depth at 20,000 nodes falls 4.25 → 4.08.
 
-So it is a genuine correctness fix that costs about a sixth of a ply. Unlike
-the pruning features there is no reason to expect it to win on node count —
-the case for it is that the search stops mis-scoring lost positions. Whether
-that is worth the depth is exactly what the games decide, and it is the first
-feature here where a negative result would still be interesting.
+So it is a genuine correctness fix that costs about a sixth of a ply.
+
+**Screened +104.68 ± 15.67** over 2,000 games (Dist: 7, 2, 45, 7, 167, 6, 176,
+2, 88). About 6.7σ, and the largest single result measured on this engine.
+
+I predicted this might be *negative* — it costs depth and wins nothing on node
+count. That was reasoning from two-player chess, and it was wrong for a reason
+specific to this game: **in 4PC you can be checked by three opponents rather
+than one**, so checks are far more frequent, and a quiescence that mis-handles
+check is proportionally more broken. Standard chess intuition understates this
+feature here.
+
+Awaiting the 10,000-game confirm.
 
 ---
 

@@ -396,7 +396,7 @@ def lazy_eval_enabled():
 
 
 def set_lmp(on):
-    """Late move pruning. Off by default pending its A/B.
+    """Late move pruning. CONFIRMED +36.09 +/- 6.69, default on (docs/AB.md).
 
     A hard prune: it drops moves outright, so it can miss a mate the full
     search finds. It never invents one -- pruning requires a legal move to

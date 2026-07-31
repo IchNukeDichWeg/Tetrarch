@@ -387,8 +387,11 @@ def main():
     args.opts_a = parse_opts(args.opt_a)
     args.opts_b = parse_opts(args.opt_b)
 
-    if os.path.exists(args.log):
-        ap.error("%s already exists; pick a fresh path" % args.log)
+    # Never overwrite a previous run, and never refuse to start over a name
+    # collision either -- just take the next free one and say so.
+    args.log = _free_path(args.log)
+    if args.pgn4:
+        args.pgn4 = _free_path(args.pgn4)
 
     nproc = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
     total = args.positions * ROTATIONS
@@ -469,6 +472,23 @@ def main():
     if args.pgn4:
         print("pgn4: %s" % args.pgn4)
     return 0
+
+
+def _free_path(path):
+    """`run.jsonl` -> `run.jsonl` if free, else `run-2.jsonl`, `run-3.jsonl`...
+
+    A campaign log is the only record of a run, so overwriting one silently is
+    unacceptable; so is refusing to start because a name was reused.
+    """
+    if not os.path.exists(path):
+        return path
+    stem, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists("%s-%d%s" % (stem, n, ext)):
+        n += 1
+    chosen = "%s-%d%s" % (stem, n, ext)
+    print("%s exists; writing %s" % (path, chosen))
+    return chosen
 
 
 def _ignore_sigint():

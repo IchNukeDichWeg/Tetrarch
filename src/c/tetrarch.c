@@ -1014,18 +1014,23 @@ void tt_set_lmr_params(int min_depth, int min_move)
     lmr_min_move = min_move < 1 ? 1 : min_move;
 }
 
-/* --- late move pruning (toggle: off by default) ---------------------------
+/* --- late move pruning ----------------------------------------------------
  *
  * LMR searches the quiet tail shallower; this drops it entirely at shallow
  * depth once enough quiet moves have been tried without a cutoff. At a
  * branching factor near 60 the tail is most of the tree.
+ *
+ * CONFIRMED and default ON. Teams / classic, fixed nodes 20,000:
+ *   +36.09 +/- 6.69 Elo over 10,000 games
+ *   Dist: 96, 6, 437, 36, 968, 33, 683, 16, 225
+ * Mean depth at the instrument went 4.25 -> 5.25, a full extra ply.
  *
  * The guard that matters: never prune before at least one legal move has been
  * found. Pruning every move at a node would leave `legal` at zero and the node
  * would report checkmate -- inventing a mate that is not there, which is far
  * worse than searching too much.
  */
-static int use_lmp = 0;
+static int use_lmp = 1;
 static int lmp_max_depth = 3;
 static int lmp_base = 4;
 

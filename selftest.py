@@ -871,11 +871,11 @@ def test_eval():
 #: Killers, then LMR. A confirmed feature changes the tree, so the pins move
 #: with it -- the point is to re-measure, never to relax them.
 SEARCH_PINS = {
-    "classic": [40, 194, 1129, 8177, 17772],
-    "modern": [40, 148, 1158, 5274, 13587],
-    "by": [40, 148, 1211, 4866, 10565],
-    "byg": [40, 148, 1211, 3589, 11713],
-    "rg": [40, 190, 1237, 6881, 14270],
+    "classic": [40, 84, 311, 3516, 7449],
+    "modern": [40, 86, 322, 2228, 4729],
+    "by": [40, 86, 322, 2137, 7861],
+    "byg": [40, 86, 322, 1782, 6904],
+    "rg": [40, 80, 342, 3259, 7547],
 }
 
 
@@ -889,7 +889,10 @@ MINIMAX_POSITIONS = 30
 def _minimax_job(index):
     """One seeded sparse position, compared at depths 1-3. Seeded by index so
     a worker can rebuild it without shipping a Board across the pipe."""
-    core.set_lmr(False)          # the oracle is plain minimax; see test_search
+    # The oracle is plain minimax, so every inexact feature has to be off:
+    # LMR reduces and LMP drops outright, and neither claims to agree with it.
+    core.set_lmr(False)
+    core.set_lmp(False)
     rng = random.Random(3000 + index)
     b = _sparse_teams(rng)
     legal = fast.gen_legal(b)
@@ -906,6 +909,7 @@ def _minimax_job(index):
             bad += 1
         tested += 1
     core.set_lmr(True)
+    core.set_lmp(True)
     return (tested, bad)
 
 
@@ -924,7 +928,7 @@ def test_search(workers=1):
     check("pvs default off (dormant)", not core.pvs_enabled())
     check("lmr default on (confirmed)", core.lmr_enabled())
     check("lazy eval default on (confirmed)", core.lazy_eval_enabled())
-    check("lmp default off (dormant)", not core.lmp_enabled())
+    check("lmp default on (confirmed)", core.lmp_enabled())
     check("qsearch evasions default off (dormant)",
           not core.qs_evasions_enabled())
 
@@ -1047,25 +1051,39 @@ def test_search(workers=1):
         pruned = core.search(b, 4).score
         if abs(pruned) >= 29900 and abs(plain) < 29900:
             invented += 1
-    core.set_lmp(False)
+    core.set_lmp(True)          # restore the confirmed default
     check("lmp never invents a mate", invented == 0,
           "%d of %d positions" % (invented, compared))
     core.clear_hash()
-    check("lmp off leaves the pinned tree alone",
+    check("toggling lmp returns to the pinned tree",
           core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
 
-    # Quiescence cannot stand pat while in check. With evasions on it must see
-    # a mate that the capture-only quiescence walks straight past.
-    mated = position({"a5": (RED, KING), "n9": (YELLOW, KING),
-                      "b7": (BLUE, KING), "m7": (GREEN, KING),
-                      "b5": (RED, QUEEN), "c5": (RED, ROOK)}, turn=BLUE)
-    core.set_qs_evasions(True)
-    core.clear_hash()
-    seen = core.search(mated, 1).score
-    core.set_qs_evasions(False)
-    core.clear_hash()
-    check("quiescence evasions reach the search",
-          core.search(mated, 1).score != seen or True)
+    # Quiescence cannot stand pat while in check: it scores lost positions as
+    # quiet and cannot see a mate at all. Asserted as a property over in-check
+    # positions rather than one hand-built fixture -- a fixture that stops
+    # being mate tests nothing and says nothing about why.
+    rng = random.Random(5)
+    only_with = examined = 0
+    for _ in range(400):
+        if examined >= 40:
+            break
+        b = random_position(rng)
+        if b.mode != MODE_TEAMS or not all(b.alive) or not fast.gen_legal(b):
+            continue
+        if not any(fast.in_check(b, c) for c in range(4)):
+            continue
+        examined += 1
+        core.set_qs_evasions(False)
+        core.clear_hash()
+        without = core.search(b, 2).score
+        core.set_qs_evasions(True)
+        core.clear_hash()
+        with_ev = core.search(b, 2).score
+        if abs(with_ev) >= 29900 and abs(without) < 29900:
+            only_with += 1
+    core.set_qs_evasions(False)          # restore the default
+    check("quiescence sees mates only with evasions on", only_with > 0,
+          "%d of %d in-check positions" % (only_with, examined))
     core.clear_hash()
     check("qsearch evasions off leaves the pinned tree alone",
           core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
