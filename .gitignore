@@ -1,0 +1,14 @@
+.venv/
+build/
+__pycache__/
+*.pyc
+*.so
+*.dylib
+
+# Generated data: training positions, nets, match logs, campaign state.
+# Every tool writes to a path given on the CLI; these are the conventional
+# scratch locations, never a default.
+scratch/
+*.bin
+*.nnue
+*.pgn4
