@@ -86,9 +86,11 @@ src/c/                    the accelerator
 nets/                     quantised nets the engine loads
     net-v0.nnue           first net; bootstrap off the throwaway eval  done
 
-gui/                      Flask viewer: paste PGN4, step a game     done
-    app.py                one app, three JSON endpoints
-    templates/index.html  one page, one canvas, no npm
+gui/                      paste PGN4, step a game                   done
+    viewer.html           standalone: open it from disk, no server
+    app.py                serves the same file plus an engine endpoint
+
+tests/js_replay_check.js  viewer replay vs pgn4.py, run by selftest  done
 
 docs/
     RULES.md              normative rules, with sources             done

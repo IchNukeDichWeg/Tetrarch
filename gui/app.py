@@ -4,6 +4,10 @@
     python3 gui/app.py            # http://127.0.0.1:7442
     python3 gui/app.py --port 8080 --host 0.0.0.0
 
+gui/viewer.html works on its own -- open it from disk, no server needed. This
+adds the one thing a static file cannot do: run the engine. The page detects
+that and shows its Evaluate panel only when served.
+
 Default port is 7442, not 5000: macOS binds 5000 to ControlCenter (AirPlay).
 $PORT is honoured as the default so harnesses that assign a port work; that is
 deployment configuration, not a feature gate -- there are no hidden switches
@@ -11,10 +15,11 @@ here.
 
 One Flask app, one page, one canvas. No framework, no build step, no npm.
 
-The server does all the chess: it parses the PGN4, replays it, and hands the
-client an array of frames, each carrying a FEN4 and the seat state. The client
-only has to draw a FEN4 string, which is a twenty-line parser -- reimplementing
-four-player rules in JavaScript would be a second engine to keep correct.
+The page replays PGN4 itself, in the browser. That is a second implementation
+of "apply this move", so tests/js_replay_check.js compares it frame-for-frame
+against tetrarch/pgn4.py and selftest.py runs that whenever node is present.
+It generates no moves and tests no legality; /api/parse remains here for
+callers that want the engine's own replay, including its legality errors.
 
 The C core keeps global state (the transposition table, the search buffers) and
 is not thread-safe, so evaluation requests are serialised behind a lock.
@@ -27,7 +32,7 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from flask import Flask, jsonify, render_template, request      # noqa: E402
+from flask import Flask, jsonify, request, send_from_directory  # noqa: E402
 
 from tetrarch.board import Board, MODE_FFA, MODE_TEAMS, SETUPS, move_str  # noqa: E402
 from tetrarch import pgn4                                        # noqa: E402
@@ -38,10 +43,18 @@ from tetrarch.search import Limits, search                       # noqa: E402
 app = Flask(__name__)
 ENGINE_LOCK = threading.Lock()
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
 
 @app.route("/")
 def index():
-    return render_template("index.html", setups=SETUPS)
+    """Serve the same file that works standalone.
+
+    gui/viewer.html opens straight off disk with no server. Served here it is
+    byte-identical and simply notices that an /api/eval endpoint answers, so
+    there is one page to keep correct rather than two.
+    """
+    return send_from_directory(HERE, "viewer.html")
 
 
 @app.route("/api/parse", methods=["POST"])

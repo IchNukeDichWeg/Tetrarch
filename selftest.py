@@ -1149,6 +1149,70 @@ def test_match_rotation():
           len(fens) == match.ROTATIONS, "%d distinct" % len(fens))
 
 
+def test_js_replay():
+    section("standalone viewer replayer (gui/viewer.html)")
+    import json
+    import shutil
+    import subprocess
+    from tetrarch import pgn4
+
+    node = shutil.which("node")
+    if not node:
+        check("node available for the JS differential", True,
+              "skipped: node is not installed and is not a dependency")
+        return
+
+    # The viewer replays PGN4 in the browser with no server, so a second
+    # implementation of "apply this move" exists. It generates no moves and
+    # tests no legality, but castling, en passant, promotion and seat
+    # elimination are real rules -- and a second implementation of a rule
+    # drifts unless something compares them.
+    rng = random.Random(21)
+    cases = []
+    for setup in SETUPS:
+        b = start_board(setup)
+        moves = []
+        for _ in range(60):
+            legal = fast.gen_legal(b)
+            if not legal:
+                break
+            m = rng.choice(legal)
+            moves.append(m)
+            b.make(m)
+        text = pgn4.write(start_board(setup), moves, {"Result": "*"})
+        frames, _ = pgn4.replay(pgn4.parse(text))
+
+        def key(frame):
+            fen = frame["fen4"]
+            cut = fen.rfind("-")
+            meta = fen[:cut].split("-")
+            # Board, turn and alive only: the viewer tracks no castling rights
+            # and no halfmove clock, and does not need them to replay.
+            return "%s|%s|%s" % (meta[0], meta[1], fen[cut + 1:])
+
+        cases.append({"setup": setup, "pgn4": text,
+                      "frames": [key(f) for f in frames]})
+
+    path = os.path.join(SCRATCH, "tetrarch-js-cases.json")
+    with open(path, "w") as fh:
+        json.dump(cases, fh)
+    try:
+        proc = subprocess.run([node, "tests/js_replay_check.js", path],
+                              capture_output=True, text=True, timeout=120)
+        report = json.loads(proc.stdout or "{}")
+    except Exception as exc:                                 # noqa: BLE001
+        check("the JS replayer matches the Python one", False, repr(exc))
+        return
+    finally:
+        os.remove(path)
+
+    check("the JS replayer matches the Python one",
+          proc.returncode == 0 and not report.get("failures"),
+          "%d frames compared%s" % (report.get("compared", 0),
+                                    "; " + report["failures"][0]
+                                    if report.get("failures") else ""))
+
+
 def test_pgn4():
     section("PGN4 (§11.5)")
     from tetrarch import pgn4
@@ -1516,6 +1580,7 @@ def main():
     test_nnue()
     test_match_rotation()
     test_pgn4()
+    test_js_replay()
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, workers, args.quiet)
     if args.perft_deep:

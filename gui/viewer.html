@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tetrarch — PGN4 viewer</title>
+<!--
+  Standalone. Open this file directly; no server, no build step, no npm.
+
+  It REPLAYS a PGN4, it does not generate moves. PGN4 movetext is long
+  algebraic and always carries both squares, so applying a move needs no
+  legality test and no move generator -- only the four rules that make a move
+  more than "pick the piece up and put it down": castling, en passant,
+  promotion, and seats leaving the game. Reimplementing four-player movegen in
+  JavaScript would be a second engine to keep correct, and this deliberately
+  is not one.
+
+  Consequences, stated rather than hidden: nothing here validates that a move
+  was legal, and there are no check markers, because both need attack
+  generation. Evaluation needs the engine, so the Evaluate button appears only
+  when this page is served by gui/app.py.
+-->
+<style>
+  :root {
+    --bg:#16181d; --panel:#1e2128; --line:#2c3039; --text:#d8dbe2; --dim:#868d9c;
+    --red:#d64f4f; --blue:#4f86d6; --yellow:#d6b23f; --green:#46a85c;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line);
+           display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.04em; }
+  header span { color:var(--dim); font-size:12px; }
+  main { display:flex; gap:16px; padding:16px; align-items:flex-start; flex-wrap:wrap; }
+  canvas { background:var(--panel); border:1px solid var(--line);
+           border-radius:6px; display:block; }
+  .side { display:flex; flex-direction:column; gap:12px; min-width:320px;
+          flex:1; max-width:520px; }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:6px; padding:10px 12px; }
+  .card h2 { font-size:11px; margin:0 0 8px; color:var(--dim);
+             text-transform:uppercase; letter-spacing:.09em; font-weight:600; }
+  textarea { width:100%; height:150px; background:#12141a; color:var(--text);
+             border:1px solid var(--line); border-radius:4px; padding:8px;
+             font:12px/1.45 ui-monospace,Menlo,monospace; resize:vertical; }
+  button { background:#2b303a; color:var(--text); border:1px solid var(--line);
+           border-radius:4px; padding:6px 12px; font:inherit; font-size:13px;
+           cursor:pointer; }
+  button:hover:not(:disabled) { background:#363c48; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th,td { text-align:left; padding:3px 6px; }
+  th { color:var(--dim); font-weight:500; font-size:11px; }
+  .seat-R{color:var(--red)} .seat-B{color:var(--blue)}
+  .seat-Y{color:var(--yellow)} .seat-G{color:var(--green)}
+  .dead { opacity:.42; text-decoration:line-through; }
+  #moves { max-height:300px; overflow-y:auto; }
+  #moves .mv { display:inline-block; min-width:80px; padding:2px 5px; margin:1px;
+               border-radius:3px; cursor:pointer; font-size:12px; }
+  #moves .mv:hover { background:#2b303a; }
+  #moves .mv.on { background:#3d4452; outline:1px solid #5a6478; }
+  #moves .num { color:var(--dim); display:inline-block; min-width:30px; font-size:12px; }
+  .err { color:#e5825a; font-size:12px; margin-top:6px; white-space:pre-wrap; }
+  .muted { color:var(--dim); font-size:12px; }
+  kbd { background:#2b303a; border:1px solid var(--line); border-radius:3px;
+        padding:0 4px; font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TETRARCH</h1>
+  <span>PGN4 viewer — <kbd>←</kbd> <kbd>→</kbd> step, <kbd>Home</kbd> <kbd>End</kbd> jump</span>
+  <span id="status"></span>
+</header>
+
+<main>
+  <div>
+    <canvas id="board" width="616" height="616"></canvas>
+    <div class="row" style="margin-top:10px">
+      <button id="first">|◀</button><button id="prev">◀</button>
+      <button id="next">▶</button><button id="last">▶|</button>
+      <span id="plyLabel" class="muted">—</span>
+      <label class="muted"><input type="checkbox" id="flip"> rotate</label>
+    </div>
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <h2>Paste PGN4</h2>
+      <textarea id="pgn" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="load">Load</button>
+        <button id="sample">Sample</button>
+        <span id="tags" class="muted"></span>
+      </div>
+      <div id="parseErr" class="err"></div>
+    </div>
+    <div class="card"><h2>Seats</h2><table id="seats"></table></div>
+    <div class="card" id="evalCard" style="display:none">
+      <h2>Evaluation</h2>
+      <div class="row">
+        <button id="evalBtn">Evaluate</button>
+        <span id="evalOut" class="muted"></span>
+      </div>
+    </div>
+    <div class="card"><h2>Moves</h2><div id="moves" class="muted">nothing loaded</div></div>
+  </div>
+</main>
+
+<script>
+"use strict";
+const SEATS = ["R","B","Y","G"], NAME = {R:"Red",B:"Blue",Y:"Yellow",G:"Green"};
+const COLOUR = {r:"#d64f4f", b:"#4f86d6", y:"#d6b23f", g:"#46a85c", d:"#6d7382"};
+const GLYPH = {P:"♟",N:"♞",B:"♝",R:"♜",Q:"♛",K:"♚"};
+const N = 14, CELL = 44;
+
+// --- board ---------------------------------------------------------------
+const playable = (f,r) => f>=0 && f<N && r>=0 && r<N &&
+                          !((f<3||f>10) && (r<3||r>10));
+const sqName = (f,r) => "abcdefghijklmn"[f] + (r+1);
+function parseSquare(s){
+  const m = /^([a-n])(\d{1,2})$/.exec(s);
+  return m ? [m[1].charCodeAt(0)-97, parseInt(m[2],10)-1] : null;
+}
+
+// The classic start (§3.4). The other four setups are this with the named
+// seats' king and queen exchanged (§3.2) -- one base position plus a swap set,
+// not five literals.
+const CLASSIC =
+ "R-0,0,0,0-1,1,1,1-1,1,1,1-0,0,0,0-0-"+
+ "3,yR,yN,yB,yK,yQ,yB,yN,yR,3/3,yP,yP,yP,yP,yP,yP,yP,yP,3/14/"+
+ "bR,bP,10,gP,gR/bN,bP,10,gP,gN/bB,bP,10,gP,gB/bK,bP,10,gP,gQ/"+
+ "bQ,bP,10,gP,gK/bB,bP,10,gP,gB/bN,bP,10,gP,gN/bR,bP,10,gP,gR/14/"+
+ "3,rP,rP,rP,rP,rP,rP,rP,rP,3/3,rR,rN,rB,rQ,rK,rB,rN,rR,3";
+const SWAPS = {classic:[], modern:[1,3], by:[1,2], byg:[1,2,3], rg:[0,3]};
+// the two central squares of each seat's home row, as [file,rank]
+const CENTRAL = [[[6,0],[7,0]], [[0,6],[0,7]], [[6,13],[7,13]], [[13,6],[13,7]]];
+const ROOKSQ  = [[[3,0],[10,0]], [[0,3],[0,10]], [[3,13],[10,13]], [[13,3],[13,10]]];
+
+function emptyGrid(){ return Array.from({length:N}, () => Array(N).fill(null)); }
+
+function parseFen4(fen){
+  const cut = fen.lastIndexOf("-");
+  const meta = fen.slice(0, cut).trim().split("-");
+  const grid = emptyGrid();
+  const rows = fen.slice(cut+1).trim().split("/");
+  for (let i = 0; i < rows.length && i < N; i++){
+    const rank = 13 - i;
+    let file = 0;
+    for (const raw of rows[i].split(",")){
+      const cell = raw.trim();
+      if (!cell) continue;
+      if (/^\d+$/.test(cell)) { file += parseInt(cell,10); continue; }
+      if (cell === "x" || cell === "X") { file += 1; continue; }
+      const dead = cell[0] === "d";
+      grid[rank][file] = {c: cell[0], t: cell[cell.length-1].toUpperCase(), dead};
+      file += 1;
+    }
+  }
+  const dead = (meta[1]||"0,0,0,0").split(",").map(v => v.trim() === "1");
+  const points = (meta[4]||"0,0,0,0").split(",").map(v => parseInt(v,10)||0);
+  return {grid, turn: Math.max(0, SEATS.indexOf((meta[0]||"R").trim())),
+          alive: dead.map(d => !d), points};
+}
+
+function startPosition(setup){
+  const st = parseFen4(CLASSIC);
+  for (const seat of (SWAPS[setup] || [])){
+    const [[f1,r1],[f2,r2]] = CENTRAL[seat];
+    const a = st.grid[r1][f1], b = st.grid[r2][f2];
+    st.grid[r1][f1] = b; st.grid[r2][f2] = a;
+  }
+  return st;
+}
+
+// --- PGN4 ----------------------------------------------------------------
+const MOVE_RE = /^([KQRBNP])?([a-n](?:1[0-4]|[1-9]))([-x])([a-n](?:1[0-4]|[1-9]))(?:=([QRBNqrbn]))?([+#]*)$/;
+const TERMS = {"#":"checkmate", R:"resign", T:"timeout", S:"stalemate", D:"draw"};
+
+function parsePgn4(text){
+  const tags = {};
+  text.replace(/\[\s*(\w+)\s*"(.*?)"\s*\]/g, (_, k, v) => { tags[k] = v; return ""; });
+  let body = text.replace(/\[[^\]]*\]/g, " ").replace(/\{[^}]*\}/g, " ");
+  const variant = (tags.Variant || "Teams").toLowerCase();
+  let setup = "classic";
+  for (const key of ["Setup","SubVariant","RuleVariants"]){
+    const v = (tags[key] || "").toLowerCase();
+    for (const cand of ["classic","modern","byg","by","rg"])
+      if (v.includes(cand)) { setup = cand; break; }
+  }
+  const start = tags.StartFen4 ? parseFen4(tags.StartFen4)
+              : tags.StartFen  ? parseFen4(tags.StartFen)
+              : startPosition(setup);
+  const tokens = [];
+  for (const raw of body.replace(/\.\./g, " ").split(/\s+/)){
+    const tok = raw.trim();
+    if (!tok || /^\d+\.$/.test(tok)) continue;
+    if (TERMS[tok]) { tokens.push(tok); continue; }
+    if (MOVE_RE.test(tok) || /^O-O(-O)?[+#]*$/i.test(tok)) tokens.push(tok);
+  }
+  return {tags, tokens, start, setup,
+          mode: variant.startsWith("ffa") || variant.startsWith("free") ? "ffa" : "teams"};
+}
+
+// Apply one fully-specified move. No legality test, no generation: the only
+// rules needed are the ones where the token does not say everything.
+function applyMove(state, token){
+  const seat = state.turn;
+  const bare = token.replace(/[+#]+$/, "");
+  const g = state.grid;
+
+  if (/^O-O(-O)?$/i.test(bare)){
+    // Find the king, then the rook 3 squares away is the short side (§6.1).
+    const [c1, c2] = CENTRAL[seat];
+    let king = null;
+    for (const c of [c1, c2]){
+      const p = g[c[1]][c[0]];
+      if (p && p.t === "K" && p.c === "rbyg"[seat]) king = c;
+    }
+    if (!king) throw new Error(token + ": no king on a home square");
+    const ends = ROOKSQ[seat];
+    const dist = e => Math.abs(e[0]-king[0]) + Math.abs(e[1]-king[1]);
+    const short = dist(ends[0]) === 3 ? ends[0] : ends[1];
+    const long  = short === ends[0] ? ends[1] : ends[0];
+    const rook  = bare.toUpperCase() === "O-O-O" ? long : short;
+    const step  = [Math.sign(rook[0]-king[0]), Math.sign(rook[1]-king[1])];
+    const kTo   = [king[0]+2*step[0], king[1]+2*step[1]];
+    const rTo   = [king[0]+step[0],   king[1]+step[1]];
+    g[kTo[1]][kTo[0]] = g[king[1]][king[0]];
+    g[king[1]][king[0]] = null;
+    g[rTo[1]][rTo[0]] = g[rook[1]][rook[0]];
+    g[rook[1]][rook[0]] = null;
+    state.ep = state.ep.map((e,i) => i === seat ? null : e);
+    state.turn = nextSeat(state);
+    return {from: king, to: kTo};
+  }
+
+  const m = MOVE_RE.exec(bare);
+  if (!m) throw new Error("cannot read move " + token);
+  const from = parseSquare(m[2]), to = parseSquare(m[4]);
+  const piece = g[from[1]][from[0]];
+  if (!piece) throw new Error(token + ": no piece on " + m[2]);
+
+  // The mover's own en-passant offer expires now; everyone else's survives,
+  // which is what gives the square its three-ply life (§5.1).
+  state.ep = state.ep.map((e,i) => i === seat ? null : e);
+
+  // A pawn moving diagonally onto an empty square is an en-passant capture.
+  // The pawn removed sits on the square recorded with the offer, which is NOT
+  // the square being moved to (§5.2).
+  if (piece.t === "P" && from[0] !== to[0] && from[1] !== to[1]
+      && !g[to[1]][to[0]]){
+    for (let i = 0; i < 4; i++){
+      const e = state.ep[i];
+      if (e && e.target[0] === to[0] && e.target[1] === to[1]){
+        g[e.victim[1]][e.victim[0]] = null;
+        state.ep[i] = null;
+        break;
+      }
+    }
+  }
+
+  // A pawn crossing two squares in a straight line offers en passant.
+  if (piece.t === "P" && (Math.abs(to[0]-from[0]) + Math.abs(to[1]-from[1])) === 2
+      && (from[0] === to[0] || from[1] === to[1])){
+    state.ep[seat] = {target: [(from[0]+to[0])/2, (from[1]+to[1])/2], victim: to};
+  }
+
+  g[from[1]][from[0]] = null;
+  g[to[1]][to[0]] = m[5] ? {c: piece.c, t: m[5].toUpperCase(), dead: piece.dead}
+                         : piece;
+  state.turn = nextSeat(state);
+  return {from, to};
+}
+
+function nextSeat(state){
+  let t = state.turn;
+  for (let i = 0; i < 4; i++){ t = (t+1) & 3; if (state.alive[t]) return t; }
+  return state.turn;
+}
+
+function replay(game){
+  const st = {grid: game.start.grid.map(r => r.slice()), turn: game.start.turn,
+              alive: game.start.alive.slice(), points: game.start.points.slice(),
+              ep: [null,null,null,null]};
+  const frames = [snapshot(st, null, null)];
+  const terms = [];
+  let error = null;
+  for (const token of game.tokens){
+    const bare = token.replace(/[+#]+$/, "");
+    try {
+      if (TERMS[bare] !== undefined && !MOVE_RE.test(bare)){
+        terms.push({seat: SEATS[st.turn], reason: TERMS[bare]});
+        // The seat leaves; its pieces stay on the board as dead material and
+        // the rotation skips it (§9).
+        for (const row of st.grid)
+          for (const p of row) if (p && p.c === "rbyg"[st.turn]) p.dead = true;
+        st.alive[st.turn] = false;
+        st.turn = nextSeat(st);
+        frames.push(snapshot(st, null, token));
+        continue;
+      }
+      const mv = applyMove(st, token);
+      frames.push(snapshot(st, mv, token));
+    } catch (e){ error = e.message + " (at ply " + frames.length + ")"; break; }
+  }
+  return {frames, terms, error};
+}
+
+function snapshot(st, mv, token){
+  return {grid: st.grid.map(r => r.map(p => p && {...p})), turn: st.turn,
+          alive: st.alive.slice(), points: st.points.slice(),
+          move: mv, token};
+}
+
+// --- rendering -----------------------------------------------------------
+let frames = [], tokens = [], ply = 0, flipped = 0, mode = "teams";
+
+function view(f, r){
+  let x = f, y = r;
+  for (let i = 0; i < flipped; i++){ const nx = y, ny = 13 - x; x = nx; y = ny; }
+  return [x, y];
+}
+
+function draw(){
+  const cv = document.getElementById("board"), ctx = cv.getContext("2d");
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if (!frames.length) return;
+  const fr = frames[ply];
+  for (let r = 0; r < N; r++) for (let f = 0; f < N; f++){
+    if (!playable(f,r)) continue;
+    const [vf,vr] = view(f,r), x = vf*CELL, y = (13-vr)*CELL;
+    ctx.fillStyle = (f+r)%2 ? "#3a3f4a" : "#2a2e37";
+    ctx.fillRect(x,y,CELL,CELL);
+    const p = fr.grid[r][f];
+    if (!p) continue;
+    ctx.font = "30px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const glyph = GLYPH[p.t] || "?";
+    ctx.fillStyle = "rgba(0,0,0,.55)";
+    ctx.fillText(glyph, x+CELL/2+1, y+CELL/2+2);
+    ctx.globalAlpha = p.dead ? 0.45 : 1;
+    ctx.fillStyle = COLOUR[p.dead ? "d" : p.c] || "#999";
+    ctx.fillText(glyph, x+CELL/2, y+CELL/2+1);
+    ctx.globalAlpha = 1;
+  }
+  if (fr.move){
+    ctx.strokeStyle = "#e2c86a"; ctx.lineWidth = 2;
+    for (const sq of [fr.move.from, fr.move.to]){
+      const [vf,vr] = view(sq[0], sq[1]);
+      ctx.strokeRect(vf*CELL+1, (13-vr)*CELL+1, CELL-2, CELL-2);
+    }
+  }
+}
+
+function renderSeats(){
+  const el = document.getElementById("seats");
+  if (!frames.length){ el.innerHTML = ""; return; }
+  const fr = frames[ply];
+  let html = "<tr><th>seat</th><th>state</th><th>points</th></tr>";
+  SEATS.forEach((s,i) => {
+    const dead = !fr.alive[i], turn = fr.turn === i && !dead;
+    html += `<tr class="seat-${s} ${dead?"dead":""}">` +
+            `<td>${turn?"▸ ":"&nbsp;&nbsp;"}${NAME[s]}</td>` +
+            `<td>${dead?"eliminated":(turn?"to move":"active")}</td>` +
+            `<td>${fr.points[i]}</td></tr>`;
+  });
+  el.innerHTML = html;
+}
+
+function renderMoves(){
+  const el = document.getElementById("moves");
+  if (!tokens.length){ el.textContent = "nothing loaded"; return; }
+  let html = "";
+  for (let i = 0; i < tokens.length; i++){
+    if (i % 4 === 0) html += `<span class="num">${i/4+1}.</span>`;
+    html += `<span class="mv seat-${SEATS[i%4]} ${i+1===ply?"on":""}" data-ply="${i+1}">${tokens[i]}</span>`;
+    if (i % 4 === 3) html += "<br>";
+  }
+  el.innerHTML = html;
+  el.querySelectorAll(".mv").forEach(n => n.onclick = () => goto(+n.dataset.ply));
+  const on = el.querySelector(".mv.on"); if (on) on.scrollIntoView({block:"nearest"});
+}
+
+function goto(n){
+  if (!frames.length) return;
+  ply = Math.max(0, Math.min(n, frames.length-1));
+  document.getElementById("plyLabel").textContent =
+    `ply ${ply} / ${frames.length-1}` + (frames[ply].token ? "  " + frames[ply].token : "");
+  document.getElementById("evalOut").textContent = "";
+  draw(); renderSeats(); renderMoves();
+}
+
+function load(){
+  const err = document.getElementById("parseErr");
+  err.textContent = "";
+  let game;
+  try { game = parsePgn4(document.getElementById("pgn").value); }
+  catch (e){ err.textContent = "could not read the PGN4: " + e.message; return; }
+  if (!game.tokens.length){ err.textContent = "no moves found"; return; }
+  const out = replay(game);
+  frames = out.frames; tokens = game.tokens.slice(0, frames.length-1); mode = game.mode;
+  if (out.error) err.textContent = out.error + "\n(showing the game up to that point)";
+  const bits = [game.mode, game.setup];
+  for (const k of ["Result","TimeControl","Site"]) if (game.tags[k]) bits.push(game.tags[k]);
+  document.getElementById("tags").textContent = bits.join(" · ");
+  document.getElementById("status").textContent =
+    out.terms.length ? "terminations: " + out.terms.map(t => t.seat+" "+t.reason).join(", ") : "";
+  goto(0);
+}
+
+// Evaluation needs the engine, so it only exists when a server is behind us.
+async function detectEngine(){
+  if (location.protocol === "file:") return;
+  try {
+    const r = await fetch("/api/eval", {method:"POST",
+      headers:{"Content-Type":"application/json"}, body:"{}"});
+    if (r.status !== 404) document.getElementById("evalCard").style.display = "";
+  } catch (e){ /* standalone; no engine */ }
+}
+
+document.getElementById("load").onclick = load;
+document.getElementById("first").onclick = () => goto(0);
+document.getElementById("prev").onclick = () => goto(ply-1);
+document.getElementById("next").onclick = () => goto(ply+1);
+document.getElementById("last").onclick = () => goto(frames.length-1);
+document.getElementById("flip").onchange = e => { flipped = e.target.checked?1:0; draw(); };
+document.getElementById("evalBtn").onclick = async () => {
+  const out = document.getElementById("evalOut");
+  out.textContent = "thinking…";
+  // The server wants a FEN4; rebuild one from the frame we are showing.
+  const r = await fetch("/api/eval", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({fen4: toFen4(frames[ply]), mode, depth: 6})});
+  const d = await r.json();
+  out.textContent = d.error || d.terminal || d.unsupported ||
+    `${d.score > 0 ? "+" : ""}${(d.score/100).toFixed(2)} for ${NAME[SEATS[frames[ply].turn]]}'s team · depth ${d.depth} · ${d.nodes.toLocaleString()} nodes`;
+};
+document.getElementById("sample").onclick = () => {
+  document.getElementById("pgn").value =
+`[Variant "Teams"]
+[Result "0-1"]
+[Site "www.chess.com/4-player-chess"]
+
+1. d2-d4 .. b8-c8 .. k13-k11 .. m8-l8
+2. d4-d5 .. b4-d4 .. k11-k10 .. Qn8-m8
+3. e2-e4 .. Qa7-b8 .. g13-g12 .. Nn5-l6`;
+  load();
+};
+
+function toFen4(fr){
+  const rows = [];
+  for (let r = 13; r >= 0; r--){
+    const cells = []; let empty = 0;
+    for (let f = 0; f < N; f++){
+      const p = fr.grid[r][f];
+      if (!p){ empty++; continue; }
+      if (empty){ cells.push(String(empty)); empty = 0; }
+      cells.push((p.dead ? "d" : "") + p.c + p.t);
+    }
+    if (empty) cells.push(String(empty));
+    rows.push(cells.join(","));
+  }
+  const dead = fr.alive.map(a => a ? "0" : "1").join(",");
+  return `${SEATS[fr.turn]}-${dead}-0,0,0,0-0,0,0,0-${fr.points.join(",")}-0-${rows.join("/")}`;
+}
+
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowRight"){ goto(ply+1); e.preventDefault(); }
+  if (e.key === "ArrowLeft"){ goto(ply-1); e.preventDefault(); }
+  if (e.key === "Home"){ goto(0); e.preventDefault(); }
+  if (e.key === "End"){ goto(frames.length-1); e.preventDefault(); }
+});
+detectEngine();
+draw();
+</script>
+</body>
+</html>
