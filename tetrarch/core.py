@@ -200,95 +200,106 @@ def load(path=None):
             "%s not built -- run ./setup.sh" % os.path.basename(lib_path))
     lib = ctypes.CDLL(lib_path)
 
-    lib.tt_params_size.restype = ctypes.c_int
-    lib.tt_board_size.restype = ctypes.c_int
-    lib.tt_ready.restype = ctypes.c_int
-    lib.tt_init.argtypes = [ctypes.POINTER(TtParams)]
-    lib.tt_perft.restype = ctypes.c_uint64
-    lib.tt_perft.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
-    lib.tt_gen_legal.restype = ctypes.c_int
-    lib.tt_gen_legal.argtypes = [ctypes.POINTER(TtBoard),
-                                 ctypes.POINTER(ctypes.c_uint32)]
-    lib.tt_gen_pseudo.restype = ctypes.c_int
-    lib.tt_gen_pseudo.argtypes = [ctypes.POINTER(TtBoard),
-                                  ctypes.POINTER(ctypes.c_uint32)]
-    lib.tt_recompute_key.restype = ctypes.c_uint64
-    lib.tt_recompute_key.argtypes = [ctypes.POINTER(TtBoard)]
-    lib.tt_is_attacked.restype = ctypes.c_int
-    lib.tt_is_attacked.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
-                                   ctypes.c_int]
-    lib.tt_key_check.restype = ctypes.c_uint64
-    lib.tt_key_check.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
-    lib.tt_eval.restype = ctypes.c_int32
-    lib.tt_eval.argtypes = [ctypes.POINTER(TtBoard)]
-    lib.tt_alloc.restype = ctypes.c_int
-    lib.tt_alloc.argtypes = [ctypes.c_int]
-    lib.tt_size.restype = ctypes.c_uint64
-    lib.tt_result_size.restype = ctypes.c_int
-    lib.tt_search.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
-                              ctypes.c_uint64, ctypes.POINTER(TtResult)]
-    lib.tt_nnue_dims.argtypes = [ctypes.POINTER(ctypes.c_int32)]
-    lib.tt_load_net.restype = ctypes.c_int
-    lib.tt_load_net.argtypes = [ctypes.POINTER(TtNetView)]
-    lib.tt_net_loaded.restype = ctypes.c_int
-    lib.tt_nnue_acc_matches.restype = ctypes.c_int
-    lib.tt_nnue_acc_matches.argtypes = [ctypes.POINTER(TtBoard)]
-    lib.tt_undo_size.restype = ctypes.c_int
-    lib.tt_make.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_uint32,
-                            ctypes.c_void_p]
-    lib.tt_unmake.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_uint32,
-                              ctypes.c_void_p]
-    lib.tt_set_killers.argtypes = [ctypes.c_int]
-    lib.tt_get_killers.restype = ctypes.c_int
-    lib.tt_set_history.argtypes = [ctypes.c_int]
-    lib.tt_get_history.restype = ctypes.c_int
-    lib.tt_set_pvs.argtypes = [ctypes.c_int]
-    lib.tt_get_pvs.restype = ctypes.c_int
-    lib.tt_set_lmr.argtypes = [ctypes.c_int]
-    lib.tt_get_lmr.restype = ctypes.c_int
-    lib.tt_set_lmr_params.argtypes = [ctypes.c_int, ctypes.c_int]
-    lib.tt_set_lazy_eval.argtypes = [ctypes.c_int]
-    lib.tt_get_lazy_eval.restype = ctypes.c_int
-    lib.tt_set_lmp.argtypes = [ctypes.c_int]
-    lib.tt_get_lmp.restype = ctypes.c_int
-    lib.tt_set_lmp_params.argtypes = [ctypes.c_int, ctypes.c_int]
-    lib.tt_set_qs_evasions.argtypes = [ctypes.c_int]
-    lib.tt_get_qs_evasions.restype = ctypes.c_int
-    lib.tt_divide.restype = ctypes.c_int
-    lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
-                              ctypes.POINTER(ctypes.c_uint32),
-                              ctypes.POINTER(ctypes.c_uint64)]
+    # A .so built before the current Python is the likeliest failure here:
+    # `git pull` updates the source but never rebuilds. Without this the
+    # first missing symbol surfaces as a bare AttributeError, often from
+    # inside a worker process, which reads like a code bug rather than a
+    # stale build.
+    try:
 
-    # Layout agreement. A silent mismatch here would misread every field.
-    if lib.tt_params_size() != ctypes.sizeof(TtParams):
-        raise CoreUnavailable("TtParams layout mismatch: C %d, Python %d"
-                              % (lib.tt_params_size(), ctypes.sizeof(TtParams)))
-    if lib.tt_board_size() != ctypes.sizeof(TtBoard):
-        raise CoreUnavailable("TtBoard layout mismatch: C %d, Python %d"
-                              % (lib.tt_board_size(), ctypes.sizeof(TtBoard)))
-    if lib.tt_result_size() != ctypes.sizeof(TtResult):
-        raise CoreUnavailable("TtResult layout mismatch: C %d, Python %d"
-                              % (lib.tt_result_size(), ctypes.sizeof(TtResult)))
+        lib.tt_params_size.restype = ctypes.c_int
+        lib.tt_board_size.restype = ctypes.c_int
+        lib.tt_ready.restype = ctypes.c_int
+        lib.tt_init.argtypes = [ctypes.POINTER(TtParams)]
+        lib.tt_perft.restype = ctypes.c_uint64
+        lib.tt_perft.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
+        lib.tt_gen_legal.restype = ctypes.c_int
+        lib.tt_gen_legal.argtypes = [ctypes.POINTER(TtBoard),
+                                     ctypes.POINTER(ctypes.c_uint32)]
+        lib.tt_gen_pseudo.restype = ctypes.c_int
+        lib.tt_gen_pseudo.argtypes = [ctypes.POINTER(TtBoard),
+                                      ctypes.POINTER(ctypes.c_uint32)]
+        lib.tt_recompute_key.restype = ctypes.c_uint64
+        lib.tt_recompute_key.argtypes = [ctypes.POINTER(TtBoard)]
+        lib.tt_is_attacked.restype = ctypes.c_int
+        lib.tt_is_attacked.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
+                                       ctypes.c_int]
+        lib.tt_key_check.restype = ctypes.c_uint64
+        lib.tt_key_check.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
+        lib.tt_eval.restype = ctypes.c_int32
+        lib.tt_eval.argtypes = [ctypes.POINTER(TtBoard)]
+        lib.tt_alloc.restype = ctypes.c_int
+        lib.tt_alloc.argtypes = [ctypes.c_int]
+        lib.tt_size.restype = ctypes.c_uint64
+        lib.tt_result_size.restype = ctypes.c_int
+        lib.tt_search.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
+                                  ctypes.c_uint64, ctypes.POINTER(TtResult)]
+        lib.tt_nnue_dims.argtypes = [ctypes.POINTER(ctypes.c_int32)]
+        lib.tt_load_net.restype = ctypes.c_int
+        lib.tt_load_net.argtypes = [ctypes.POINTER(TtNetView)]
+        lib.tt_net_loaded.restype = ctypes.c_int
+        lib.tt_nnue_acc_matches.restype = ctypes.c_int
+        lib.tt_nnue_acc_matches.argtypes = [ctypes.POINTER(TtBoard)]
+        lib.tt_undo_size.restype = ctypes.c_int
+        lib.tt_make.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_uint32,
+                                ctypes.c_void_p]
+        lib.tt_unmake.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_uint32,
+                                  ctypes.c_void_p]
+        lib.tt_set_killers.argtypes = [ctypes.c_int]
+        lib.tt_get_killers.restype = ctypes.c_int
+        lib.tt_set_history.argtypes = [ctypes.c_int]
+        lib.tt_get_history.restype = ctypes.c_int
+        lib.tt_set_pvs.argtypes = [ctypes.c_int]
+        lib.tt_get_pvs.restype = ctypes.c_int
+        lib.tt_set_lmr.argtypes = [ctypes.c_int]
+        lib.tt_get_lmr.restype = ctypes.c_int
+        lib.tt_set_lmr_params.argtypes = [ctypes.c_int, ctypes.c_int]
+        lib.tt_set_lazy_eval.argtypes = [ctypes.c_int]
+        lib.tt_get_lazy_eval.restype = ctypes.c_int
+        lib.tt_set_lmp.argtypes = [ctypes.c_int]
+        lib.tt_get_lmp.restype = ctypes.c_int
+        lib.tt_set_lmp_params.argtypes = [ctypes.c_int, ctypes.c_int]
+        lib.tt_set_qs_evasions.argtypes = [ctypes.c_int]
+        lib.tt_get_qs_evasions.restype = ctypes.c_int
+        lib.tt_divide.restype = ctypes.c_int
+        lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
+                                  ctypes.POINTER(ctypes.c_uint32),
+                                  ctypes.POINTER(ctypes.c_uint64)]
 
-    # NNUE geometry has to be a compile-time constant in C, so it is declared
-    # in both places; a mismatch is a loud startup failure rather than a net
-    # that reads its own weights wrong.
-    from . import nnue
-    dims = (ctypes.c_int32 * 8)()
-    lib.tt_nnue_dims(dims)
-    want = (nnue.NFEATURES, nnue.L1, nnue.NEXTRA, nnue.L2, nnue.L3,
-            nnue.SHIFT1, nnue.SHIFT2, nnue.SHIFT_OUT)
-    if tuple(dims) != want:
-        raise CoreUnavailable("NNUE geometry mismatch: C %s, Python %s"
-                              % (tuple(dims), want))
+        # Layout agreement. A silent mismatch here would misread every field.
+        if lib.tt_params_size() != ctypes.sizeof(TtParams):
+            raise CoreUnavailable("TtParams layout mismatch: C %d, Python %d"
+                                  % (lib.tt_params_size(), ctypes.sizeof(TtParams)))
+        if lib.tt_board_size() != ctypes.sizeof(TtBoard):
+            raise CoreUnavailable("TtBoard layout mismatch: C %d, Python %d"
+                                  % (lib.tt_board_size(), ctypes.sizeof(TtBoard)))
+        if lib.tt_result_size() != ctypes.sizeof(TtResult):
+            raise CoreUnavailable("TtResult layout mismatch: C %d, Python %d"
+                                  % (lib.tt_result_size(), ctypes.sizeof(TtResult)))
 
-    params = build_params()
-    lib.tt_init(ctypes.byref(params))
-    if not lib.tt_ready():
-        raise CoreUnavailable("tt_init did not take")
-    if not lib.tt_alloc(DEFAULT_TT_MB):
-        raise CoreUnavailable("could not allocate the transposition table")
-    _lib = lib
+        # NNUE geometry has to be a compile-time constant in C, so it is declared
+        # in both places; a mismatch is a loud startup failure rather than a net
+        # that reads its own weights wrong.
+        from . import nnue
+        dims = (ctypes.c_int32 * 8)()
+        lib.tt_nnue_dims(dims)
+        want = (nnue.NFEATURES, nnue.L1, nnue.NEXTRA, nnue.L2, nnue.L3,
+                nnue.SHIFT1, nnue.SHIFT2, nnue.SHIFT_OUT)
+        if tuple(dims) != want:
+            raise CoreUnavailable("NNUE geometry mismatch: C %s, Python %s"
+                                  % (tuple(dims), want))
+
+        params = build_params()
+        lib.tt_init(ctypes.byref(params))
+        if not lib.tt_ready():
+            raise CoreUnavailable("tt_init did not take")
+        if not lib.tt_alloc(DEFAULT_TT_MB):
+            raise CoreUnavailable("could not allocate the transposition table")
+        _lib = lib
+    except AttributeError as exc:
+        raise CoreUnavailable(
+            "%s is stale (%s) -- run ./setup.sh to rebuild"
+            % (os.path.basename(lib_path), exc)) from None
     return lib
 
 
