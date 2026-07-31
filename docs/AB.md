@@ -22,7 +22,7 @@ bugs found by exactly that.
 |---|---|---|
 | before the rotation fix | **+36.26 ± 18.37** (2,000 games) | **BIASED** — engine A received the original R+Y armies in all four rotations |
 | after the rotation fix | −13.21 ± 14.63 (2,000 games) | inside noise at 0.9σ, but A and B collapsed to one subprocess |
-| after the cache-key fix | *pending* | |
+| after the cache-key fix | **−2.64 ± 6.24** (10,000 games) | **PASSES** — harness certified at this precision |
 
 **Bug 1 — the rotation cancelled nothing.** `rotate(b, k)` shifts every seat's
 colour by +k, so rotated-frame team `t` holds the armies originally in team
@@ -63,22 +63,25 @@ second generation (regenerate data with a net playing, retrain), not a tweak.
 
 The net stays in `nets/` so the result is reproducible.
 
-### Killers — screened positive, confirmation pending
+### Killers — CONFIRMED, default on
 
 | | |
 |---|---|
 | Mode / Setup | Teams / classic |
 | Instrument | fixed nodes 20,000 |
-| Games | 2,000 (500 openings × 4) |
-| Elo | **+40.66 ± 14.50** |
-| Dist | 15, 0, 90, 5, 185, 12, 153, 0, 40 |
+| Games | 10,000 (2,500 openings × 4) |
+| Elo | **+50.42 ± 6.41** |
+| Dist | 57, 8, 388, 31, 969, 47, 763, 21, 216 |
+| Null on the same harness | −2.64 ± 6.24 |
 
-Two killer moves per ply, `setoption name Killers`. Default **off** pending
-confirmation. Fixed-depth node counts fall to 28.0% of baseline over five
-setups to depth 5.
+Two killer moves per ply, `setoption name Killers`. About 8σ; screened at
++40.66 ± 14.50 over 2,000 games first, and the confirm came in higher rather
+than regressing to zero.
 
-Screened on the harness carrying the process-sharing flaw above. The flaw
-affected the null test rather than this pairing (A and B differed by an option,
-so they were already two processes), but the ±14.50 leaves room for the ~13 Elo
-the null was reading, so this needs a 10,000-game confirm before it goes
-default-on.
+The search previously had no quiet-move ordering at all — TT move, MVV-LVA
+captures, then generation order — so this closed the largest single ordering
+gap. Fixed-depth node counts fell to 28.0% of the unordered tree over five
+setups to depth 5, and `SEARCH_PINS` in `selftest.py` was re-measured with it
+on.
+
+The toggle stays so it can be switched off for a future A/B.

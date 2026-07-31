@@ -901,20 +901,22 @@ static inline int is_capture(const TtBoard *b, uint32_t m)
     return b->sq[MV_TO(m)] != 0 || MV_FLAG(m) == F_EP;
 }
 
-/* --- killer moves (toggle: off by default, pending its A/B) --------------- *
+/* --- killer moves ---------------------------------------------------------
  *
- * Two quiet moves per ply that last caused a beta cutoff there. The search has
- * no other quiet ordering at all, so this is the largest single ordering gap.
+ * Two quiet moves per ply that last caused a beta cutoff there. The search had
+ * no other quiet ordering at all, so this was the largest single ordering gap.
  *
- * Scores sit strictly between quiet (0) and capture (1<<16), and are only
- * added when the toggle is on -- with it off, score_moves produces byte-
- * identical output to before, which selftest pins.
+ * CONFIRMED and default ON. Teams / classic, fixed nodes 20,000:
+ *   +50.42 +/- 6.41 Elo over 10,000 games
+ *   Dist: 57, 8, 388, 31, 969, 47, 763, 21, 216
+ * against a null self-test of -2.64 +/- 6.24 on the same harness. See
+ * docs/AB.md. The toggle stays so it can be turned off for a future A/B.
  */
 #define KILLERS_PER_PLY 2
 #define KILLER_BASE (1 << 14)
 
 static uint32_t killers[MAX_DEPTH][KILLERS_PER_PLY];
-static int use_killers = 0;
+static int use_killers = 1;
 
 void tt_set_killers(int on) { use_killers = on ? 1 : 0; }
 int tt_get_killers(void) { return use_killers; }

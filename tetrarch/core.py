@@ -322,7 +322,7 @@ def net_loaded():
 
 
 def set_killers(on):
-    """Killer-move ordering. Off by default until its A/B (§ doctrine)."""
+    """Killer-move ordering. CONFIRMED +50.42 +/- 6.41, default on (docs/AB.md)."""
     load().tt_set_killers(1 if on else 0)
 
 

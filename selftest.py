@@ -867,12 +867,15 @@ def test_eval():
 #: The eval and the search are integer-only, so unlike a float eval these do
 #: not drift across microarchitectures -- but they DO move whenever ordering,
 #: pruning or the table changes, which is the point of pinning them.
+#: Re-pinned when killers were confirmed into the default (docs/AB.md). A
+#: confirmed feature changes the tree, so the pins move with it -- that is the
+#: point of re-measuring rather than relaxing them.
 SEARCH_PINS = {
-    "classic": [40, 380, 3552, 26044, 228628],
-    "modern": [40, 308, 4815, 31170, 238879],
-    "by": [40, 308, 4437, 34221, 220568],
-    "byg": [40, 308, 4437, 33912, 282296],
-    "rg": [40, 364, 3306, 36865, 230482],
+    "classic": [40, 194, 1129, 10851, 83805],
+    "modern": [40, 148, 1158, 8467, 59969],
+    "by": [40, 148, 1211, 8553, 54615],
+    "byg": [40, 148, 1211, 10940, 60390],
+    "rg": [40, 190, 1237, 12791, 70722],
 }
 
 
@@ -910,10 +913,11 @@ def test_search(workers=1):
         check("C core is built", False, "run ./setup.sh")
         return
 
-    # Dormant features must default off, and off must be byte-identical to
-    # the pinned tree. A toggle that quietly changes the baseline makes every
-    # later A/B a comparison against something nobody measured.
-    check("killers default off", not core.killers_enabled())
+    # Killers are CONFIRMED into the default (+50.42 +/- 6.41, docs/AB.md).
+    # The pins below are measured with them on; a toggle that silently flipped
+    # would make every later A/B a comparison against something nobody
+    # measured, so the default itself is pinned.
+    check("killers default on (confirmed)", core.killers_enabled())
 
     core.set_hash(16)
     pins = []
@@ -942,18 +946,18 @@ def test_search(workers=1):
     check("a forced mate scores as a mate", r.score > 29000 - 100
           or r.score < -(29000 - 100), "score %d" % r.score)
 
-    # ...and turning it on must actually change the tree, or the toggle is
-    # wired to nothing.
-    core.set_killers(True)
+    # The toggle must still reach the search, so it can be turned off for a
+    # future A/B. A toggle wired to nothing passes every other check here.
     core.clear_hash()
     on = core.search(start_board("classic"), 5).nodes
     core.set_killers(False)
     core.clear_hash()
     off = core.search(start_board("classic"), 5).nodes
-    check("the killers toggle reaches the search", on != off,
+    core.set_killers(True)
+    check("the killers toggle still reaches the search", on != off,
           "%d on, %d off" % (on, off))
-    check("killers reduce the tree", on < off,
-          "%.1f%% of baseline" % (100.0 * on / off))
+    check("killers shrink the tree", on < off,
+          "%.1f%% of the unordered tree" % (100.0 * on / off))
 
     core.set_hash(core.DEFAULT_TT_MB)
 

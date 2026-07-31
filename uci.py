@@ -51,8 +51,7 @@ class Engine:
         # No net loaded means the throwaway hand eval. One binary, two evals,
         # so the NNUE-vs-hand A/B is a single setoption apart.
         print("option name Net type string default <none>")
-        # Dormant search features live here, default off until their A/B.
-        print("option name Killers type check default false")
+        print("option name Killers type check default true")
         print("uciok")
 
     def cmd_isready(self, _args):
