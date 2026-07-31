@@ -52,6 +52,7 @@ from tetrarch.board import (
     move_str, SEAT_NAMES,
 )
 from tetrarch import movegen as gen
+from tetrarch import pgn4
 
 ROTATIONS = 4
 #: Adjudicate a draw rather than play forever. 50-move already covers most of
@@ -153,7 +154,7 @@ def make_opening(setup, mode, plies, seed):
 def play_game(job):
     """Play one game. Returns a dict; never raises past a forfeit."""
     (index, opening_seed, rotation, setup, mode, plies, cmd_a, cmd_b,
-     go_string, seed) = job
+     go_string, seed, want_pgn4) = job
 
     base = make_opening(setup, mode, plies, opening_seed)
     if base is None:
@@ -172,6 +173,7 @@ def play_game(job):
 
     rng = random.Random(seed)
     moves = []
+    played = []
     result = None
     reason = ""
 
@@ -208,13 +210,26 @@ def play_game(job):
                 break
             chosen = match[0]
         moves.append(move_str(chosen))
+        played.append(chosen)
         board.make(chosen)
     else:
         result, reason = 0.5, "adjudicated at %d plies" % MAX_PLIES
 
-    return {"index": index, "opening": opening_seed, "rotation": rotation,
-            "score": result, "reason": reason, "plies": len(moves),
-            "a_team": a_team, "moves": " ".join(moves)}
+    record = {"index": index, "opening": opening_seed, "rotation": rotation,
+              "score": result, "reason": reason, "plies": len(moves),
+              "a_team": a_team, "moves": " ".join(moves)}
+    if want_pgn4:
+        record["pgn4"] = pgn4.write(rotate(base, rotation), played, {
+            "Event": "Tetrarch match",
+            "Round": "%d.%d" % (opening_seed, rotation),
+            "Red": cmd_a if a_team == 0 else cmd_b,
+            "Blue": cmd_b if a_team == 0 else cmd_a,
+            "Yellow": cmd_a if a_team == 0 else cmd_b,
+            "Green": cmd_b if a_team == 0 else cmd_a,
+            "Result": {1.0: "1-0", 0.0: "0-1", 0.5: "1/2-1/2"}.get(result, "*"),
+            "Termination": reason,
+        })
+    return record
 
 
 # --- statistics -------------------------------------------------------------
@@ -275,7 +290,8 @@ def jobs(count, args):
         for rotation in range(ROTATIONS):
             yield (index, args.seed * 7919 + i, rotation, args.setup,
                    MODE_TEAMS, args.opening_plies, args.engine_a,
-                   args.engine_b, args.go_string, args.seed * 104729 + index)
+                   args.engine_b, args.go_string, args.seed * 104729 + index,
+                   bool(args.pgn4))
             index += 1
 
 
@@ -302,6 +318,8 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--workers", type=int, default=1,
                     help="0 means every core")
+    ap.add_argument("--pgn4", metavar="PATH",
+                    help="also write every game as PGN4, for the viewer")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -330,11 +348,15 @@ def main():
     by_opening = {}
     started = time.time()
     log = open(args.log, "w")
+    pgn_out = open(args.pgn4, "w") if args.pgn4 else None
 
     def absorb(game):
         if game is None:
             return
         games.append(game)
+        if pgn_out and game.get("pgn4"):
+            pgn_out.write(game.pop("pgn4") + "\n")
+            pgn_out.flush()
         log.write(json.dumps(game) + "\n")
         log.flush()
         if game.get("score") is not None:
@@ -372,6 +394,8 @@ def main():
         if not args.quiet:
             sys.stderr.write("\n")
         log.close()
+        if pgn_out:
+            pgn_out.close()
         for engine in _ENGINE_CACHE.values():
             if engine is not RANDOM_ENGINE:
                 engine.close()
@@ -384,6 +408,8 @@ def main():
         for g in errors[:5]:
             print("  %s" % (g.get("error") or g.get("reason")))
     print("log: %s" % args.log)
+    if args.pgn4:
+        print("pgn4: %s" % args.pgn4)
     return 0
 
 
