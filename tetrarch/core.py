@@ -233,6 +233,8 @@ def load(path=None):
     lib.tt_net_loaded.restype = ctypes.c_int
     lib.tt_set_killers.argtypes = [ctypes.c_int]
     lib.tt_get_killers.restype = ctypes.c_int
+    lib.tt_set_history.argtypes = [ctypes.c_int]
+    lib.tt_get_history.restype = ctypes.c_int
     lib.tt_divide.restype = ctypes.c_int
     lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                               ctypes.POINTER(ctypes.c_uint32),
@@ -328,6 +330,16 @@ def set_killers(on):
 
 def killers_enabled():
     return bool(load().tt_get_killers())
+
+
+def set_history(on):
+    """History-heuristic ordering for the quiet tail. Off by default: at the
+    depths this engine currently reaches it does nothing (docs/AB.md)."""
+    load().tt_set_history(1 if on else 0)
+
+
+def history_enabled():
+    return bool(load().tt_get_history())
 
 
 def evaluate(b):

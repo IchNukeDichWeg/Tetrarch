@@ -918,6 +918,7 @@ def test_search(workers=1):
     # would make every later A/B a comparison against something nobody
     # measured, so the default itself is pinned.
     check("killers default on (confirmed)", core.killers_enabled())
+    check("history default off (dormant)", not core.history_enabled())
 
     core.set_hash(16)
     pins = []
@@ -958,6 +959,20 @@ def test_search(workers=1):
           "%d on, %d off" % (on, off))
     check("killers shrink the tree", on < off,
           "%.1f%% of the unordered tree" % (100.0 * on / off))
+
+    # History must also reach the search, and must leave the pinned tree alone
+    # while it is off.
+    core.clear_hash()
+    base = core.search(start_board("classic"), 7).nodes
+    core.set_history(True)
+    core.clear_hash()
+    with_hist = core.search(start_board("classic"), 7).nodes
+    core.set_history(False)
+    core.clear_hash()
+    check("the history toggle reaches the search", with_hist != base,
+          "%d on, %d off at depth 7" % (with_hist, base))
+    check("history off leaves the pinned tree alone",
+          core.search(start_board("classic"), 5).nodes == SEARCH_PINS["classic"][4])
 
     core.set_hash(core.DEFAULT_TT_MB)
 

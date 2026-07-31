@@ -85,3 +85,40 @@ setups to depth 5, and `SEARCH_PINS` in `selftest.py` was re-measured with it
 on.
 
 The toggle stays so it can be switched off for a future A/B.
+
+### History heuristic — built, NOT screened: the gate is structurally dead
+
+`setoption name History`, default **off**. Correct and verified (off is
+byte-identical to the pinned tree, the toggle reaches the search, the dormant
+code costs −0.1% NPS, inside noise). It has not been A/B'd, deliberately.
+
+Node reduction at fixed depth, classic + modern:
+
+| depth | off | on | |
+|---:|---:|---:|---|
+| 5 | 143,774 | 137,715 | 95.8% |
+| 6 | 513,485 | 515,979 | 100.5% |
+| 7 | 2,704,547 | 2,271,372 | 84.0% |
+| 8 | 19,447,589 | 16,318,517 | 83.9% |
+
+History only starts paying at depth 7. But at the campaign instrument of
+**20,000 nodes the search reaches median depth 4** (range 3–5) — one full round
+of four seats. In that regime the feature does nothing, so a screen there would
+measure noise and return a confident null about a feature that was never
+engaged.
+
+Depth against budget, classic, 16 positions:
+
+| nodes | median depth | s/move |
+|---:|---:|---:|
+| 20,000 | 4 | 0.02 |
+| 100,000 | 5 | 0.07 |
+| 300,000 | 5 | 0.22 |
+| 1,000,000 | 6 | 0.71 |
+
+Reaching depth 7 needs roughly a million nodes a move, which is ~35× the
+current cost per game. Worth spending once there is a reason to believe the
+engine plays there; not worth spending to confirm a null.
+
+Left dormant with this note attached, per the doctrine on closing a
+structurally dead gate before spending A/B time.

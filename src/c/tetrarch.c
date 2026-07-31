@@ -862,6 +862,9 @@ typedef struct {
     uint8_t pad;
 } TtEntry;
 
+/* Defined with the search below; the table reset clears it too. */
+static void history_clear(void);
+
 static TtEntry *tt_table;
 static uint64_t tt_mask;
 static uint64_t tt_entries;
@@ -884,6 +887,10 @@ int tt_alloc(int mb)
 void tt_clear(void)
 {
     if (tt_table) memset(tt_table, 0, (size_t)tt_entries * sizeof(TtEntry));
+    /* History is learned from the same tree the table describes; keeping it
+     * across a reset would order by moves that meant something elsewhere, and
+     * would make pinned node counts depend on whatever ran before. */
+    history_clear();
 }
 
 uint64_t tt_size(void) { return tt_entries; }
@@ -923,6 +930,43 @@ int tt_get_killers(void) { return use_killers; }
 
 static void killers_clear(void) { memset(killers, 0, sizeof(killers)); }
 
+/* --- history heuristic (toggle: off by default, pending its A/B) ---------- *
+ *
+ * A per-seat from/to table of how often a quiet move caused a cutoff. Killers
+ * only order two moves per ply; this orders the whole quiet tail beneath them.
+ *
+ * Scores land in [0, KILLER_BASE), strictly below the second killer, and are
+ * only consulted when the toggle is on -- with it off, score_moves produces
+ * byte-identical output, which selftest pins.
+ *
+ * The update uses the usual gravity rule: adding `bonus - h*bonus/MAX` pulls
+ * large entries toward MAX instead of letting them run away, so the table
+ * self-normalises and never needs an ageing pass. Values stay inside int16 by
+ * construction.
+ */
+#define HISTORY_MAX KILLER_BASE
+#define HISTORY_CAP 400
+
+static int16_t history[4][NSQ][NSQ];
+static int use_history = 0;
+
+void tt_set_history(int on) { use_history = on ? 1 : 0; }
+int tt_get_history(void) { return use_history; }
+
+static void history_clear(void) { memset(history, 0, sizeof(history)); }
+
+static void history_bonus(int seat, uint32_t m, int depth)
+{
+    int from = MV_FROM(m), to = MV_TO(m);
+    int32_t h = history[seat][from][to];
+    int32_t bonus = depth * depth;
+    if (bonus > HISTORY_CAP) bonus = HISTORY_CAP;
+    h += bonus - (int32_t)((int64_t)h * bonus / HISTORY_MAX);
+    if (h < 0) h = 0;
+    if (h >= HISTORY_MAX) h = HISTORY_MAX - 1;
+    history[seat][from][to] = (int16_t)h;
+}
+
 static void killer_store(int ply, uint32_t m)
 {
     if (ply >= MAX_DEPTH || killers[ply][0] == m) return;
@@ -947,9 +991,13 @@ static void score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
                             : P.piece_value[PAWN];
             int av = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
             s = (1 << 16) + vv * 16 - av;
-        } else if (use_killers && ply < MAX_DEPTH) {
-            if (m == killers[ply][0]) s = KILLER_BASE + 1;
-            else if (m == killers[ply][1]) s = KILLER_BASE;
+        } else {
+            if (use_killers && ply < MAX_DEPTH) {
+                if (m == killers[ply][0]) s = KILLER_BASE + 1;
+                else if (m == killers[ply][1]) s = KILLER_BASE;
+            }
+            if (!s && use_history)
+                s = history[b->turn][MV_FROM(m)][MV_TO(m)];
         }
         if (MV_PROMO(m)) s += (1 << 15);
         scores[i] = s;
@@ -1074,7 +1122,10 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
                 /* Only quiet moves become killers: a capture is already
                  * ordered ahead of them by MVV-LVA, so storing one would
                  * displace a useful quiet for no gain. */
-                if (use_killers && !is_capture_before) killer_store(ply, moves[i]);
+                if (!is_capture_before) {
+                    if (use_killers) killer_store(ply, moves[i]);
+                    if (use_history) history_bonus(me, moves[i], depth);
+                }
                 break;
             }
         }

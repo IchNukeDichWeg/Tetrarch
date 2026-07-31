@@ -52,6 +52,9 @@ class Engine:
         # so the NNUE-vs-hand A/B is a single setoption apart.
         print("option name Net type string default <none>")
         print("option name Killers type check default true")
+        # Dormant: correct, but structurally dead at the depths
+        # this engine reaches. See docs/AB.md.
+        print("option name History type check default false")
         print("uciok")
 
     def cmd_isready(self, _args):
@@ -80,6 +83,8 @@ class Engine:
             core.set_hash(self.hash_mb)
         elif name == "killers":
             core.set_killers(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "history":
+            core.set_history(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "net":
             if value.strip().lower() in ("", "<none>", "none"):
                 core.unload_net()
