@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tetrarch — PGN4 viewer</title>
+<style>
+  :root {
+    --bg: #16181d; --panel: #1e2128; --line: #2c3039; --text: #d8dbe2;
+    --dim: #868d9c; --light: #b9bdc7; --dark: #8d919b;
+    --red: #d64f4f; --blue: #4f86d6; --yellow: #d6b23f; --green: #46a85c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  header {
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .04em; }
+  header span { color: var(--dim); font-size: 12px; }
+  main { display: flex; gap: 16px; padding: 16px; align-items: flex-start;
+         flex-wrap: wrap; }
+  .board-col { display: flex; flex-direction: column; gap: 10px; }
+  canvas { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 6px; display: block; }
+  .side { display: flex; flex-direction: column; gap: 12px;
+          min-width: 320px; flex: 1; max-width: 520px; }
+  .card { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 6px; padding: 10px 12px; }
+  .card h2 { font-size: 11px; margin: 0 0 8px; color: var(--dim);
+             text-transform: uppercase; letter-spacing: .09em; font-weight: 600; }
+  textarea {
+    width: 100%; height: 150px; background: #12141a; color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px; padding: 8px;
+    font: 12px/1.45 ui-monospace, Menlo, monospace; resize: vertical;
+  }
+  button {
+    background: #2b303a; color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px; padding: 6px 12px;
+    font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #363c48; }
+  button:disabled { opacity: .4; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 3px 6px; }
+  th { color: var(--dim); font-weight: 500; font-size: 11px; }
+  .seat-R { color: var(--red); } .seat-B { color: var(--blue); }
+  .seat-Y { color: var(--yellow); } .seat-G { color: var(--green); }
+  .dead { opacity: .42; text-decoration: line-through; }
+  .chk { color: var(--red); font-weight: 700; }
+  #moves { max-height: 300px; overflow-y: auto; }
+  #moves .mv {
+    display: inline-block; min-width: 74px; padding: 2px 5px; margin: 1px;
+    border-radius: 3px; cursor: pointer; font-size: 12px;
+  }
+  #moves .mv:hover { background: #2b303a; }
+  #moves .mv.on { background: #3d4452; outline: 1px solid #5a6478; }
+  #moves .num { color: var(--dim); display: inline-block; min-width: 30px;
+                font-size: 12px; }
+  .err { color: #e5825a; font-size: 12px; margin-top: 6px; white-space: pre-wrap; }
+  .muted { color: var(--dim); font-size: 12px; }
+  kbd { background: #2b303a; border: 1px solid var(--line); border-radius: 3px;
+        padding: 0 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TETRARCH</h1>
+  <span>PGN4 viewer — <kbd>←</kbd> <kbd>→</kbd> step, <kbd>Home</kbd> <kbd>End</kbd> jump</span>
+  <span id="status"></span>
+</header>
+
+<main>
+  <div class="board-col">
+    <canvas id="board" width="616" height="616"></canvas>
+    <div class="row">
+      <button id="first">|◀</button>
+      <button id="prev">◀</button>
+      <button id="next">▶</button>
+      <button id="last">▶|</button>
+      <span id="plyLabel" class="muted">—</span>
+      <label class="muted"><input type="checkbox" id="flip"> rotate</label>
+    </div>
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <h2>Paste PGN4</h2>
+      <textarea id="pgn" spellcheck="false"
+        placeholder='[Variant "Teams"]&#10;[Site "www.chess.com/4-player-chess"]&#10;&#10;1. d2-d4 .. b8-c8 .. k13-k11 .. m8-l8'></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="load">Load</button>
+        <button id="sample">Sample</button>
+        <span id="tags" class="muted"></span>
+      </div>
+      <div id="parseErr" class="err"></div>
+    </div>
+
+    <div class="card">
+      <h2>Seats</h2>
+      <table id="seats"></table>
+    </div>
+
+    <div class="card">
+      <h2>Evaluation</h2>
+      <div class="row">
+        <button id="evalBtn">Evaluate</button>
+        <label class="muted">depth <input id="depth" type="number" value="6"
+          min="1" max="12" style="width:48px;background:#12141a;color:inherit;
+          border:1px solid var(--line);border-radius:3px"></label>
+        <span id="evalOut" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Moves</h2>
+      <div id="moves" class="muted">nothing loaded</div>
+    </div>
+  </div>
+</main>
+
+<script>
+const SEATS = ["R", "B", "Y", "G"];
+const SEAT_NAME = {R: "Red", B: "Blue", Y: "Yellow", G: "Green"};
+const COLOR = {r: "#d64f4f", b: "#4f86d6", y: "#d6b23f", g: "#46a85c",
+               d: "#6d7382"};
+const GLYPH = {P: "♟", N: "♞", B: "♝", R: "♜",
+               Q: "♛", K: "♚"};
+
+const N = 14, CELL = 44, PAD = 0;
+let frames = [], tokens = [], mode = "teams", ply = 0, flipped = 0;
+
+// --- FEN4 -> 14x14 grid. The server does every rule; this only draws. ------
+function parseFen4(fen) {
+  const cut = fen.lastIndexOf("-");
+  const boardPart = fen.slice(cut + 1);
+  const grid = Array.from({length: N}, () => Array(N).fill(null));
+  const rows = boardPart.trim().split("/");
+  for (let i = 0; i < rows.length && i < N; i++) {
+    const rank = 13 - i;
+    let file = 0;
+    for (const rawCell of rows[i].split(",")) {
+      const cell = rawCell.trim();
+      if (!cell) continue;
+      if (/^\d+$/.test(cell)) { file += parseInt(cell, 10); continue; }
+      if (cell === "x" || cell === "X") { file += 1; continue; }
+      let colour = cell[0], shape = cell[cell.length - 1];
+      if (colour === "d" && cell.length === 3) colour = "d";
+      grid[rank][file] = {colour, shape, dead: cell[0] === "d"};
+      file += 1;
+    }
+  }
+  return grid;
+}
+
+function playable(file, rank) {
+  return !((file < 3 || file > 10) && (rank < 3 || rank > 10));
+}
+
+function view(file, rank) {
+  // `flipped` quarter-turns clockwise, so any seat can be put at the bottom.
+  let f = file, r = rank;
+  for (let i = 0; i < flipped; i++) { const nf = r, nr = 13 - f; f = nf; r = nr; }
+  return [f, r];
+}
+
+function draw() {
+  const cv = document.getElementById("board");
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!frames.length) return;
+  const frame = frames[ply];
+  const grid = parseFen4(frame.fen4);
+
+  for (let rank = 0; rank < N; rank++) {
+    for (let file = 0; file < N; file++) {
+      if (!playable(file, rank)) continue;
+      const [vf, vr] = view(file, rank);
+      const x = PAD + vf * CELL, y = PAD + (13 - vr) * CELL;
+      ctx.fillStyle = (file + rank) % 2 ? "#3a3f4a" : "#2a2e37";
+      ctx.fillRect(x, y, CELL, CELL);
+      const piece = grid[rank][file];
+      if (!piece) continue;
+      ctx.font = "30px serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const glyph = GLYPH[piece.shape.toUpperCase()] || "?";
+      ctx.fillStyle = "rgba(0,0,0,.55)";
+      ctx.fillText(glyph, x + CELL / 2 + 1, y + CELL / 2 + 2);
+      ctx.fillStyle = COLOR[piece.colour] || "#999";
+      if (piece.dead) ctx.globalAlpha = 0.45;
+      ctx.fillText(glyph, x + CELL / 2, y + CELL / 2 + 1);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Highlight the move that produced this frame. Squares are 2-3 characters
+  // each (rank 1-14), so the split has to be a regex, not a slice.
+  const parts = frame.move
+    ? /^([a-n]\d{1,2})([a-n]\d{1,2})[a-z]?$/.exec(frame.move) : null;
+  if (parts) {
+    for (const sq of [parts[1], parts[2]]) {
+      const c = sqOf(sq);
+      if (!c) continue;
+      const [vf, vr] = view(c[0], c[1]);
+      ctx.strokeStyle = "#e2c86a";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(PAD + vf * CELL + 1, PAD + (13 - vr) * CELL + 1,
+                     CELL - 2, CELL - 2);
+    }
+  }
+}
+
+function sqOf(name) {
+  const m = /^([a-n])(\d{1,2})$/.exec(name);
+  if (!m) return null;
+  return [m[1].charCodeAt(0) - 97, parseInt(m[2], 10) - 1];
+}
+
+function renderSeats() {
+  const el = document.getElementById("seats");
+  if (!frames.length) { el.innerHTML = ""; return; }
+  const f = frames[ply];
+  let html = "<tr><th>seat</th><th>state</th><th>points</th></tr>";
+  SEATS.forEach((s, i) => {
+    const dead = !f.alive[i];
+    const turn = f.turn === s;
+    const bits = [];
+    if (dead) bits.push("eliminated");
+    else if (f.check[i]) bits.push("<span class='chk'>in check</span>");
+    else bits.push("active");
+    if (turn && !dead) bits.push("to move");
+    html += `<tr class="seat-${s} ${dead ? "dead" : ""}">` +
+            `<td>${turn && !dead ? "▸ " : "&nbsp;&nbsp;"}${SEAT_NAME[s]}</td>` +
+            `<td>${bits.join(", ")}</td><td>${f.points[i]}</td></tr>`;
+  });
+  el.innerHTML = html;
+}
+
+function renderMoves() {
+  const el = document.getElementById("moves");
+  if (!tokens.length) { el.textContent = "nothing loaded"; return; }
+  let html = "";
+  for (let i = 0; i < tokens.length; i++) {
+    if (i % 4 === 0) html += `<span class="num">${i / 4 + 1}.</span>`;
+    const seat = SEATS[i % 4];
+    html += `<span class="mv seat-${seat} ${i + 1 === ply ? "on" : ""}" ` +
+            `data-ply="${i + 1}">${tokens[i]}</span>`;
+    if (i % 4 === 3) html += "<br>";
+  }
+  el.innerHTML = html;
+  el.querySelectorAll(".mv").forEach(node =>
+    node.onclick = () => goto(parseInt(node.dataset.ply, 10)));
+  const on = el.querySelector(".mv.on");
+  if (on) on.scrollIntoView({block: "nearest"});
+}
+
+function goto(n) {
+  if (!frames.length) return;
+  ply = Math.max(0, Math.min(n, frames.length - 1));
+  document.getElementById("plyLabel").textContent =
+    `ply ${ply} / ${frames.length - 1}` +
+    (frames[ply].token ? `  ${frames[ply].token}` : "");
+  document.getElementById("evalOut").textContent = "";
+  draw(); renderSeats(); renderMoves();
+}
+
+async function load() {
+  const text = document.getElementById("pgn").value;
+  const err = document.getElementById("parseErr");
+  err.textContent = "";
+  const res = await fetch("/api/parse", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({pgn4: text})
+  });
+  const data = await res.json();
+  if (!res.ok) { err.textContent = data.error || "parse failed"; return; }
+  frames = data.frames; tokens = data.tokens; mode = data.mode;
+  if (data.error) err.textContent = data.error + "\n(showing the game up to that point)";
+  const bits = [`${data.mode}`, `${data.setup}`];
+  for (const k of ["Result", "TimeControl", "Site"])
+    if (data.tags[k]) bits.push(data.tags[k]);
+  document.getElementById("tags").textContent = bits.join(" · ");
+  const term = data.terminations.map(t => `${t.seat} ${t.reason}`).join(", ");
+  document.getElementById("status").textContent =
+    term ? `terminations: ${term}` : "";
+  goto(0);
+}
+
+async function evaluate() {
+  if (!frames.length) return;
+  const out = document.getElementById("evalOut");
+  out.textContent = "thinking…";
+  const res = await fetch("/api/eval", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({fen4: frames[ply].fen4, mode: mode,
+                          depth: parseInt(document.getElementById("depth").value, 10)})
+  });
+  const d = await res.json();
+  if (d.error) { out.textContent = d.error; return; }
+  if (d.terminal) { out.textContent = d.terminal; return; }
+  if (d.unsupported) { out.textContent = d.unsupported; return; }
+  const side = SEAT_NAME[frames[ply].turn];
+  const sign = d.score > 0 ? "+" : "";
+  out.textContent = `${sign}${(d.score / 100).toFixed(2)} for ${side}'s team ` +
+                    `· depth ${d.depth} · ${d.nodes.toLocaleString()} nodes`;
+}
+
+document.getElementById("load").onclick = load;
+document.getElementById("evalBtn").onclick = evaluate;
+document.getElementById("first").onclick = () => goto(0);
+document.getElementById("prev").onclick = () => goto(ply - 1);
+document.getElementById("next").onclick = () => goto(ply + 1);
+document.getElementById("last").onclick = () => goto(frames.length - 1);
+document.getElementById("flip").onchange = e => {
+  flipped = e.target.checked ? 1 : 0; draw();
+};
+document.getElementById("sample").onclick = () => {
+  document.getElementById("pgn").value =
+`[Variant "Teams"]
+[Result "0-1"]
+[Site "www.chess.com/4-player-chess"]
+
+1. d2-d4 .. b8-c8 .. k13-k11 .. m8-l8
+2. d4-d5 .. b4-d4 .. k11-k10 .. Qn8-m8
+3. e2-e4 .. Qa7-b8 .. g13-g12 .. Nn5-l6`;
+  load();
+};
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowRight") { goto(ply + 1); e.preventDefault(); }
+  if (e.key === "ArrowLeft") { goto(ply - 1); e.preventDefault(); }
+  if (e.key === "Home") { goto(0); e.preventDefault(); }
+  if (e.key === "End") { goto(frames.length - 1); e.preventDefault(); }
+});
+draw();
+</script>
+</body>
+</html>

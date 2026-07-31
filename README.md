@@ -68,13 +68,16 @@ tetrarch/                 the Python engine + reference
     movegen_slow.py       independent slow-obvious generator        done
     search.py             root: iterative deepening, time mgmt      done
     eval_hand.py          throwaway — deleted at Phase 4            done
-    nnue.py               feature extraction, inference reference   (Phase 4)
+    nnue.py               features, net format, reference forward   done
+    pgn4.py               PGN4 read/write                           done
     core.py               ctypes binding to the C library           done
 
 src/c/                    the accelerator
     tetrarch.c            board, movegen, perft, eval, TT, search   done
 
-gui/                      Flask + one page + one canvas             (Phase 6)
+gui/                      Flask viewer: paste PGN4, step a game     done
+    app.py                one app, three JSON endpoints
+    templates/index.html  one page, one canvas, no npm
 
 docs/
     RULES.md              normative rules, with sources             done
