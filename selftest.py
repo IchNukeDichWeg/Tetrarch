@@ -31,7 +31,7 @@ from tetrarch.board import (
     MODE_NAMES,
     VALID, COMPACT, SQUARES, NPLAYABLE, NSQ, KNIGHT_DELTAS, QUEEN_DIRS,
     PAWN_PUSH, PAWN_TAKES, PROMO_COORD, pawn_coord, CASTLE_GEO, ROOK_HOME,
-    RED, BLUE, YELLOW, GREEN, DEAD_UNKNOWN,
+    RED, BLUE, YELLOW, GREEN, DEAD_UNKNOWN, SEAT_NAMES,
     PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, PQUEEN,
     make_piece, PC_COLOR, PC_TYPE, sq_of, sq_from_name, name_of, file_of,
     rank_of, move_str, mv_flag, mv_to, mv_from, mv_promo,
@@ -1108,6 +1108,47 @@ WIKIBOOK_PGN4 = """[Variant "Teams"]
 """
 
 
+def test_match_rotation():
+    section("match.py seat rotation (A/B validity)")
+    import match
+
+    # The seat rotation only cancels bias if engine A ends up with each
+    # ORIGINAL team twice. Rotating the board and the team assignment together
+    # cancels nothing -- that shipped, and measured +36 Elo in a null self-test
+    # with the same engine on both sides.
+    seen = {0: 0, 1: 0}
+    for rotation in range(match.ROTATIONS):
+        original_team = (rotation >> 1) & 1
+        a_team = original_team ^ (rotation & 1)
+        seats = [s for s in range(4) if (s & 1) == a_team]
+        armies = sorted(((s - rotation) & 3) for s in seats)
+        check("rotation %d gives A a whole team" % rotation,
+              (armies[0] & 1) == (armies[1] & 1),
+              "armies %s" % [SEAT_NAMES[c] for c in armies])
+        seen[armies[0] & 1] += 1
+    check("A plays each original team exactly twice",
+          seen[0] == seen[1] == match.ROTATIONS // 2,
+          "team0 %d, team1 %d" % (seen[0], seen[1]))
+
+    # And the four rotations must be four distinct games, or the sample is
+    # half the size it claims.
+    # A 180-degree rotation swaps R with Y and B with G. Both members of a
+    # team are played by the same engine, but the turn order is R,B,Y,G, so
+    # the army that moved first now moves third -- a different game, not a
+    # relabelling.
+    base = start_board("classic")
+    fens = {rotate(base, k).to_fen4() for k in range(match.ROTATIONS)}
+    check("even the symmetric start gives four distinct rotations",
+          len(fens) == match.ROTATIONS, "%d distinct" % len(fens))
+    played = base.copy()
+    rng = random.Random(9)
+    for _ in range(8):
+        played.make(rng.choice(fast.gen_legal(played)))
+    fens = {rotate(played, k).to_fen4() for k in range(match.ROTATIONS)}
+    check("a real opening gives four distinct rotations",
+          len(fens) == match.ROTATIONS, "%d distinct" % len(fens))
+
+
 def test_pgn4():
     section("PGN4 (§11.5)")
     from tetrarch import pgn4
@@ -1473,6 +1514,7 @@ def main():
     test_eval()
     test_search(workers)
     test_nnue()
+    test_match_rotation()
     test_pgn4()
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, workers, args.quiet)

@@ -169,8 +169,17 @@ def play_game(job):
     board = rotate(base, rotation)
     start_fen4 = board.to_fen4().replace("\n", "")
 
-    # A plays team 0 (seats R,Y) on even rotations, team 1 (B,G) on odd.
-    a_team = rotation & 1
+    # Which ORIGINAL armies engine A gets -- not which seats.
+    #
+    # rotate(b, k) shifts every seat's colour by +k, so rotated-frame team t
+    # holds the armies that were originally team `t ^ (k & 1)`. Setting
+    # a_team = k & 1 therefore hands A the original team 0 in ALL FOUR
+    # rotations and cancels nothing: it turns the board and the team
+    # assignment together. That measured as +36 Elo in a null self-test.
+    #
+    # Pick the original team first, then work back to the rotated seat index.
+    original_team = (rotation >> 1) & 1
+    a_team = original_team ^ (rotation & 1)
     engines = {}
     try:
         engines[a_team] = get_engine(cmd_a, setup, mode, hash_mb, net_a, opts_a)
