@@ -124,7 +124,7 @@ static int initialised = 0;
 
 /* NNUE accumulator hooks. The net itself is defined further down; the deltas
  * are applied here, where the board actually changes. */
-static int  nn_delta_on(void);
+static int  nn_delta_on_for(uint64_t key);
 static void nn_toggle(uint8_t piece, int sq, int sign);
 static void nn_acc_set_key(uint64_t key);
 
@@ -410,7 +410,7 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
     uint64_t key;
     int victim_sq = -1;
     uint8_t victim = 0;
-    int nn = nn_delta_on();
+    int nn = nn_delta_on_for(b->key);
 
     if (flag == F_EP) {
         /* The pawn removed sits on the recorded victim square, not the square
@@ -548,7 +548,7 @@ void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
 
     /* Before anything moves: integer add/subtract is exactly invertible, so
      * undoing make's toggles restores the accumulator make was handed. */
-    if (nn_delta_on()) {
+    if (nn_delta_on_for(b->key)) {
         uint8_t placed = b->sq[to];
         uint8_t orig = promo ? (uint8_t)(1 + mover * NTYPE + PAWN) : placed;
         nn_toggle(placed, to, -1);
@@ -783,7 +783,18 @@ static void nn_toggle(uint8_t piece, int sq, int sign)
     }
 }
 
-static int nn_delta_on(void) { return nn_loaded && nn_acc_ok; }
+/* Deltas are safe only when the accumulator actually describes the board in
+ * front of us. `nn_acc_ok` alone is not that: it stays set after a search
+ * ends, so a board arriving from outside -- the next self-play game, the next
+ * A/B position -- would have make/unmake apply deltas to a stale accumulator
+ * AND advance nn_acc_key to match, which defeats the staleness check in
+ * nnue_eval and silently evaluates the whole search on garbage.
+ *
+ * Tying it to the key instead makes maintenance conditional on continuity: a
+ * board we did not walk here ourselves fails the test, no deltas are applied,
+ * the key is left alone, and the next evaluation refreshes. */
+static int nn_delta_on_for(uint64_t key) { return nn_loaded && nn_acc_ok
+                                                  && nn_acc_key == key; }
 static void nn_acc_set_key(uint64_t key) { nn_acc_key = key; }
 
 /* Rebuild all four perspectives from the board. The oracle the incremental
