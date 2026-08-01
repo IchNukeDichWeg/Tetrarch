@@ -26,6 +26,12 @@
   .panel { background:var(--panel); border:1px solid var(--line);
            border-radius:6px; padding:14px; min-width:300px; max-width:360px; }
   .panel + .panel { margin-top:14px; }
+  /* Two side columns rather than one: game controls and status on the left,
+     the running record on the right, so nothing needs scrolling past a
+     784px board to reach it. */
+  .side { display:flex; flex-direction:column; min-width:300px; flex:1 1 300px;
+          max-width:360px; }
+  .side .panel { max-width:none; }
   h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em;
        color:var(--dim); margin:0 0 10px; font-weight:600; }
   label { display:block; margin-bottom:8px; color:var(--dim); font-size:13px; }
@@ -64,7 +70,7 @@
   .good { color:#6ac07a; }
   .bad  { color:#e2726a; }
   #log { font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
-         color:var(--dim); max-height:220px; overflow:auto;
+         color:var(--dim); max-height:340px; overflow:auto;
          white-space:pre-wrap; }
   .row { display:flex; gap:14px; align-items:flex-end; }
   .row > * { flex:1; min-width:0; }
@@ -87,7 +93,7 @@
 <main>
   <canvas id="board" width="784" height="784"></canvas>
 
-  <div>
+  <div class="side">
     <div class="panel">
       <h2>Game</h2>
       <div class="row">
@@ -131,6 +137,9 @@
       </div>
     </div>
 
+  </div>
+
+  <div class="side">
     <div class="panel">
       <h2>Moves <span id="persp" class="note" style="text-transform:none;
           letter-spacing:0; font-weight:400"></span></h2>
@@ -201,13 +210,21 @@ let netInfo = [];
 // so it waits for Start -- and Stop halts either kind after the move in
 // flight, which is why the loop re-checks rather than being cancelled.
 let running = false;
+// The settings the CURRENT game was started with, and a counter that stamps
+// it. Reading the dropdowns at request time was wrong twice over: changing
+// Setup mid-game rebuilt the PGN4 against a different starting position, and
+// an engine reply still in flight when New game was pressed pushed its move
+// onto the fresh list, which then replayed as an illegal move.
+let game = {setup: "classic", mode: "teams", id: 0};
 //: Which seat sits at the bottom. The board has no canonical orientation with
 //: four players -- everyone wants their own seat in front of them.
 let view = 0;
 let hint = null;         // {from, to, score, depth} from the hint button
 let lastMove = null;     // {from, to} of the move just played, whoever played it
 
-const teamsOn = () => document.getElementById("mode").value === "teams";
+//: The mode the game in progress is being played under -- not the dropdown,
+//: which is a choice for the NEXT game until New game is pressed.
+const teamsOn = () => game.mode === "teams";
 
 // --- rendering -------------------------------------------------------------
 
@@ -457,13 +474,15 @@ async function tick(){
 
   busy = true; draw();
   say('<span class="big">' + NAME[state.turn] + " is thinking…</span>");
+  const era = game.id;
   const {ok, data} = await post("/api/play/engine", {
     fen4: state.fen4,
-    mode: document.getElementById("mode").value,
+    mode: game.mode,
     movetime: parseInt(document.getElementById("movetime").value, 10),
     net: document.getElementById("net").value,
   });
   busy = false;
+  if (era !== game.id) return;      // a new game started while this was out
   if (!ok){
     const msg = data.unsupported || data.error || "engine failed";
     say('<span class="warn">' + msg + "</span>"
@@ -507,11 +526,18 @@ function fmtScore(cp){
 }
 
 async function newGame(){
-  log = []; moveList = []; lastMove = null;
-  const {ok, data} = await post("/api/play/new", {
+  // Bump BEFORE awaiting, so anything already in flight is stale on arrival.
+  game = {
     setup: document.getElementById("setup").value,
     mode: document.getElementById("mode").value,
+    id: game.id + 1,
+  };
+  const era = game.id;
+  log = []; moveList = []; lastMove = null; hint = null; busy = false;
+  const {ok, data} = await post("/api/play/new", {
+    setup: game.setup, mode: game.mode,
   });
+  if (era !== game.id) return;
   if (!ok){ say('<span class="warn">' + (data.error || "failed") + "</span>"); return; }
   running = !allEngine();
   adopt(data); renderLog(); renderRun(); tick();
@@ -551,9 +577,11 @@ cv.onclick = async (ev) => {
     if (!choice) { from = null; draw(); return; }
     move = choice;
   }
+  const era = game.id;
   const {ok, data} = await post("/api/play/move", {
-    fen4: state.fen4, mode: document.getElementById("mode").value, move
+    fen4: state.fen4, mode: game.mode, move
   });
+  if (era !== game.id) return;
   if (!ok){ say('<span class="warn">' + (data.error || "illegal") + "</span>"); return; }
   log.push({seat: state.turn, move: move});
   moveList.push(move);
@@ -581,11 +609,11 @@ let pgnPending = false;
 async function refreshPgn(){
   if (pgnPending) return;
   pgnPending = true;
+  const era = game.id;
   const {ok, data} = await post("/api/play/pgn", {
-    setup: document.getElementById("setup").value,
-    mode: document.getElementById("mode").value,
-    moves: moveList.slice(),
+    setup: game.setup, mode: game.mode, moves: moveList.slice(),
   });
+  if (era !== game.id) return;
   pgnPending = false;
   document.getElementById("pgn").value =
     ok ? data.pgn4 : (data.error || "could not build the PGN4");
@@ -660,14 +688,16 @@ hintBtn.onclick = async () => {
   if (!state) return;
   hint = null; hintOut.textContent = "thinking…"; draw();
   busy = true; renderHintBtn();
+  const era = game.id;
   const {ok, data} = await post("/api/play/engine", {
     fen4: state.fen4,
-    mode: document.getElementById("mode").value,
+    mode: game.mode,
     movetime: parseInt(document.getElementById("movetime").value, 10),
     net: document.getElementById("net").value,
     apply: false,
   });
   busy = false;
+  if (era !== game.id){ renderHintBtn(); return; }
   if (!ok){
     hintOut.innerHTML = '<span class="warn">'
       + (data.unsupported || data.error || "no hint") + "</span>";
@@ -685,8 +715,10 @@ hintBtn.onclick = async () => {
   renderHintBtn(); draw();
 };
 document.getElementById("mode").onchange = () => {
-  renderSeats(); draw();
-  if (!teamsOn())
+  // The board on screen belongs to the game in progress; this control only
+  // takes effect on New game, so it must not redraw as though it applied.
+  const next = document.getElementById("mode").value;
+  if (next !== "teams")
     say('<span class="warn">The engine plays Teams only. In free-for-all set '
         + 'every seat to Human.</span><div class="note">'
         + "FFA needs a paranoid search — Phase 5, not built.</div>");
