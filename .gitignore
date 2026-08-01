@@ -12,6 +12,17 @@ __pycache__/
 scratch/
 *.bin
 *.nnue
+*.jsonl
+# Nets are the exception: a net is small, and an A/B result is only
+# reproducible if the net that produced it is in the tree. Nested output
+# directories (train.py --out nets/v2/) stay ignored -- promote the one net
+# that matters to nets/net-vN.nnue rather than committing every epoch.
 !nets/*.nnue
 *.pgn4
 tetrarch-v*.tar.gz
+
+# Bulk artefacts pulled off a generation host. Regenerable, and far too large
+# for the repo.
+tetrarch_export/
+
+.DS_Store

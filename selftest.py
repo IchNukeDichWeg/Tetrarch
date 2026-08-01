@@ -20,6 +20,7 @@ Two things this file is deliberately built around:
 """
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -1292,6 +1293,31 @@ WIKIBOOK_PGN4 = """[Variant "Teams"]
 """
 
 
+def test_resume():
+    section("gen_data resume (dataset integrity)")
+    import gen_data
+
+    path = os.path.join(SCRATCH, "selftest-resume.jsonl")
+    # Five games written, but indices up to 12 were attempted: dead openings
+    # write no line, and interrupting a worker pool leaves dispatched games
+    # unwritten. Counting lines would restart at 5 and regenerate 5..12.
+    with open(path, "w") as fh:
+        for i in (0, 1, 4, 9, 12):
+            fh.write(json.dumps({"i": i, "moves": "a", "scores": [1],
+                                 "result": 1.0}) + "\n")
+    nxt, lines = gen_data.resume_index(path)
+    check("resume starts past the highest index, not the line count",
+          nxt == 13, "next=%d lines=%d" % (nxt, lines))
+    check("and reports the games actually present", lines == 5, str(lines))
+
+    with open(path, "a") as fh:
+        fh.write('{"i": 13, "mov')            # interrupted mid-write
+    nxt, lines = gen_data.resume_index(path)
+    check("a truncated final line is not counted as a game",
+          (nxt, lines) == (13, 5), "next=%d lines=%d" % (nxt, lines))
+    os.remove(path)
+
+
 def test_match_rotation():
     section("match.py seat rotation (A/B validity)")
     import match
@@ -1762,6 +1788,7 @@ def main():
     test_eval()
     test_search(workers)
     test_nnue()
+    test_resume()
     test_match_rotation()
     test_pgn4()
     test_js_replay()

@@ -127,6 +127,29 @@ def jobs(start, count, args):
                args.nodes, args.depth)
 
 
+def resume_index(path):
+    """Where a resumed run should start: one past the highest index present.
+
+    NOT the line count. A dead opening writes no line, and interrupting a pool
+    leaves dispatched games unwritten, so counting lines rewinds into indices
+    that are already in the file and regenerates them. That silently put 80
+    duplicate games into the generation-2 dataset.
+
+    Returns (next_index, lines_present).
+    """
+    highest, lines = -1, 0
+    with open(path) as fh:
+        for line in fh:
+            try:
+                i = json.loads(line).get("i")
+            except ValueError:
+                continue               # truncated final line: not a game
+            lines += 1
+            if isinstance(i, int) and i > highest:
+                highest = i
+    return highest + 1, lines
+
+
 def _worker_init(net_path):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     # Once per worker, never per game: loading a net clears the transposition
@@ -172,9 +195,9 @@ def main():
         if not args.resume:
             ap.error("%s exists; pass --resume to continue it, or pick a fresh "
                      "path" % args.out)
-        with open(args.out) as fh:
-            done = sum(1 for _ in fh)
-        print("resuming %s: %d games already present" % (args.out, done))
+        done, lines = resume_index(args.out)
+        print("resuming %s: %d games present, next index %d"
+              % (args.out, lines, done))
     remaining = args.games - done
     if remaining <= 0:
         print("%s already has %d games" % (args.out, done))
