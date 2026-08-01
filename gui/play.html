@@ -23,6 +23,20 @@
          flex-wrap:wrap; }
   canvas { background:var(--panel); border:1px solid var(--line);
            border-radius:6px; touch-action:none; max-width:100%; height:auto; }
+  .boardwrap { display:flex; gap:10px; align-items:stretch; }
+  /* The bar fills from the bottom for whichever team the board is turned to,
+     which is the same perspective the move list reports. */
+  #evalbar { width:38px; flex:none; border:1px solid var(--line);
+             border-radius:6px; position:relative; overflow:hidden;
+             background:var(--t2); }
+  #evalfill { position:absolute; left:0; right:0; bottom:0; height:50%;
+              background:var(--t1); transition:height .25s ease; }
+  #evalbar span { position:absolute; left:0; right:0; text-align:center;
+                  font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;
+                  font-variant-numeric:tabular-nums; }
+  #evaltop { top:3px; color:#101319; }
+  #evalbot { bottom:3px; color:#101319; }
+  #evalbar.off { opacity:.35; }
   .panel { background:var(--panel); border:1px solid var(--line);
            border-radius:6px; padding:14px; min-width:300px; max-width:360px; }
   .panel + .panel { margin-top:14px; }
@@ -91,7 +105,14 @@
 </header>
 
 <main>
-  <canvas id="board" width="784" height="784"></canvas>
+  <div class="boardwrap">
+    <div id="evalbar" title="engine evaluation">
+      <div id="evalfill"></div>
+      <span id="evaltop"></span>
+      <span id="evalbot"></span>
+    </div>
+    <canvas id="board" width="784" height="784"></canvas>
+  </div>
 
   <div class="side">
     <div class="panel">
@@ -220,6 +241,10 @@ let game = {setup: "classic", mode: "teams", id: 0};
 //: four players -- everyone wants their own seat in front of them.
 let view = 0;
 let hint = null;         // {from, to, score, depth} from the hint button
+//: The most recent engine score and who it came from, so the bar can be
+//: re-pointed when the board is rotated. `ply` is how many moves had been
+//: played when it was measured, which is what makes a stale reading visible.
+let evalInfo = null;
 let lastMove = null;     // {from, to} of the move just played, whoever played it
 
 //: The mode the game in progress is being played under -- not the dropdown,
@@ -408,6 +433,38 @@ function scoreFor(seat, cp){
   return fmtScore(flip ? -cp : cp);
 }
 
+// The bar maps a centipawn score to a share of the board the way the trainer
+// maps it to a target: sigmoid(cp / 400). A linear bar would spend most of its
+// travel on differences nobody can convert.
+function renderEvalBar(){
+  const bar = document.getElementById("evalbar");
+  const fill = document.getElementById("evalfill");
+  const top = document.getElementById("evaltop");
+  const bot = document.getElementById("evalbot");
+  if (!teamsOn() || !evalInfo){
+    // FFA has no two-sided score to show, and before the first search there
+    // is nothing measured -- an empty bar is honest, a 50% one is not.
+    bar.classList.add("off");
+    fill.style.height = "50%";
+    top.textContent = bot.textContent = "";
+    return;
+  }
+  const flip = TEAM[evalInfo.seat] !== viewTeam();
+  const cp = flip ? -evalInfo.score : evalInfo.score;
+  const stale = evalInfo.ply !== moveList.length;
+  bar.classList.toggle("off", stale);
+
+  let pct;
+  if (Math.abs(cp) >= 29900) pct = cp > 0 ? 100 : 0;
+  else pct = 100 / (1 + Math.exp(-cp / 400));
+  fill.style.height = Math.max(0, Math.min(100, pct)) + "%";
+
+  const text = fmtScore(cp);
+  // The number sits on whichever end is winning, as it does on chess.com.
+  top.textContent = cp < 0 ? text : "";
+  bot.textContent = cp >= 0 ? text : "";
+}
+
 function renderLog(){
   const el = document.getElementById("log");
   el.textContent = log.length
@@ -417,6 +474,7 @@ function renderLog(){
              + "  " + e.nodes.toLocaleString() + "n")).join("\n")
     : "no moves yet";
   el.scrollTop = el.scrollHeight;
+  renderEvalBar();
   document.getElementById("persp").textContent = teamsOn()
     ? "+ favours " + (viewTeam() === 0 ? "Red & Yellow" : "Blue & Green")
     : "";
@@ -438,7 +496,7 @@ function adopt(data){
   from = null;
   hint = null;                      // a hint belongs to one position only
                                     // lastMove is set by the caller and kept
-  renderSeats(); draw(); renderHintBtn(); refreshPgn();
+  renderSeats(); draw(); renderHintBtn(); renderEvalBar(); refreshPgn();
 }
 
 function describe(){
@@ -495,6 +553,7 @@ async function tick(){
             depth: data.depth, nodes: data.nodes});
   moveList.push(data.move);
   lastMove = splitMove(data.move);
+  evalInfo = {score: data.score, seat: state.turn, ply: moveList.length};
   adopt(data); renderLog();
   setTimeout(tick, 50);
 }
@@ -526,6 +585,7 @@ function fmtScore(cp){
 }
 
 async function newGame(){
+  evalInfo = null;
   // Bump BEFORE awaiting, so anything already in flight is stale on arrival.
   game = {
     setup: document.getElementById("setup").value,
@@ -670,12 +730,21 @@ document.getElementById("net").onchange = showNetNote;
 document.getElementById("new").onclick = newGame;
 document.getElementById("runstop").onclick = () => setRunning(!running);
 document.getElementById("view").onchange = (e) => {
+  // Everything that reports a score follows the view, not just the pieces.
   view = parseInt(e.target.value, 10);
-  draw(); renderLog();          // the reported perspective follows the view
+  draw(); renderLog(); renderHint();
 };
 
 const hintBtn = document.getElementById("hint");
 const hintOut = document.getElementById("hintout");
+
+function renderHint(){
+  if (!hint){ hintOut.textContent = ""; return; }
+  hintOut.innerHTML = "<b>" + hint.from + " → " + hint.to + "</b>"
+    + (hint.promo ? "=" + hint.promo.toUpperCase() : "")
+    + ' <span class="note">' + scoreFor(hint.seat, hint.score)
+    + "  d" + hint.depth + "</span>";
+}
 
 function renderHintBtn(){
   const canAsk = state && !busy && control[state.turn] === "human"
@@ -705,14 +774,15 @@ hintBtn.onclick = async () => {
     return;
   }
   const m = splitMove(data.move);
-  hint = m ? {from:m.from, to:m.to} : null;
-  hintOut.innerHTML = m
-    ? '<b>' + m.from + " → " + m.to + "</b>"
-      + (m.promo ? "=" + m.promo.toUpperCase() : "")
-      + ' <span class="note">' + scoreFor(state.turn, data.score) + "  d" + data.depth
-      + "</span>"
-    : "no move";
-  renderHintBtn(); draw();
+  // Keep the raw score and the seat it came from, so the text can be
+  // re-pointed when the board is rotated -- the same reason the move log
+  // holds records rather than strings.
+  hint = m ? {from: m.from, to: m.to, promo: m.promo,
+              score: data.score, depth: data.depth, seat: state.turn} : null;
+  // A hint measures the position on screen, so it is never stale.
+  evalInfo = {score: data.score, seat: state.turn, ply: moveList.length};
+  renderHint();
+  renderHintBtn(); draw(); renderEvalBar();
 };
 document.getElementById("mode").onchange = () => {
   // The board on screen belongs to the game in progress; this control only
