@@ -150,6 +150,10 @@ def api_play_engine():
     One endpoint rather than eval-then-move: two calls would let the position
     change between them, and the client would have to know how to apply a move
     to do anything with the answer.
+
+    With "apply": false the move is searched and reported but not played --
+    that is the hint button, and it is the same code path so a hint can never
+    disagree with what the engine would actually do.
     """
     payload = request.get_json(silent=True) or {}
     try:
@@ -176,10 +180,11 @@ def api_play_engine():
     if not result.best:
         return jsonify({"error": "no move found"}), 500
     played = move_str(result.best)
-    for m in gen.gen_legal(board):
-        if move_str(m) == played:
-            board.make(m)
-            break
+    if payload.get("apply", True):
+        for m in gen.gen_legal(board):
+            if move_str(m) == played:
+                board.make(m)
+                break
     state = _render_state(board)
     state.update({"move": played, "score": result.score, "depth": result.depth,
                   "nodes": result.nodes, "nps": result.nps, "note": note})
@@ -213,15 +218,83 @@ def _select_net(name):
     return None
 
 
+@app.route("/api/play/pgn", methods=["POST"])
+def api_play_pgn():
+    """The game so far as PGN4, replayed from the start and the move list.
+
+    pgn4.write already exists and is gated against pgn4.parse, so this replays
+    rather than formatting anything itself -- a second move formatter is the
+    thing that drifts.
+
+    Tags follow the shape chess.com exports: Variant, RuleVariants,
+    CurrentMove. StartFen4 gets the real position rather than a name like
+    "4PCo", because that round trips through both readers.
+    """
+    payload = request.get_json(silent=True) or {}
+    setup = payload.get("setup", DEFAULT_SETUP)
+    if setup not in SETUPS:
+        return jsonify({"error": "unknown setup %r" % setup}), 400
+    mode = MODE_FFA if payload.get("mode") == "ffa" else MODE_TEAMS
+    board = start_board(setup, mode)
+    moves = []
+    for token in payload.get("moves", []):
+        found = next((m for m in gen.gen_legal(board)
+                      if move_str(m) == token), None)
+        if found is None:
+            return jsonify({"error": "illegal move %r at ply %d"
+                            % (token, len(moves))}), 400
+        moves.append(found)
+        board.make(found)
+    text = pgn4.write(start_board(setup, mode), moves, tags={
+        "Variant": "Teams" if mode == MODE_TEAMS else "FFA",
+        "RuleVariants": "EnPassant",
+        "CurrentMove": str(len(moves)),
+    })
+    return jsonify({"pgn4": text})
+
+
+#: What each net measured against the one before it. Kept here rather than in
+#: the page so there is one place where a result is written down, and it is the
+#: same place the file lives. Every figure traces to docs/AB.md.
+#:
+#: Only v0 and v1 were measured against the hand eval directly, so v1-vs-v0 is
+#: a difference of two results rather than a head-to-head, and says so. v2 was
+#: measured under the accumulator bug and is void -- reporting -226 next to two
+#: honest numbers would be worse than reporting nothing.
+NET_ELO = [
+    {"file": "net-v0.nnue", "label": "v0", "vs": "hand eval",
+     "elo": -40.13, "err": 7.01},
+    {"file": "net-v1.nnue", "label": "v1", "vs": "v0",
+     "elo": 37.87, "err": None,
+     "note": "difference of two results against the hand eval, "
+             "not a head-to-head A/B"},
+    {"file": "net-v2.nnue", "label": "v2", "vs": "v1", "elo": None,
+     "note": "measured under the accumulator bug -- the number does not stand"},
+]
+
+
 @app.route("/api/play/nets")
 def api_play_nets():
-    """Nets available to play against. All of them lost their A/B; the hand
-    eval is still the strongest thing here."""
+    """Nets on disk, each with what it measured against the previous one.
+
+    All of them lost. The hand eval is still the strongest evaluation here,
+    which is why it stays the default.
+    """
     try:
-        found = sorted(n for n in os.listdir(NETS_DIR) if n.endswith(".nnue"))
+        found = set(n for n in os.listdir(NETS_DIR) if n.endswith(".nnue"))
     except OSError:
-        found = []
-    return jsonify({"nets": found})
+        found = set()
+    known = {e["file"]: e for e in NET_ELO}
+    order = {e["file"]: i for i, e in enumerate(NET_ELO)}
+    nets = []
+    for name in sorted(found, key=lambda n: (order.get(n, 999), n)):
+        entry = dict(known.get(name, {"file": name,
+                                      "label": name[:-5], "vs": None,
+                                      "elo": None, "err": None,
+                                      "note": "not measured"}))
+        entry["file"] = name
+        nets.append(entry)
+    return jsonify({"nets": nets})
 
 
 @app.route("/api/parse", methods=["POST"])

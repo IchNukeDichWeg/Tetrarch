@@ -43,6 +43,7 @@ from tetrarch import movegen_slow as slow
 from tetrarch import core
 from tetrarch import eval_hand
 from tetrarch import search
+from tetrarch import pgn4
 
 HAVE_C = core.available()
 
@@ -1318,6 +1319,32 @@ def test_resume():
     os.remove(path)
 
 
+def test_pgn4_named_start():
+    section("PGN4 named starts (chess.com compatibility)")
+    # chess.com's own export writes [StartFen4 "4PCo"] -- a NAME, not a
+    # position. Handing that to the FEN4 reader raised, which rejected a real
+    # chess.com game outright.
+    header = ('[StartFen4 "4PCo"]\n[Variant "Teams"]\n'
+              '[RuleVariants "EnPassant"]\n[CurrentMove "0"]\n'
+              '[TimeControl "2 | 10"]\n\n1. d2-d4 .. b8-c8 .. k13-k11 .. m8-l8\n')
+    try:
+        game = pgn4.parse(header)
+        ok = True
+    except Exception as exc:                                    # noqa: BLE001
+        game, ok = None, False
+        check("a real chess.com header parses", False, str(exc))
+    if ok:
+        check("a real chess.com header parses", True,
+              "%d tokens" % len(game.tokens))
+        check("and 4PCo resolves to the classic start",
+              game.start.to_fen4() == start_board("classic").to_fen4())
+    # A position in StartFen4 must still win over any name lookup.
+    fen = start_board("modern").to_fen4().replace("\n", "")
+    g2 = pgn4.parse('[Variant "Teams"]\n[StartFen4 "%s"]\n\n1. d2-d4\n' % fen)
+    check("an explicit FEN4 still takes precedence",
+          g2.start.to_fen4() == start_board("modern").to_fen4())
+
+
 def test_match_rotation():
     section("match.py seat rotation (A/B validity)")
     import match
@@ -1788,6 +1815,7 @@ def main():
     test_eval()
     test_search(workers)
     test_nnue()
+    test_pgn4_named_start()
     test_resume()
     test_match_rotation()
     test_pgn4()

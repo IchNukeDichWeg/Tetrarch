@@ -10,7 +10,8 @@
 -->
 <style>
   :root { --bg:#191c22; --panel:#22262f; --line:#333846; --ink:#e6e8ee;
-          --dim:#9aa1b1; --accent:#e2c86a; }
+          --dim:#9aa1b1; --accent:#e2c86a;
+          --t1:#d64f4f; --t2:#4f86d6; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5
          ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
@@ -21,35 +22,52 @@
   main { display:flex; gap:20px; padding:20px; align-items:flex-start;
          flex-wrap:wrap; }
   canvas { background:var(--panel); border:1px solid var(--line);
-           border-radius:6px; touch-action:none; }
+           border-radius:6px; touch-action:none; max-width:100%; height:auto; }
   .panel { background:var(--panel); border:1px solid var(--line);
-           border-radius:6px; padding:14px; min-width:280px; max-width:340px; }
+           border-radius:6px; padding:14px; min-width:300px; max-width:360px; }
   .panel + .panel { margin-top:14px; }
   h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em;
        color:var(--dim); margin:0 0 10px; font-weight:600; }
   label { display:block; margin-bottom:8px; color:var(--dim); font-size:13px; }
-  select, button { font:inherit; background:#2b303b; color:var(--ink);
-                   border:1px solid var(--line); border-radius:4px;
-                   padding:5px 8px; }
+  select, button, input[type=range] { font:inherit; background:#2b303b;
+                   color:var(--ink); border:1px solid var(--line);
+                   border-radius:4px; padding:5px 8px; }
+  input[type=range] { padding:0; accent-color:var(--accent); }
   button { cursor:pointer; }
   button:hover { border-color:var(--accent); }
-  button:disabled { opacity:.5; cursor:default; border-color:var(--line); }
-  .seat { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+
+  /* Teams are seat & 1 -- Red+Yellow against Blue+Green -- so the panel is
+     grouped by team rather than by seat order, which is the thing that was
+     not obvious from four rows in board order. */
+  .team { border-left:3px solid var(--line); padding:6px 0 2px 9px;
+          margin-bottom:10px; }
+  .team.a { border-left-color:var(--t1); }
+  .team.b { border-left-color:var(--t2); }
+  .team h3 { font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+             margin:0 0 6px; color:var(--dim); font-weight:600; }
+  .seat { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
   .seat .dot { width:11px; height:11px; border-radius:50%; flex:none; }
-  .seat .nm { width:56px; }
-  .seat select { flex:1; }
-  .seat.turn { outline:1px solid var(--accent); outline-offset:3px;
-               border-radius:3px; }
+  .seat .nm { width:52px; }
+  .seat .meta { width:82px; color:var(--dim); font-size:11.5px;
+                font-variant-numeric:tabular-nums; }
+  .seat select { flex:1; min-width:82px; }
+  .seat.turn .nm { color:var(--accent); font-weight:600; }
   .seat.out .nm { text-decoration:line-through; color:var(--dim); }
   #status { min-height:2.6em; }
   .big { font-size:15px; font-weight:600; }
   .note { color:var(--dim); font-size:12px; }
   .warn { color:#e2946a; font-size:12px; }
+  .good { color:#6ac07a; }
+  .bad  { color:#e2726a; }
   #log { font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
          color:var(--dim); max-height:220px; overflow:auto;
          white-space:pre-wrap; }
   .row { display:flex; gap:8px; align-items:center; }
   .row > * { flex:1; }
+  #timeval { color:var(--ink); font-variant-numeric:tabular-nums; }
+  #pgn { width:100%; height:150px; resize:vertical; background:#1d212a;
+         color:var(--dim); border:1px solid var(--line); border-radius:4px;
+         padding:8px; font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
 </style>
 
 <header>
@@ -59,7 +77,7 @@
 </header>
 
 <main>
-  <canvas id="board" width="616" height="616"></canvas>
+  <canvas id="board" width="784" height="784"></canvas>
 
   <div>
     <div class="panel">
@@ -75,26 +93,45 @@
         </select></label>
       </div>
       <div id="seats"></div>
+      <div id="seatnote" class="note" style="margin:-4px 0 10px"></div>
+      <label>Engine time — <span id="timeval">1.0 s</span>
+        <input type="range" id="movetime" min="100" max="5000" step="100" value="1000">
+      </label>
       <div class="row">
-        <label>Engine time<select id="movetime">
-          <option value="200">0.2 s</option>
-          <option value="1000" selected>1 s</option>
-          <option value="3000">3 s</option>
-          <option value="10000">10 s</option>
-        </select></label>
         <label>Eval<select id="net"><option value="">hand eval</option></select></label>
+        <label>Bottom<select id="view">
+          <option value="0">Red</option><option value="1">Blue</option>
+          <option value="2">Yellow</option><option value="3">Green</option>
+        </select></label>
       </div>
-      <button id="new">New game</button>
+      <div id="netnote" class="note"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="new">New game</button>
+        <button id="runstop">Start</button>
+      </div>
     </div>
 
     <div class="panel">
       <h2>Status</h2>
       <div id="status"><span class="note">press New game</span></div>
+      <div class="row" style="margin-top:10px">
+        <button id="hint">Engine hint</button>
+        <span id="hintout" class="note"></span>
+      </div>
     </div>
 
     <div class="panel">
       <h2>Moves</h2>
       <div id="log"></div>
+    </div>
+
+    <div class="panel">
+      <h2>PGN4</h2>
+      <textarea id="pgn" readonly spellcheck="false"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="copy">Copy</button>
+        <span id="copied" class="note"></span>
+      </div>
     </div>
   </div>
 </main>
@@ -104,7 +141,10 @@ const SEATS = ["R","B","Y","G"];
 const NAME  = {R:"Red", B:"Blue", Y:"Yellow", G:"Green"};
 const COLOUR = {r:"#d64f4f", b:"#4f86d6", y:"#d6b23f", g:"#46a85c", d:"#6d7382"};
 const GLYPH = {P:"♟", N:"♞", B:"♝", R:"♜", Q:"♛", K:"♚"};
-const N = 14, CELL = 44;
+//: Teams are seat & 1: Red and Yellow against Blue and Green.
+const TEAM = {R:0, Y:0, B:1, G:1};
+const TEAM_MATE = {R:"Y", Y:"R", B:"G", G:"B"};
+const N = 14, CELL = 52, MARGIN = 28;
 
 // The only board fact the page keeps: which squares exist. Everything else
 // comes from the server.
@@ -112,12 +152,46 @@ const playable = (f,r) => f>=0 && f<N && r>=0 && r<N &&
                           !((f<3||f>10) && (r<3||r>10));
 const sqName = (f,r) => "abcdefghijklmn"[f] + (r+1);
 
+// Board (file, rank) -> screen cell, and back. Rank 0 is Red's home, file 0 is
+// Blue's, so each view is a quarter turn: the seat at the bottom is the one
+// whose home edge we rotated down.
+function toScreen(f, r){
+  switch (view){
+    case 1:  return [13-r, 13-f];
+    case 2:  return [13-f, r];
+    case 3:  return [r, f];
+    default: return [f, 13-r];
+  }
+}
+function fromScreen(sx, sy){
+  switch (view){
+    case 1:  return [13-sy, 13-sx];
+    case 2:  return [13-sx, sy];
+    case 3:  return [sy, sx];
+    default: return [sx, 13-sy];
+  }
+}
+
 const cv = document.getElementById("board"), ctx = cv.getContext("2d");
 let state = null;        // last render state from the server
 let control = {R:"human", B:"engine", Y:"human", G:"engine"};
 let from = null;         // square the user picked first
 let busy = false;        // an engine request is in flight
 let log = [];
+let moveList = [];       // raw move strings, the input the PGN4 writer needs
+let netInfo = [];
+// Engine seats only move while this is set. A game with a human in it starts
+// live, because the engine answering your move is the whole point. An
+// all-engine game would otherwise start itself and run to mate with no way in,
+// so it waits for Start -- and Stop halts either kind after the move in
+// flight, which is why the loop re-checks rather than being cancelled.
+let running = false;
+//: Which seat sits at the bottom. The board has no canonical orientation with
+//: four players -- everyone wants their own seat in front of them.
+let view = 0;
+let hint = null;         // {from, to, score, depth} from the hint button
+
+const teamsOn = () => document.getElementById("mode").value === "teams";
 
 // --- rendering -------------------------------------------------------------
 
@@ -135,7 +209,8 @@ function draw(){
 
   for (let r=0; r<N; r++) for (let f=0; f<N; f++){
     if (!playable(f,r)) continue;
-    const x = f*CELL, y = (13-r)*CELL, nm = sqName(f,r);
+    const [sx, sy] = toScreen(f, r);
+    const x = MARGIN + sx*CELL, y = MARGIN + sy*CELL, nm = sqName(f,r);
     ctx.fillStyle = (f+r)%2 ? "#3a3f4a" : "#2a2e37";
     ctx.fillRect(x,y,CELL,CELL);
     if (targets.has(nm)){
@@ -145,7 +220,8 @@ function draw(){
     const p = state ? state.grid[r][f] : null;
     if (p){
       const glyph = GLYPH[p.t] || "?";
-      ctx.font = "30px serif"; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.font = (CELL-16) + "px serif";
+      ctx.textAlign="center"; ctx.textBaseline="middle";
       ctx.fillStyle = "rgba(0,0,0,.55)";
       ctx.fillText(glyph, x+CELL/2+1, y+CELL/2+2);
       ctx.globalAlpha = p.dead ? 0.45 : 1;
@@ -161,6 +237,56 @@ function draw(){
       ctx.strokeRect(x+1.5, y+1.5, CELL-3, CELL-3);
     }
   }
+  drawHint();
+  drawEdges();
+}
+
+// The hint is shown as its two squares rather than a name, because "start and
+// end square" is what you actually need to play it.
+function drawHint(){
+  if (!hint || !state) return;
+  for (const [nm, colour] of [[hint.from, "#6ac07a"], [hint.to, "#e2c86a"]]){
+    const m = /^([a-n])(\d{1,2})$/.exec(nm);
+    if (!m) continue;
+    const [sx, sy] = toScreen(m[1].charCodeAt(0)-97, parseInt(m[2],10)-1);
+    ctx.strokeStyle = colour; ctx.lineWidth = 3;
+    ctx.strokeRect(MARGIN + sx*CELL + 2, MARGIN + sy*CELL + 2, CELL-4, CELL-4);
+  }
+}
+
+// A band on each seat's home edge, labelled with the seat and -- in Teams --
+// its partner. Partners sit opposite each other, so the two bands of a team
+// face one another across the board.
+function drawEdges(){
+  const board = N*CELL, lo = MARGIN, hi = MARGIN + board;
+  // Going round from the bottom: bottom, left, top, right is the seat order
+  // starting at whichever seat the view puts in front of us.
+  const bands = [
+    {seat:SEATS[view],           y:hi - 2},
+    {seat:SEATS[(view+1) % 4],   vertical:true, left:true},
+    {seat:SEATS[(view+2) % 4],   y:lo - MARGIN + 2},
+    {seat:SEATS[(view+3) % 4],   vertical:true, left:false},
+  ];
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = "600 12px ui-sans-serif,system-ui,sans-serif";
+  for (const b of bands){
+    const live = !state || state.alive[SEATS.indexOf(b.seat)];
+    const text = NAME[b.seat]
+      + (teamsOn() ? "  ·  with " + NAME[TEAM_MATE[b.seat]] : "")
+      + (live ? "" : "  (out)");
+    ctx.save();
+    ctx.globalAlpha = live ? 1 : 0.4;
+    ctx.fillStyle = COLOUR[b.seat.toLowerCase()];
+    if (b.vertical){
+      const cx = b.left ? MARGIN/2 : hi + MARGIN/2;
+      ctx.translate(cx, MARGIN + board/2);
+      ctx.rotate(b.left ? -Math.PI/2 : Math.PI/2);
+      ctx.fillText(text, 0, 0);
+    } else {
+      ctx.fillText(text, MARGIN + board/2, b.y + MARGIN/2);
+    }
+    ctx.restore();
+  }
 }
 
 function splitMove(mv){
@@ -168,30 +294,65 @@ function splitMove(mv){
   return m ? {from:m[1], to:m[2], promo:m[3] || ""} : null;
 }
 
+function seatRow(s){
+  const i = SEATS.indexOf(s);
+  const row = document.createElement("div");
+  row.className = "seat"
+    + (state && state.turn === s ? " turn" : "")
+    + (state && !state.alive[i] ? " out" : "");
+  const dot = document.createElement("span");
+  dot.className = "dot"; dot.style.background = COLOUR[s.toLowerCase()];
+  const nm = document.createElement("span");
+  nm.className = "nm"; nm.textContent = NAME[s];
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  if (state){
+    const dead = !state.alive[i];
+    // Points are an FFA mechanic (RULES.md §8). In Teams every seat is
+    // permanently on 0, so printing it would read as a broken counter.
+    meta.textContent = (dead ? "out" : (state.turn === s ? "to move" : "active"))
+                     + (teamsOn() ? "" : " · " + state.points[i] + "p");
+  }
+  const sel = document.createElement("select");
+  for (const [v,t] of [["human","Human"],["engine","Engine"]]){
+    const o = document.createElement("option");
+    o.value = v; o.textContent = t;
+    if (control[s] === v) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    control[s] = sel.value;
+    if (allEngine()) running = false;   // needs an explicit Start
+    draw(); renderRun(); tick();
+  };
+  row.append(dot, nm, meta, sel);
+  return row;
+}
+
 function renderSeats(){
+  renderSeatNote();
   const box = document.getElementById("seats");
   box.innerHTML = "";
-  SEATS.forEach((s, i) => {
-    const row = document.createElement("div");
-    row.className = "seat"
-      + (state && state.turn === s ? " turn" : "")
-      + (state && !state.alive[i] ? " out" : "");
-    const dot = document.createElement("span");
-    dot.className = "dot";
-    dot.style.background = COLOUR[s.toLowerCase()];
-    const nm = document.createElement("span");
-    nm.className = "nm"; nm.textContent = NAME[s];
-    const sel = document.createElement("select");
-    for (const [v,t] of [["human","Human"],["engine","Engine"]]){
-      const o = document.createElement("option");
-      o.value = v; o.textContent = t;
-      if (control[s] === v) o.selected = true;
-      sel.appendChild(o);
-    }
-    sel.onchange = () => { control[s] = sel.value; draw(); tick(); };
-    row.append(dot, nm, sel);
-    box.appendChild(row);
+  if (!teamsOn()){
+    for (const s of SEATS) box.appendChild(seatRow(s));
+    return;
+  }
+  [["a", "Team 1 — Red & Yellow", ["R","Y"]],
+   ["b", "Team 2 — Blue & Green", ["B","G"]]].forEach(([cls, title, members]) => {
+    const wrap = document.createElement("div");
+    wrap.className = "team " + cls;
+    const h = document.createElement("h3");
+    h.textContent = title;
+    wrap.appendChild(h);
+    for (const s of members) wrap.appendChild(seatRow(s));
+    box.appendChild(wrap);
   });
+}
+
+function renderSeatNote(){
+  document.getElementById("seatnote").textContent = teamsOn()
+    ? "Teams is decided by checkmate; points are an FFA rule (§8)."
+    : "Points are awarded on captures and eliminations (§8).";
 }
 
 function say(html){ document.getElementById("status").innerHTML = html; }
@@ -216,14 +377,21 @@ async function post(url, body){
 function adopt(data){
   state = data;
   from = null;
-  renderSeats(); draw();
+  hint = null;                      // a hint belongs to one position only
+  renderSeats(); draw(); renderHintBtn(); refreshPgn();
 }
 
 function describe(){
   if (!state) return;
   const who = NAME[state.turn];
+  const side = teamsOn()
+    ? ' <span class="note">(with ' + NAME[TEAM_MATE[state.turn]] + ")</span>" : "";
   if (state.status === "checkmate"){
-    say('<span class="big">Checkmate — ' + who + ' has no move.</span>');
+    const winners = teamsOn()
+      ? "Team " + (TEAM[state.turn] === 0 ? "2 — Blue & Green" : "1 — Red & Yellow")
+      : "the others";
+    say('<span class="big">Checkmate — ' + who + " has no move.</span>"
+        + '<div class="note">' + winners + " win.</div>");
     return true;
   }
   if (state.status === "stalemate"){
@@ -232,7 +400,7 @@ function describe(){
   }
   const chk = state.status === "check" ? " — in check" : "";
   const mode = control[state.turn] === "engine" ? "engine" : "you";
-  say('<span class="big">' + who + " to move" + chk + "</span>"
+  say('<span class="big">' + who + " to move" + chk + "</span>" + side
       + '<div class="note">' + mode + "</div>");
   return false;
 }
@@ -242,6 +410,7 @@ async function tick(){
   if (!state || busy) return;
   if (describe()) return;
   if (control[state.turn] !== "engine") return;
+  if (!running){ renderRun(); return; }
 
   busy = true; draw();
   say('<span class="big">' + NAME[state.turn] + " is thinking…</span>");
@@ -262,8 +431,27 @@ async function tick(){
   // `state` is still the position before the move, so its turn is the mover.
   log.push(NAME[state.turn] + "  " + data.move + "   " + fmtScore(data.score)
            + "  d" + data.depth + "  " + data.nodes.toLocaleString() + "n");
+  moveList.push(data.move);
   adopt(data); renderLog();
   setTimeout(tick, 50);
+}
+
+const allEngine = () => SEATS.every(s => control[s] === "engine");
+
+function renderRun(){
+  renderHintBtn();
+  const b = document.getElementById("runstop");
+  b.textContent = running ? "Stop" : "Start";
+  const idle = state && !running && control[state.turn] === "engine";
+  b.disabled = !state;
+  if (idle) say('<span class="big">' + NAME[state.turn] + " to move</span>"
+                + '<div class="note">engine — press Start</div>');
+}
+
+function setRunning(on){
+  running = on;
+  renderRun();
+  if (on) tick();
 }
 
 function fmtScore(cp){
@@ -275,13 +463,14 @@ function fmtScore(cp){
 }
 
 async function newGame(){
-  log = [];
+  log = []; moveList = [];
   const {ok, data} = await post("/api/play/new", {
     setup: document.getElementById("setup").value,
     mode: document.getElementById("mode").value,
   });
   if (!ok){ say('<span class="warn">' + (data.error || "failed") + "</span>"); return; }
-  adopt(data); renderLog(); tick();
+  running = !allEngine();
+  adopt(data); renderLog(); renderRun(); tick();
 }
 
 // --- input -----------------------------------------------------------------
@@ -290,8 +479,11 @@ cv.onclick = async (ev) => {
   if (!state || busy) return;
   if (control[state.turn] !== "human") return;
   const rect = cv.getBoundingClientRect();
-  const f = Math.floor((ev.clientX - rect.left) * (cv.width / rect.width) / CELL);
-  const r = 13 - Math.floor((ev.clientY - rect.top) * (cv.height / rect.height) / CELL);
+  const px = (ev.clientX - rect.left) * (cv.width / rect.width) - MARGIN;
+  const py = (ev.clientY - rect.top) * (cv.height / rect.height) - MARGIN;
+  const sx = Math.floor(px / CELL), sy = Math.floor(py / CELL);
+  if (px < 0 || py < 0 || sx > 13 || sy > 13) return;
+  const [f, r] = fromScreen(sx, sy);
   if (!playable(f,r)) return;
   const nm = sqName(f,r);
 
@@ -311,7 +503,7 @@ cv.onclick = async (ev) => {
   }
   let move = from + nm;
   if (cands.length > 1 || cands[0].promo){
-    const choice = await promote(cands);
+    const choice = promote(cands);
     if (!choice) { from = null; draw(); return; }
     move = choice;
   }
@@ -320,41 +512,152 @@ cv.onclick = async (ev) => {
   });
   if (!ok){ say('<span class="warn">' + (data.error || "illegal") + "</span>"); return; }
   log.push(NAME[state.turn] + "  " + move);
-  adopt(data); renderLog(); tick();
+  moveList.push(move);
+  running = true;                 // you moved: the reply is what you asked for
+  adopt(data); renderLog(); renderRun(); tick();
 };
 
 // Promotion is resolved by asking, not by assuming a queen: which pieces are
 // available is the server's answer, and in Teams it is not the usual four.
 function promote(cands){
-  const names = {q:"Queen", r:"Rook", b:"Bishop", n:"Knight"};
   const choices = cands.filter(c => c.promo);
-  if (!choices.length) return Promise.resolve(cands[0].from + cands[0].to);
+  if (!choices.length) return cands[0].from + cands[0].to;
   const list = choices.map(c => c.promo).join(", ");
   const pick = window.prompt("Promote to (" + list + ")?", choices[0].promo);
-  if (!pick) return Promise.resolve(null);
+  if (!pick) return null;
   const hit = choices.find(c => c.promo === pick.trim().toLowerCase());
-  return Promise.resolve(hit ? hit.from + hit.to + hit.promo : null);
+  return hit ? hit.from + hit.to + hit.promo : null;
 }
 
-// --- boot ------------------------------------------------------------------
+// The PGN4 is built by the server from the move list, never formatted here:
+// tetrarch/pgn4.py already writes it and is gated against its own parser, and
+// a second move formatter is exactly the thing that drifts.
+let pgnPending = false;
+async function refreshPgn(){
+  if (pgnPending) return;
+  pgnPending = true;
+  const {ok, data} = await post("/api/play/pgn", {
+    setup: document.getElementById("setup").value,
+    mode: document.getElementById("mode").value,
+    moves: moveList.slice(),
+  });
+  pgnPending = false;
+  document.getElementById("pgn").value =
+    ok ? data.pgn4 : (data.error || "could not build the PGN4");
+}
+
+document.getElementById("copy").onclick = async () => {
+  const el = document.getElementById("copied");
+  try {
+    await navigator.clipboard.writeText(document.getElementById("pgn").value);
+    el.textContent = "copied";
+  } catch (e) {
+    document.getElementById("pgn").select();
+    el.textContent = "selected — press Ctrl/Cmd-C";
+  }
+  setTimeout(() => { el.textContent = ""; }, 2500);
+};
+
+// --- controls --------------------------------------------------------------
+
+const timeEl = document.getElementById("movetime");
+function showTime(){
+  document.getElementById("timeval").textContent =
+    (parseInt(timeEl.value,10) / 1000).toFixed(1) + " s";
+}
+timeEl.oninput = showTime;
+showTime();
+
+function eloText(e){
+  if (!e || e.elo === null || e.elo === undefined) return "";
+  const sign = e.elo > 0 ? "+" : "";
+  const err = e.err ? " ± " + e.err.toFixed(0) : "";
+  return " (" + sign + e.elo.toFixed(0) + err + " vs " + e.vs + ")";
+}
+
+function showNetNote(){
+  const file = document.getElementById("net").value;
+  const el = document.getElementById("netnote");
+  if (!file){
+    el.innerHTML = "The hand eval. Still the strongest evaluation here — "
+                 + "every net so far has lost its A/B.";
+    return;
+  }
+  const e = netInfo.find(n => n.file === file);
+  if (!e){ el.textContent = ""; return; }
+  const cls = e.elo === null || e.elo === undefined ? "warn"
+            : (e.elo > 0 ? "good" : "bad");
+  el.innerHTML = (e.elo === null || e.elo === undefined
+                  ? '<span class="warn">no usable result</span>'
+                  : '<span class="' + cls + '">' + eloText(e).trim() + "</span>")
+               + (e.note ? '<div class="note">' + e.note + "</div>" : "");
+}
+document.getElementById("net").onchange = showNetNote;
 
 document.getElementById("new").onclick = newGame;
+document.getElementById("runstop").onclick = () => setRunning(!running);
+document.getElementById("view").onchange = (e) => {
+  view = parseInt(e.target.value, 10); draw();
+};
+
+const hintBtn = document.getElementById("hint");
+const hintOut = document.getElementById("hintout");
+
+function renderHintBtn(){
+  const canAsk = state && !busy && control[state.turn] === "human"
+                 && state.legal.length > 0 && teamsOn();
+  hintBtn.disabled = !canAsk;
+  if (!canAsk && !hint) hintOut.textContent = "";
+}
+
+hintBtn.onclick = async () => {
+  if (!state) return;
+  hint = null; hintOut.textContent = "thinking…"; draw();
+  busy = true; renderHintBtn();
+  const {ok, data} = await post("/api/play/engine", {
+    fen4: state.fen4,
+    mode: document.getElementById("mode").value,
+    movetime: parseInt(document.getElementById("movetime").value, 10),
+    net: document.getElementById("net").value,
+    apply: false,
+  });
+  busy = false;
+  if (!ok){
+    hintOut.innerHTML = '<span class="warn">'
+      + (data.unsupported || data.error || "no hint") + "</span>";
+    renderHintBtn(); draw();
+    return;
+  }
+  const m = splitMove(data.move);
+  hint = m ? {from:m.from, to:m.to} : null;
+  hintOut.innerHTML = m
+    ? '<b>' + m.from + " → " + m.to + "</b>"
+      + (m.promo ? "=" + m.promo.toUpperCase() : "")
+      + ' <span class="note">' + fmtScore(data.score) + "  d" + data.depth
+      + "</span>"
+    : "no move";
+  renderHintBtn(); draw();
+};
 document.getElementById("mode").onchange = () => {
-  const ffa = document.getElementById("mode").value === "ffa";
-  say(ffa ? '<span class="warn">The engine plays Teams only. In free-for-all '
-          + 'set every seat to Human.</span><div class="note">'
-          + 'FFA needs a paranoid search — Phase 5, not built.</div>'
-          : '<span class="note">press New game</span>');
+  renderSeats(); draw();
+  if (!teamsOn())
+    say('<span class="warn">The engine plays Teams only. In free-for-all set '
+        + 'every seat to Human.</span><div class="note">'
+        + "FFA needs a paranoid search — Phase 5, not built.</div>");
+  else say('<span class="note">press New game</span>');
 };
 
 fetch("/api/play/nets").then(r => r.json()).then(d => {
+  netInfo = d.nets || [];
   const sel = document.getElementById("net");
-  for (const n of (d.nets || [])){
+  for (const n of netInfo){
     const o = document.createElement("option");
-    o.value = n; o.textContent = n.replace(/\.nnue$/, "");
+    o.value = n.file;
+    o.textContent = n.label + eloText(n);
     sel.appendChild(o);
   }
+  showNetNote();
 }).catch(() => {});
 
-renderSeats(); draw(); newGame();
+renderSeats(); draw(); renderRun(); newGame();
 </script>

@@ -174,6 +174,9 @@ function startPosition(setup){
 }
 
 // --- PGN4 ----------------------------------------------------------------
+// See tetrarch/pgn4.py: "4PCo" is read as classic, an explicit assumption.
+const NAMED_STARTS = {"4pco":"classic"};
+
 const MOVE_RE = /^([KQRBNP])?([a-n](?:1[0-4]|[1-9]))([-x])([a-n](?:1[0-4]|[1-9]))(?:=([QRBNqrbn]))?([+#]*)$/;
 const TERMS = {"#":"checkmate", R:"resign", T:"timeout", S:"stalemate", D:"draw"};
 
@@ -188,9 +191,15 @@ function parsePgn4(text){
     for (const cand of ["classic","modern","byg","by","rg"])
       if (v.includes(cand)) { setup = cand; break; }
   }
-  const start = tags.StartFen4 ? parseFen4(tags.StartFen4)
-              : tags.StartFen  ? parseFen4(tags.StartFen)
-              : startPosition(setup);
+  // chess.com writes a NAMED start into StartFen4 -- [StartFen4 "4PCo"] --
+  // not always a position, and feeding that to the FEN4 reader throws. A FEN4
+  // always has the '-' before its ranks and no name does, so that tells them
+  // apart. Kept identical to tetrarch/pgn4.py, which is what
+  // tests/js_replay_check.js compares against.
+  const named = (tags.StartFen4 || tags.StartFen || "").trim();
+  let start;
+  if (named && named.includes("-")) start = parseFen4(named);
+  else start = startPosition(NAMED_STARTS[named.toLowerCase()] || setup);
   const tokens = [];
   for (const raw of body.replace(/\.\./g, " ").split(/\s+/)){
     const tok = raw.trim();

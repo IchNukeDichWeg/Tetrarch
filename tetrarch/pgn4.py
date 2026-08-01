@@ -48,6 +48,15 @@ TERMINATORS = {"#": "checkmate", "R": "resign", "T": "timeout",
                "S": "stalemate", "D": "draw"}
 
 
+#: Named starting positions chess.com writes into StartFen4 instead of a
+#: position. ASSUMPTION (§14): "4PCo" is read as the classic setup -- the
+#: suffix reads as "old", and classic is what chess.com used before modern
+#: became the default in 2022. Settled in one minute by exporting a game from
+#: each setup and reading the tag; until then an unknown code falls back to the
+#: setup named by the other tags, which is the pre-existing behaviour.
+NAMED_STARTS = {"4pco": "classic"}
+
+
 class Pgn4Error(ValueError):
     """Carries the ply so the viewer can show exactly where it broke."""
 
@@ -91,11 +100,23 @@ def parse(text):
                 setup = candidate
                 break
 
-    if "StartFen4" in tags:
-        start = Board.from_fen4(tags["StartFen4"], mode)
-    elif "StartFen" in tags:
-        start = Board.from_fen4(tags["StartFen"], mode)
+    # chess.com does not always put a position in StartFen4. Its own exports
+    # carry a NAMED start -- [StartFen4 "4PCo"] -- and feeding that to the FEN4
+    # reader raises, which used to reject a real chess.com game outright.
+    #
+    # A FEN4 always contains the '-' separating its metadata from the ranks
+    # (§11.1), and no named code does, so the two are told apart by that rather
+    # than by a list of names nobody has enumerated.
+    named = None
+    for key in ("StartFen4", "StartFen"):
+        if key in tags:
+            named = tags[key].strip()
+            break
+    if named and "-" in named:
+        start = Board.from_fen4(named, mode)
     else:
+        if named:
+            setup = NAMED_STARTS.get(named.lower(), setup)
         start = start_board(setup, mode)
 
     tokens = []

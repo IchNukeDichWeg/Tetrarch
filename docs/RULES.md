@@ -862,6 +862,7 @@ Tetrarch's own perft numbers for both setups, both modes, to depth 5, are record
 | 3 | Repetition key definition | **ASSUMPTION: full Zobrist incl. alive mask, excl. points** | 10.2 |
 | 4 | Insufficient material in 4PC | **ASSUMPTION: bare-kings only** | 10.3 |
 | 5 | Two-flank en passant: which engine is right | Tetrarch derives from first principles; expect perft divergence | 5.4 |
+| 6 | Named `StartFen4` codes | **ASSUMPTION: `4PCo` = `classic`** — chess.com writes a name, not a position, into that tag. The suffix reads as "old", and `classic` is what preceded `modern` becoming the default in 2022. Settled in a minute by exporting one game from each setup and reading the tag; an unrecognised name falls back to the setup the other tags give | 11.5 |
 | 6 | Per-piece capture values rest on chess.com only | Two pages agree verbatim; Wikibook has no table | 8.1 |
 | 7 | Which FEN4 castling array is "kingside" for a king-left seat | **ASSUMPTION: short side.** Only affects chess.com interop | 6.3 |
 | 8 | En passant onto an *occupied* skipped square | **ASSUMPTION: one move, captures both**, plain capture suppressed | 5.5 |
