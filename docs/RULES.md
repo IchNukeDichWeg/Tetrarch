@@ -785,6 +785,25 @@ round trip, and **rejects unknown tags** rather than silently dropping them — 
 
 ### 11.5 PGN4
 
+**[C]** chess.com writes a **named start** into `StartFen4`, not a position, and
+Tetrarch both reads and writes those names. Confirmed by reading its exports for
+all five setups in both modes:
+
+| Setup | `StartFen4` |
+|-------|-------------|
+| classic | `4PCo` |
+| modern | *(no tag — it is the live default)* |
+| by | `4PCb` |
+| byg | `4PCn` |
+| rg | `4PCrg` |
+
+The code names the position, so it is identical in Teams and FFA. `RuleVariants`
+is `EnPassant` in Teams and `DeadKingWalking EnPassant PromoteTo=D` in FFA.
+
+A `StartFen4` containing `-` is a real FEN4 and is read as one; that is what
+tells a position from a name, since no code contains it.
+
+
 **[C]** Tag pairs in brackets (Variant, player names/ratings, TimeControl, Date, Site,
 Result, Termination), then movetext in long algebraic: move number, period, moves
 separated by `..`, variations in parentheses, comments in braces. [wb-nota]
@@ -862,7 +881,9 @@ Tetrarch's own perft numbers for both setups, both modes, to depth 5, are record
 | 3 | Repetition key definition | **ASSUMPTION: full Zobrist incl. alive mask, excl. points** | 10.2 |
 | 4 | Insufficient material in 4PC | **ASSUMPTION: bare-kings only** | 10.3 |
 | 5 | Two-flank en passant: which engine is right | Tetrarch derives from first principles; expect perft divergence | 5.4 |
-| 6 | Named `StartFen4` codes | **ASSUMPTION: `4PCo` = `classic`** — chess.com writes a name, not a position, into that tag. The suffix reads as "old", and `classic` is what preceded `modern` becoming the default in 2022. Settled in a minute by exporting one game from each setup and reading the tag; an unrecognised name falls back to the setup the other tags give | 11.5 |
+| ~~6~~ | ~~Named `StartFen4` codes~~ | **CLOSED** — read off chess.com's own exports for all five setups in both modes. `4PCo` = classic, `4PCb` = by, `4PCn` = byg, `4PCrg` = rg, and `modern` carries no tag at all. The code names the *position*, so it does not vary with the mode | 11.5 |
+| 7 | A PGN4 with no `StartFen4` at all | **ASSUMPTION: `modern` if a `RuleVariants` tag is present, else `classic`** — absence means "the default when this was written", which changed in 2022. chess.com writes `RuleVariants` on every current export; the pre-2022 files that omit `StartFen4` omit it too | 11.5 |
+| 8 | `PromoteTo=D` in FFA `RuleVariants` | Observed but not decoded. Consistent with §4.2's 1-point queen — no underpromotion in FFA — but what `D` names is unconfirmed | 4.2 |
 | 6 | Per-piece capture values rest on chess.com only | Two pages agree verbatim; Wikibook has no table | 8.1 |
 | 7 | Which FEN4 castling array is "kingside" for a king-left seat | **ASSUMPTION: short side.** Only affects chess.com interop | 6.3 |
 | 8 | En passant onto an *occupied* skipped square | **ASSUMPTION: one move, captures both**, plain capture suppressed | 5.5 |

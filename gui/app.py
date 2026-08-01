@@ -226,9 +226,8 @@ def api_play_pgn():
     rather than formatting anything itself -- a second move formatter is the
     thing that drifts.
 
-    Tags follow the shape chess.com exports: Variant, RuleVariants,
-    CurrentMove. StartFen4 gets the real position rather than a name like
-    "4PCo", because that round trips through both readers.
+    Tags follow chess.com's own export, including the named StartFen4 -- so
+    the result loads in chess.com's viewer rather than only in ours.
     """
     payload = request.get_json(silent=True) or {}
     setup = payload.get("setup", DEFAULT_SETUP)
@@ -245,11 +244,10 @@ def api_play_pgn():
                             % (token, len(moves))}), 400
         moves.append(found)
         board.make(found)
-    text = pgn4.write(start_board(setup, mode), moves, tags={
-        "Variant": "Teams" if mode == MODE_TEAMS else "FFA",
-        "RuleVariants": "EnPassant",
-        "CurrentMove": str(len(moves)),
-    })
+    # Only CurrentMove: pgn4.write supplies Variant, RuleVariants and the
+    # named StartFen4 itself, and it knows the FFA rule list differs.
+    text = pgn4.write(start_board(setup, mode), moves,
+                      tags={"CurrentMove": str(len(moves))})
     return jsonify({"pgn4": text})
 
 

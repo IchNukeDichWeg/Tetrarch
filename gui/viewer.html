@@ -174,8 +174,19 @@ function startPosition(setup){
 }
 
 // --- PGN4 ----------------------------------------------------------------
-// See tetrarch/pgn4.py: "4PCo" is read as classic, an explicit assumption.
-const NAMED_STARTS = {"4pco":"classic"};
+// See tetrarch/pgn4.py. Confirmed from chess.com's own exports for all five
+// setups in both modes; `modern` carries no tag because it is the default.
+const NAMED_STARTS = {"4pco":"classic", "4pcb":"by", "4pcn":"byg", "4pcrg":"rg"};
+
+// A setup named outright by one of the tags, or null. Mirrors _named_setup.
+function namedSetup(tags){
+  for (const key of ["Setup","SubVariant","RuleVariants"]){
+    const v = (tags[key] || "").toLowerCase();
+    for (const cand of ["classic","modern","byg","by","rg"])
+      if (v.includes(cand)) return cand;
+  }
+  return null;
+}
 
 const MOVE_RE = /^([KQRBNP])?([a-n](?:1[0-4]|[1-9]))([-x])([a-n](?:1[0-4]|[1-9]))(?:=([QRBNqrbn]))?([+#]*)$/;
 const TERMS = {"#":"checkmate", R:"resign", T:"timeout", S:"stalemate", D:"draw"};
@@ -186,11 +197,7 @@ function parsePgn4(text){
   let body = text.replace(/\[[^\]]*\]/g, " ").replace(/\{[^}]*\}/g, " ");
   const variant = (tags.Variant || "Teams").toLowerCase();
   let setup = "classic";
-  for (const key of ["Setup","SubVariant","RuleVariants"]){
-    const v = (tags[key] || "").toLowerCase();
-    for (const cand of ["classic","modern","byg","by","rg"])
-      if (v.includes(cand)) { setup = cand; break; }
-  }
+  setup = namedSetup(tags) || setup;
   // chess.com writes a NAMED start into StartFen4 -- [StartFen4 "4PCo"] --
   // not always a position, and feeding that to the FEN4 reader throws. A FEN4
   // always has the '-' before its ranks and no name does, so that tells them
@@ -199,7 +206,13 @@ function parsePgn4(text){
   const named = (tags.StartFen4 || tags.StartFen || "").trim();
   let start;
   if (named && named.includes("-")) start = parseFen4(named);
-  else start = startPosition(NAMED_STARTS[named.toLowerCase()] || setup);
+  else if (named) start = startPosition(NAMED_STARTS[named.toLowerCase()] || setup);
+  else if (tags.RuleVariants !== undefined && !namedSetup(tags))
+    // No StartFen4 means "the default when this was written" -- classic
+    // before 2022, modern after. A RuleVariants tag is the tell: chess.com
+    // writes one on every modern export and the old tagless files have none.
+    start = startPosition("modern");
+  else start = startPosition(setup);
   const tokens = [];
   for (const raw of body.replace(/\.\./g, " ").split(/\s+/)){
     const tok = raw.trim();

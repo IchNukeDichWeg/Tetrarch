@@ -1321,28 +1321,55 @@ def test_resume():
 
 def test_pgn4_named_start():
     section("PGN4 named starts (chess.com compatibility)")
-    # chess.com's own export writes [StartFen4 "4PCo"] -- a NAME, not a
-    # position. Handing that to the FEN4 reader raised, which rejected a real
-    # chess.com game outright.
-    header = ('[StartFen4 "4PCo"]\n[Variant "Teams"]\n'
-              '[RuleVariants "EnPassant"]\n[CurrentMove "0"]\n'
-              '[TimeControl "2 | 10"]\n\n1. d2-d4 .. b8-c8 .. k13-k11 .. m8-l8\n')
-    try:
-        game = pgn4.parse(header)
-        ok = True
-    except Exception as exc:                                    # noqa: BLE001
-        game, ok = None, False
-        check("a real chess.com header parses", False, str(exc))
-    if ok:
-        check("a real chess.com header parses", True,
-              "%d tokens" % len(game.tokens))
-        check("and 4PCo resolves to the classic start",
-              game.start.to_fen4() == start_board("classic").to_fen4())
-    # A position in StartFen4 must still win over any name lookup.
+    # chess.com writes a NAME into StartFen4, not a position, and handing that
+    # to the FEN4 reader raised -- Tetrarch rejected genuine chess.com games.
+    # The table below is read off its own exports for all five setups in both
+    # modes; the code names the POSITION, so it does not vary with the mode.
+    codes = {"4PCo": "classic", "4PCb": "by", "4PCn": "byg", "4PCrg": "rg"}
+    rows = []
+    for code, setup in codes.items():
+        text = ('[StartFen4 "%s"]\n[Variant "Teams"]\n'
+                '[RuleVariants "EnPassant"]\n[CurrentMove "0"]\n'
+                '[TimeControl "2 | 10"]\n\n1. d2-d4\n' % code)
+        try:
+            got = pgn4.parse(text).start
+            rows.append((code, got == start_board(setup)))
+        except Exception as exc:                                # noqa: BLE001
+            rows.append(("%s (%s)" % (code, exc), False))
+    check_all("chess.com's start codes resolve", rows)
+
+    # modern is the one setup it writes no tag for, being the live default.
+    modern = ('[Variant "Teams"]\n[RuleVariants "EnPassant"]\n'
+              '[CurrentMove "0"]\n\n1. d2-d4\n')
+    check("no StartFen4 plus RuleVariants means modern",
+          pgn4.parse(modern).start == start_board("modern"))
+    # ...but a pre-2022 file has neither, and those were classic. The Wikibook
+    # game below depends on it, which is why this is not simply "modern".
+    old = '[Variant "Teams"]\n\n1. d2-d4\n'
+    check("and a bare header still means classic",
+          pgn4.parse(old).start == start_board("classic"))
+
+    # An explicit position must beat any name lookup.
     fen = start_board("modern").to_fen4().replace("\n", "")
-    g2 = pgn4.parse('[Variant "Teams"]\n[StartFen4 "%s"]\n\n1. d2-d4\n' % fen)
     check("an explicit FEN4 still takes precedence",
-          g2.start.to_fen4() == start_board("modern").to_fen4())
+          pgn4.parse('[Variant "Teams"]\n[StartFen4 "%s"]\n\n1. d2-d4\n'
+                     % fen).start.to_fen4()
+          == start_board("modern").to_fen4())
+
+    # And what we write is what chess.com writes, so it loads there: every
+    # setup and mode has to survive a round trip through our own reader.
+    trips = []
+    for mode in (MODE_TEAMS, MODE_FFA):
+        for setup in SETUPS:
+            board = start_board(setup, mode)
+            back = pgn4.parse(pgn4.write(board, []))
+            trips.append(("%s/%s" % (setup, "teams" if mode else "ffa"),
+                          back.start == board))
+    check_all("every setup round trips as a named start", trips)
+    check("classic is written as chess.com writes it",
+          '[StartFen4 "4PCo"]' in pgn4.write(start_board("classic"), []))
+    check("modern is written with no StartFen4 at all",
+          "StartFen4" not in pgn4.write(start_board("modern"), []))
 
 
 def test_match_rotation():
