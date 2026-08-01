@@ -50,7 +50,11 @@
   .seat .nm { width:52px; }
   .seat .meta { width:82px; color:var(--dim); font-size:11.5px;
                 font-variant-numeric:tabular-nums; }
-  .seat select { flex:1; min-width:82px; }
+  .seat .who { flex:1; min-width:84px; text-align:center; font-size:13px;
+               border-radius:4px; }
+  .seat .who.human  { border-color:#4a5164; }
+  .seat .who.engine { border-color:#5c6a52; background:#2f3a2c;
+                      color:#bfd6ac; }
   .seat.turn .nm { color:var(--accent); font-weight:600; }
   .seat.out .nm { text-decoration:line-through; color:var(--dim); }
   #status { min-height:2.6em; }
@@ -313,19 +317,19 @@ function seatRow(s){
     meta.textContent = (dead ? "out" : (state.turn === s ? "to move" : "active"))
                      + (teamsOn() ? "" : " · " + state.points[i] + "p");
   }
-  const sel = document.createElement("select");
-  for (const [v,t] of [["human","Human"],["engine","Engine"]]){
-    const o = document.createElement("option");
-    o.value = v; o.textContent = t;
-    if (control[s] === v) o.selected = true;
-    sel.appendChild(o);
-  }
-  sel.onchange = () => {
-    control[s] = sel.value;
+  // A two-state control reads better as the state itself than as a menu of
+  // both: one glance tells you who is playing the seat.
+  const btn = document.createElement("button");
+  btn.className = "who " + control[s];
+  btn.textContent = control[s] === "engine" ? "Engine" : "Human";
+  btn.title = "click to hand this seat to the "
+            + (control[s] === "engine" ? "human" : "engine");
+  btn.onclick = () => {
+    control[s] = control[s] === "engine" ? "human" : "engine";
     if (allEngine()) running = false;   // needs an explicit Start
-    draw(); renderRun(); tick();
+    renderSeats(); draw(); renderRun(); tick();
   };
-  row.append(dot, nm, meta, sel);
+  row.append(dot, nm, meta, btn);
   return row;
 }
 
