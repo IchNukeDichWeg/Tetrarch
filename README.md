@@ -27,10 +27,13 @@ No virtualenv. Everything is a plain `python3 something.py`.
 ```bash
 python3 uci.py                 # the engine, speaking the protocol
 python3 selftest.py            # 427 checks, ~13s
-python3 gui/app.py             # the viewer, http://127.0.0.1:7442
+python3 gui/app.py             # viewer + play, http://127.0.0.1:7442
 ```
 
-`gui/viewer.html` also opens straight off disk with no server at all.
+Two pages. `/` replays a PGN4 you paste — `gui/viewer.html` also opens straight
+off disk with no server at all. `/play` is an interactive board: set each of the
+four seats to Human or Engine and play. The engine plays Teams only; in
+free-for-all every seat has to be human, because the paranoid search is Phase 5.
 
 ## Strength
 

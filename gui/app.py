@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gui/app.py -- paste a PGN4, step through the game.
+"""gui/app.py -- replay a PGN4, or play against the engine.
 
     python3 gui/app.py            # http://127.0.0.1:7442
     python3 gui/app.py --port 8080 --host 0.0.0.0
@@ -34,7 +34,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, jsonify, request, send_from_directory  # noqa: E402
 
-from tetrarch.board import Board, MODE_FFA, MODE_TEAMS, SETUPS, move_str  # noqa: E402
+from tetrarch.board import (Board, MODE_FFA, MODE_TEAMS, SETUPS,  # noqa: E402
+                            DEFAULT_SETUP, SEAT_NAMES, TYPE_CHARS,
+                            PC_COLOR, PC_TYPE, VALID, DEAD_UNKNOWN,
+                            move_str, sq_of, start_board)
 from tetrarch import pgn4                                        # noqa: E402
 from tetrarch import core                                        # noqa: E402
 from tetrarch import movegen as gen                              # noqa: E402
@@ -44,6 +47,7 @@ app = Flask(__name__)
 ENGINE_LOCK = threading.Lock()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+NETS_DIR = os.path.join(os.path.dirname(HERE), "nets")
 
 
 @app.route("/")
@@ -55,6 +59,169 @@ def index():
     there is one page to keep correct rather than two.
     """
     return send_from_directory(HERE, "viewer.html")
+
+
+@app.route("/play")
+def play_page():
+    """The interactive board. Needs the server -- it is the engine that plays,
+    and the rules live in Python. viewer.html stays standalone and untouched."""
+    return send_from_directory(HERE, "play.html")
+
+
+# --- interactive play ------------------------------------------------------
+#
+# The client holds a FEN4 and nothing else. Every reply carries the whole
+# render state, so the page never applies a rule of its own: no move
+# generation, no legality, no promotion logic, no elimination. viewer.html
+# replays PGN4 in JavaScript and needs a differential gate for exactly that
+# reason (tests/js_replay_check.js); this page cannot drift because it never
+# decides anything.
+
+def _render_state(board):
+    grid = []
+    for rank in range(14):
+        row = []
+        for file in range(14):
+            sq = sq_of(file, rank)
+            piece = board.sq[sq] if VALID[sq] else 0
+            if not piece:
+                row.append(None)
+                continue
+            colour = PC_COLOR[piece]
+            row.append({
+                "c": "d" if colour == DEAD_UNKNOWN
+                     else SEAT_NAMES[colour].lower(),
+                "t": TYPE_CHARS[PC_TYPE[piece]],
+                "dead": colour == DEAD_UNKNOWN,
+            })
+        grid.append(row)
+
+    legal = [move_str(m) for m in gen.gen_legal(board)]
+    in_check = gen.in_check(board, board.turn)
+    if legal:
+        status = "check" if in_check else "playing"
+    else:
+        status = "checkmate" if in_check else "stalemate"
+    return {
+        "fen4": board.to_fen4().replace("\n", ""),
+        "grid": grid,
+        "turn": SEAT_NAMES[board.turn],
+        "alive": [bool(a) for a in board.alive],
+        "points": [int(p) for p in board.points],
+        "legal": legal,
+        "status": status,
+    }
+
+
+def _board_from(payload):
+    mode = MODE_FFA if payload.get("mode") == "ffa" else MODE_TEAMS
+    return Board.from_fen4(payload.get("fen4", ""), mode), mode
+
+
+@app.route("/api/play/new", methods=["POST"])
+def api_play_new():
+    payload = request.get_json(silent=True) or {}
+    setup = payload.get("setup", DEFAULT_SETUP)
+    if setup not in SETUPS:
+        return jsonify({"error": "unknown setup %r" % setup}), 400
+    mode = MODE_FFA if payload.get("mode") == "ffa" else MODE_TEAMS
+    return jsonify(_render_state(start_board(setup, mode)))
+
+
+@app.route("/api/play/move", methods=["POST"])
+def api_play_move():
+    payload = request.get_json(silent=True) or {}
+    try:
+        board, _ = _board_from(payload)
+    except Exception as exc:                                    # noqa: BLE001
+        return jsonify({"error": str(exc)}), 400
+    token = payload.get("move", "")
+    for m in gen.gen_legal(board):
+        if move_str(m) == token:
+            board.make(m)
+            return jsonify(_render_state(board))
+    return jsonify({"error": "illegal move %r" % token}), 400
+
+
+@app.route("/api/play/engine", methods=["POST"])
+def api_play_engine():
+    """Search, play the move, return the new state.
+
+    One endpoint rather than eval-then-move: two calls would let the position
+    change between them, and the client would have to know how to apply a move
+    to do anything with the answer.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        board, mode = _board_from(payload)
+    except Exception as exc:                                    # noqa: BLE001
+        return jsonify({"error": str(exc)}), 400
+
+    if not gen.gen_legal(board):
+        return jsonify(_render_state(board))
+    if mode == MODE_FFA or not all(board.alive):
+        # The search is genuine two-player negamax on the team split, which
+        # FFA is not. Saying so beats returning a Teams score for a position
+        # Teams cannot represent. Phase 5.
+        return jsonify({"unsupported":
+                        "the engine plays Teams only -- FFA needs the "
+                        "paranoid search from Phase 5"}), 409
+
+    movetime = max(50, min(int(payload.get("movetime", 1000)), 30000))
+    want_net = (payload.get("net") or "").strip()
+    with ENGINE_LOCK:
+        note = _select_net(want_net)
+        core.clear_hash()
+        result = search(board, Limits(movetime=movetime))
+    if not result.best:
+        return jsonify({"error": "no move found"}), 500
+    played = move_str(result.best)
+    for m in gen.gen_legal(board):
+        if move_str(m) == played:
+            board.make(m)
+            break
+    state = _render_state(board)
+    state.update({"move": played, "score": result.score, "depth": result.depth,
+                  "nodes": result.nodes, "nps": result.nps, "note": note})
+    return jsonify(state)
+
+
+#: Which net the engine is currently playing with; None means the hand eval.
+_LOADED_NET = None
+
+
+def _select_net(name):
+    """Load a net from nets/ by bare filename, or the hand eval for "".
+
+    Only a basename that already exists in nets/ is accepted -- the value comes
+    from the browser, so it never reaches the filesystem as a path.
+    """
+    global _LOADED_NET
+    if name and (os.path.basename(name) != name
+                 or not name.endswith(".nnue")
+                 or not os.path.exists(os.path.join(NETS_DIR, name))):
+        return "unknown net %r; using the hand eval" % name
+    name = name or None
+    if name == _LOADED_NET:
+        return None
+    if name is None:
+        core.unload_net()
+    else:
+        from tetrarch import nnue
+        core.load_net(nnue.Net.load(os.path.join(NETS_DIR, name)))
+    _LOADED_NET = name
+    return None
+
+
+@app.route("/api/play/nets")
+def api_play_nets():
+    """Nets available to play against. All of them lost their A/B; the hand
+    eval is still the strongest thing here."""
+    try:
+        found = sorted(n for n in os.listdir(NETS_DIR) if n.endswith(".nnue"))
+    except OSError:
+        found = []
+    return jsonify({"nets": found})
 
 
 @app.route("/api/parse", methods=["POST"])

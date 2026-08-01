@@ -1,0 +1,360 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tetrarch — play</title>
+<!--
+  The interactive board. Unlike viewer.html this needs the server, and that is
+  the point: every rule stays in Python. The page sends a move and receives a
+  whole new position, so it never generates a move, tests legality, resolves a
+  promotion or eliminates a seat. There is no second implementation here to
+  drift out of agreement with the engine.
+-->
+<style>
+  :root { --bg:#191c22; --panel:#22262f; --line:#333846; --ink:#e6e8ee;
+          --dim:#9aa1b1; --accent:#e2c86a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5
+         ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+           display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.02em; }
+  header a { color:var(--dim); font-size:13px; }
+  main { display:flex; gap:20px; padding:20px; align-items:flex-start;
+         flex-wrap:wrap; }
+  canvas { background:var(--panel); border:1px solid var(--line);
+           border-radius:6px; touch-action:none; }
+  .panel { background:var(--panel); border:1px solid var(--line);
+           border-radius:6px; padding:14px; min-width:280px; max-width:340px; }
+  .panel + .panel { margin-top:14px; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em;
+       color:var(--dim); margin:0 0 10px; font-weight:600; }
+  label { display:block; margin-bottom:8px; color:var(--dim); font-size:13px; }
+  select, button { font:inherit; background:#2b303b; color:var(--ink);
+                   border:1px solid var(--line); border-radius:4px;
+                   padding:5px 8px; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; border-color:var(--line); }
+  .seat { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+  .seat .dot { width:11px; height:11px; border-radius:50%; flex:none; }
+  .seat .nm { width:56px; }
+  .seat select { flex:1; }
+  .seat.turn { outline:1px solid var(--accent); outline-offset:3px;
+               border-radius:3px; }
+  .seat.out .nm { text-decoration:line-through; color:var(--dim); }
+  #status { min-height:2.6em; }
+  .big { font-size:15px; font-weight:600; }
+  .note { color:var(--dim); font-size:12px; }
+  .warn { color:#e2946a; font-size:12px; }
+  #log { font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+         color:var(--dim); max-height:220px; overflow:auto;
+         white-space:pre-wrap; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row > * { flex:1; }
+</style>
+
+<header>
+  <h1>Tetrarch — play</h1>
+  <span class="note">click a piece, then its destination</span>
+  <a href="/">← PGN4 viewer</a>
+</header>
+
+<main>
+  <canvas id="board" width="616" height="616"></canvas>
+
+  <div>
+    <div class="panel">
+      <h2>Game</h2>
+      <div class="row">
+        <label>Setup<select id="setup">
+          <option>classic</option><option>modern</option>
+          <option>by</option><option>byg</option><option>rg</option>
+        </select></label>
+        <label>Mode<select id="mode">
+          <option value="teams">Teams</option>
+          <option value="ffa">Free-for-all</option>
+        </select></label>
+      </div>
+      <div id="seats"></div>
+      <div class="row">
+        <label>Engine time<select id="movetime">
+          <option value="200">0.2 s</option>
+          <option value="1000" selected>1 s</option>
+          <option value="3000">3 s</option>
+          <option value="10000">10 s</option>
+        </select></label>
+        <label>Eval<select id="net"><option value="">hand eval</option></select></label>
+      </div>
+      <button id="new">New game</button>
+    </div>
+
+    <div class="panel">
+      <h2>Status</h2>
+      <div id="status"><span class="note">press New game</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Moves</h2>
+      <div id="log"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const SEATS = ["R","B","Y","G"];
+const NAME  = {R:"Red", B:"Blue", Y:"Yellow", G:"Green"};
+const COLOUR = {r:"#d64f4f", b:"#4f86d6", y:"#d6b23f", g:"#46a85c", d:"#6d7382"};
+const GLYPH = {P:"♟", N:"♞", B:"♝", R:"♜", Q:"♛", K:"♚"};
+const N = 14, CELL = 44;
+
+// The only board fact the page keeps: which squares exist. Everything else
+// comes from the server.
+const playable = (f,r) => f>=0 && f<N && r>=0 && r<N &&
+                          !((f<3||f>10) && (r<3||r>10));
+const sqName = (f,r) => "abcdefghijklmn"[f] + (r+1);
+
+const cv = document.getElementById("board"), ctx = cv.getContext("2d");
+let state = null;        // last render state from the server
+let control = {R:"human", B:"engine", Y:"human", G:"engine"};
+let from = null;         // square the user picked first
+let busy = false;        // an engine request is in flight
+let log = [];
+
+// --- rendering -------------------------------------------------------------
+
+function draw(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  const legalFrom = new Set(), targets = new Set();
+  if (state && !busy && control[state.turn] === "human"){
+    for (const mv of state.legal){
+      const p = splitMove(mv);
+      if (!p) continue;
+      legalFrom.add(p.from);
+      if (from && p.from === from) targets.add(p.to);
+    }
+  }
+
+  for (let r=0; r<N; r++) for (let f=0; f<N; f++){
+    if (!playable(f,r)) continue;
+    const x = f*CELL, y = (13-r)*CELL, nm = sqName(f,r);
+    ctx.fillStyle = (f+r)%2 ? "#3a3f4a" : "#2a2e37";
+    ctx.fillRect(x,y,CELL,CELL);
+    if (targets.has(nm)){
+      ctx.fillStyle = "rgba(226,200,106,.22)";
+      ctx.fillRect(x,y,CELL,CELL);
+    }
+    const p = state ? state.grid[r][f] : null;
+    if (p){
+      const glyph = GLYPH[p.t] || "?";
+      ctx.font = "30px serif"; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillStyle = "rgba(0,0,0,.55)";
+      ctx.fillText(glyph, x+CELL/2+1, y+CELL/2+2);
+      ctx.globalAlpha = p.dead ? 0.45 : 1;
+      ctx.fillStyle = COLOUR[p.dead ? "d" : p.c] || "#999";
+      ctx.fillText(glyph, x+CELL/2, y+CELL/2+1);
+      ctx.globalAlpha = 1;
+    }
+    if (nm === from){
+      ctx.strokeStyle = "#e2c86a"; ctx.lineWidth = 2;
+      ctx.strokeRect(x+1, y+1, CELL-2, CELL-2);
+    } else if (legalFrom.has(nm) && !from){
+      ctx.strokeStyle = "rgba(226,200,106,.30)"; ctx.lineWidth = 1;
+      ctx.strokeRect(x+1.5, y+1.5, CELL-3, CELL-3);
+    }
+  }
+}
+
+function splitMove(mv){
+  const m = /^([a-n](?:1[0-4]|[1-9]))([a-n](?:1[0-4]|[1-9]))([qrbn])?$/.exec(mv);
+  return m ? {from:m[1], to:m[2], promo:m[3] || ""} : null;
+}
+
+function renderSeats(){
+  const box = document.getElementById("seats");
+  box.innerHTML = "";
+  SEATS.forEach((s, i) => {
+    const row = document.createElement("div");
+    row.className = "seat"
+      + (state && state.turn === s ? " turn" : "")
+      + (state && !state.alive[i] ? " out" : "");
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = COLOUR[s.toLowerCase()];
+    const nm = document.createElement("span");
+    nm.className = "nm"; nm.textContent = NAME[s];
+    const sel = document.createElement("select");
+    for (const [v,t] of [["human","Human"],["engine","Engine"]]){
+      const o = document.createElement("option");
+      o.value = v; o.textContent = t;
+      if (control[s] === v) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => { control[s] = sel.value; draw(); tick(); };
+    row.append(dot, nm, sel);
+    box.appendChild(row);
+  });
+}
+
+function say(html){ document.getElementById("status").innerHTML = html; }
+
+function renderLog(){
+  const el = document.getElementById("log");
+  el.textContent = log.length ? log.join("\n") : "no moves yet";
+  el.scrollTop = el.scrollHeight;
+}
+
+// --- server ----------------------------------------------------------------
+
+async function post(url, body){
+  const res = await fetch(url, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({error:"bad response"}));
+  return {ok: res.ok, data};
+}
+
+function adopt(data){
+  state = data;
+  from = null;
+  renderSeats(); draw();
+}
+
+function describe(){
+  if (!state) return;
+  const who = NAME[state.turn];
+  if (state.status === "checkmate"){
+    say('<span class="big">Checkmate — ' + who + ' has no move.</span>');
+    return true;
+  }
+  if (state.status === "stalemate"){
+    say('<span class="big">Stalemate.</span>');
+    return true;
+  }
+  const chk = state.status === "check" ? " — in check" : "";
+  const mode = control[state.turn] === "engine" ? "engine" : "you";
+  say('<span class="big">' + who + " to move" + chk + "</span>"
+      + '<div class="note">' + mode + "</div>");
+  return false;
+}
+
+// One step of the game loop: if the seat to move is an engine, ask for a move.
+async function tick(){
+  if (!state || busy) return;
+  if (describe()) return;
+  if (control[state.turn] !== "engine") return;
+
+  busy = true; draw();
+  say('<span class="big">' + NAME[state.turn] + " is thinking…</span>");
+  const {ok, data} = await post("/api/play/engine", {
+    fen4: state.fen4,
+    mode: document.getElementById("mode").value,
+    movetime: parseInt(document.getElementById("movetime").value, 10),
+    net: document.getElementById("net").value,
+  });
+  busy = false;
+  if (!ok){
+    const msg = data.unsupported || data.error || "engine failed";
+    say('<span class="warn">' + msg + "</span>"
+        + '<div class="note">set that seat to Human to continue</div>');
+    draw();
+    return;
+  }
+  // `state` is still the position before the move, so its turn is the mover.
+  log.push(NAME[state.turn] + "  " + data.move + "   " + fmtScore(data.score)
+           + "  d" + data.depth + "  " + data.nodes.toLocaleString() + "n");
+  adopt(data); renderLog();
+  setTimeout(tick, 50);
+}
+
+function fmtScore(cp){
+  if (Math.abs(cp) >= 29900) {
+    const plies = 30000 - Math.abs(cp);
+    return (cp > 0 ? "#" : "-#") + Math.ceil(plies / 2);
+  }
+  return (cp >= 0 ? "+" : "") + (cp / 100).toFixed(2);
+}
+
+async function newGame(){
+  log = [];
+  const {ok, data} = await post("/api/play/new", {
+    setup: document.getElementById("setup").value,
+    mode: document.getElementById("mode").value,
+  });
+  if (!ok){ say('<span class="warn">' + (data.error || "failed") + "</span>"); return; }
+  adopt(data); renderLog(); tick();
+}
+
+// --- input -----------------------------------------------------------------
+
+cv.onclick = async (ev) => {
+  if (!state || busy) return;
+  if (control[state.turn] !== "human") return;
+  const rect = cv.getBoundingClientRect();
+  const f = Math.floor((ev.clientX - rect.left) * (cv.width / rect.width) / CELL);
+  const r = 13 - Math.floor((ev.clientY - rect.top) * (cv.height / rect.height) / CELL);
+  if (!playable(f,r)) return;
+  const nm = sqName(f,r);
+
+  const options = state.legal.map(splitMove).filter(Boolean);
+  if (!from){
+    if (options.some(p => p.from === nm)){ from = nm; draw(); }
+    return;
+  }
+  if (nm === from){ from = null; draw(); return; }
+
+  let cands = options.filter(p => p.from === from && p.to === nm);
+  if (!cands.length){
+    // Not a destination -- treat it as picking a different piece instead.
+    from = options.some(p => p.from === nm) ? nm : null;
+    draw();
+    return;
+  }
+  let move = from + nm;
+  if (cands.length > 1 || cands[0].promo){
+    const choice = await promote(cands);
+    if (!choice) { from = null; draw(); return; }
+    move = choice;
+  }
+  const {ok, data} = await post("/api/play/move", {
+    fen4: state.fen4, mode: document.getElementById("mode").value, move
+  });
+  if (!ok){ say('<span class="warn">' + (data.error || "illegal") + "</span>"); return; }
+  log.push(NAME[state.turn] + "  " + move);
+  adopt(data); renderLog(); tick();
+};
+
+// Promotion is resolved by asking, not by assuming a queen: which pieces are
+// available is the server's answer, and in Teams it is not the usual four.
+function promote(cands){
+  const names = {q:"Queen", r:"Rook", b:"Bishop", n:"Knight"};
+  const choices = cands.filter(c => c.promo);
+  if (!choices.length) return Promise.resolve(cands[0].from + cands[0].to);
+  const list = choices.map(c => c.promo).join(", ");
+  const pick = window.prompt("Promote to (" + list + ")?", choices[0].promo);
+  if (!pick) return Promise.resolve(null);
+  const hit = choices.find(c => c.promo === pick.trim().toLowerCase());
+  return Promise.resolve(hit ? hit.from + hit.to + hit.promo : null);
+}
+
+// --- boot ------------------------------------------------------------------
+
+document.getElementById("new").onclick = newGame;
+document.getElementById("mode").onchange = () => {
+  const ffa = document.getElementById("mode").value === "ffa";
+  say(ffa ? '<span class="warn">The engine plays Teams only. In free-for-all '
+          + 'set every seat to Human.</span><div class="note">'
+          + 'FFA needs a paranoid search — Phase 5, not built.</div>'
+          : '<span class="note">press New game</span>');
+};
+
+fetch("/api/play/nets").then(r => r.json()).then(d => {
+  const sel = document.getElementById("net");
+  for (const n of (d.nets || [])){
+    const o = document.createElement("option");
+    o.value = n; o.textContent = n.replace(/\.nnue$/, "");
+    sel.appendChild(o);
+  }
+}).catch(() => {});
+
+renderSeats(); draw(); newGame();
+</script>
