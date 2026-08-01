@@ -101,6 +101,69 @@ load a net until now. A student trained on a teacher's own search scores
 converges on that teacher. Generation 2 is the first run where a net plays,
 and it is the first real test of whether the loop compounds.
 
+### Net v2 — REJECTED, and the self-labelling loop is degenerative
+
+First generation where a net labelled the data: 149,986 games played by net v1
+at 20,000 nodes, 11.0 M positions, best held-out loss 0.03557 at epoch 6.
+
+| opponent | Elo | games |
+|---|---|---|
+| hand eval | **−224.46 ± 18.74** | 2,000 |
+| net v1 | **−226.78 ± 18.20** | 2,000 |
+
+Losing by the same margin to two opponents that are themselves at parity
+(v1 vs hand = −2.26) is internally consistent: v2 is simply far weaker. This
+is not "the loop failed to compound", it is the loop running **backwards**.
+
+**Mechanism 1 — the targets collapsed.** The trained net's evaluations have
+stdev 177 against v1's 379, and almost never go negative (min −55, mean +203).
+It learned its targets faithfully; the targets were the problem:
+
+| | v1 data | v2 data |
+|---|---|---|
+| target stdev | 0.3317 | **0.2420** |
+| target mean | 0.5068 | **0.5347** |
+| saturated (<0.01 or >0.99) | 13.72% | 5.59% |
+
+The blend is `0.7 · sigmoid(cp/400) + 0.3 · result`, so 70% of the target comes
+from the teacher's search score. Net v1's scores cluster nearer zero than the
+hand eval's (median cp −5 against +88), so the signal shrinks. Feeding that
+back produces a flatter net, whose scores cluster harder still. At λ=1.0 the
+v2 spread is 0.219 against v1's 0.328; the collapse is entirely in the score
+term, and the game-result term is what holds the target apart.
+
+**Mechanism 2 — the labels are far less learnable, and λ cannot fix it.**
+Against a constant predictor:
+
+| | best val | constant predictor | variance explained |
+|---|---|---|---|
+| v1 | 0.02690 | 0.11002 | **76%** |
+| v2 | 0.03557 | 0.05856 | **39%** |
+
+The hand eval is a simple deterministic function -- material plus a king-danger
+count -- and a net fits it easily. A net's own search scores are a complicated,
+partly arbitrary function, and 61% of their variance is not recoverable from
+the position at all. That is the deeper failure, and lowering λ does not touch
+it.
+
+**Why the premise did not hold.** Bootstrapping needs search(net) to be
+appreciably better than net. At 20,000 nodes the search reaches ~2.5 moves per
+seat against a branching factor near 60, so the margin is thin -- and net v1
+was only at parity with the hand eval to begin with. A teacher no better than
+the last teacher cannot compound.
+
+Ruled out before blaming the data: the trainer rewrite reproduces v1's original
+training on v1's cache (0.02926 / 0.02798 / 0.02733 against the server's
+0.02937 / 0.02801 / 0.02737, the gap being BLAS summation order), and the v2
+labels predict their game result 100% of the time.
+
+**Data provenance, unresolved.** Games at index ≥1368 do not reproduce under
+any engine, net, node budget or depth tried, while indices 0-1367 reproduce
+bit-exactly with net v1 at 20,000 nodes. The generating run was interrupted and
+resumed, and 80 games in 1184-1367 appear twice with different content. So the
+dataset is known to be mixed, and how much of the −225 belongs to that rather
+than to the two mechanisms above is not established.
+
 ### Incremental NNUE accumulator — infrastructure, no version number
 
 Not an A/B: with no net loaded not a line of it runs, so the default build is
