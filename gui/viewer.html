@@ -64,6 +64,7 @@
   .muted { color:var(--dim); font-size:12px; }
   kbd { background:#2b303a; border:1px solid var(--line); border-radius:3px;
         padding:0 4px; font-size:11px; }
+  header a { color:var(--dim); font-size:13px; margin-left:auto; }
 </style>
 </head>
 <body>
@@ -71,6 +72,7 @@
   <h1>TETRARCH</h1>
   <span>PGN4 viewer — <kbd>←</kbd> <kbd>→</kbd> step, <kbd>Home</kbd> <kbd>End</kbd> jump</span>
   <span id="status"></span>
+  <a id="playLink" href="/play" style="display:none">play the engine →</a>
 </header>
 
 <main>
@@ -430,13 +432,17 @@ function load(){
   goto(0);
 }
 
-// Evaluation needs the engine, so it only exists when a server is behind us.
+// Evaluation and the play page both need the engine, so they only exist when a
+// server is behind us. Opened from disk this file still works on its own, and
+// showing a dead /play link there would be a lie about what it can do.
 async function detectEngine(){
   if (location.protocol === "file:") return;
   try {
     const r = await fetch("/api/eval", {method:"POST",
       headers:{"Content-Type":"application/json"}, body:"{}"});
-    if (r.status !== 404) document.getElementById("evalCard").style.display = "";
+    if (r.status === 404) return;
+    document.getElementById("evalCard").style.display = "";
+    document.getElementById("playLink").style.display = "";
   } catch (e){ /* standalone; no engine */ }
 }
 
