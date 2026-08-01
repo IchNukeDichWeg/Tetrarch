@@ -125,7 +125,8 @@
     </div>
 
     <div class="panel">
-      <h2>Moves</h2>
+      <h2>Moves <span id="persp" class="note" style="text-transform:none;
+          letter-spacing:0; font-weight:400"></span></h2>
       <div id="log"></div>
     </div>
 
@@ -181,6 +182,9 @@ let state = null;        // last render state from the server
 let control = {R:"human", B:"engine", Y:"human", G:"engine"};
 let from = null;         // square the user picked first
 let busy = false;        // an engine request is in flight
+// Records, not strings: the engine reports every score from the moving TEAM's
+// point of view, so the sign flips every ply. Keeping the raw value and the
+// mover lets the panel show one fixed perspective instead.
 let log = [];
 let moveList = [];       // raw move strings, the input the PGN4 writer needs
 let netInfo = [];
@@ -194,6 +198,7 @@ let running = false;
 //: four players -- everyone wants their own seat in front of them.
 let view = 0;
 let hint = null;         // {from, to, score, depth} from the hint button
+let lastMove = null;     // {from, to} of the move just played, whoever played it
 
 const teamsOn = () => document.getElementById("mode").value === "teams";
 
@@ -217,6 +222,13 @@ function draw(){
     const x = MARGIN + sx*CELL, y = MARGIN + sy*CELL, nm = sqName(f,r);
     ctx.fillStyle = (f+r)%2 ? "#3a3f4a" : "#2a2e37";
     ctx.fillRect(x,y,CELL,CELL);
+    if (lastMove && (nm === lastMove.from || nm === lastMove.to)){
+      // Under the pieces, and a wash rather than an outline, so it never
+      // competes with the hint or the selected square.
+      ctx.fillStyle = nm === lastMove.to ? "rgba(226,200,106,.20)"
+                                         : "rgba(226,200,106,.10)";
+      ctx.fillRect(x,y,CELL,CELL);
+    }
     if (targets.has(nm)){
       ctx.fillStyle = "rgba(226,200,106,.22)";
       ctx.fillRect(x,y,CELL,CELL);
@@ -361,10 +373,29 @@ function renderSeatNote(){
 
 function say(html){ document.getElementById("status").innerHTML = html; }
 
+//: Whose point of view the panel reports scores from: the team of whichever
+//: seat you put at the bottom. The engine's own numbers alternate every ply,
+//: which makes a column of them unreadable.
+const viewTeam = () => TEAM[SEATS[view]];
+
+function scoreFor(seat, cp){
+  if (cp === undefined || cp === null) return "";
+  const flip = teamsOn() && TEAM[seat] !== viewTeam();
+  return fmtScore(flip ? -cp : cp);
+}
+
 function renderLog(){
   const el = document.getElementById("log");
-  el.textContent = log.length ? log.join("\n") : "no moves yet";
+  el.textContent = log.length
+    ? log.map(e => NAME[e.seat] + "  " + e.move
+        + (e.score === undefined ? ""
+           : "   " + scoreFor(e.seat, e.score) + "  d" + e.depth
+             + "  " + e.nodes.toLocaleString() + "n")).join("\n")
+    : "no moves yet";
   el.scrollTop = el.scrollHeight;
+  document.getElementById("persp").textContent = teamsOn()
+    ? "+ favours " + (viewTeam() === 0 ? "Red & Yellow" : "Blue & Green")
+    : "";
 }
 
 // --- server ----------------------------------------------------------------
@@ -382,6 +413,7 @@ function adopt(data){
   state = data;
   from = null;
   hint = null;                      // a hint belongs to one position only
+                                    // lastMove is set by the caller and kept
   renderSeats(); draw(); renderHintBtn(); refreshPgn();
 }
 
@@ -433,9 +465,10 @@ async function tick(){
     return;
   }
   // `state` is still the position before the move, so its turn is the mover.
-  log.push(NAME[state.turn] + "  " + data.move + "   " + fmtScore(data.score)
-           + "  d" + data.depth + "  " + data.nodes.toLocaleString() + "n");
+  log.push({seat: state.turn, move: data.move, score: data.score,
+            depth: data.depth, nodes: data.nodes});
   moveList.push(data.move);
+  lastMove = splitMove(data.move);
   adopt(data); renderLog();
   setTimeout(tick, 50);
 }
@@ -467,7 +500,7 @@ function fmtScore(cp){
 }
 
 async function newGame(){
-  log = []; moveList = [];
+  log = []; moveList = []; lastMove = null;
   const {ok, data} = await post("/api/play/new", {
     setup: document.getElementById("setup").value,
     mode: document.getElementById("mode").value,
@@ -515,8 +548,9 @@ cv.onclick = async (ev) => {
     fen4: state.fen4, mode: document.getElementById("mode").value, move
   });
   if (!ok){ say('<span class="warn">' + (data.error || "illegal") + "</span>"); return; }
-  log.push(NAME[state.turn] + "  " + move);
+  log.push({seat: state.turn, move: move});
   moveList.push(move);
+  lastMove = splitMove(move);
   running = true;                 // you moved: the reply is what you asked for
   adopt(data); renderLog(); renderRun(); tick();
 };
@@ -601,7 +635,8 @@ document.getElementById("net").onchange = showNetNote;
 document.getElementById("new").onclick = newGame;
 document.getElementById("runstop").onclick = () => setRunning(!running);
 document.getElementById("view").onchange = (e) => {
-  view = parseInt(e.target.value, 10); draw();
+  view = parseInt(e.target.value, 10);
+  draw(); renderLog();          // the reported perspective follows the view
 };
 
 const hintBtn = document.getElementById("hint");
@@ -637,7 +672,7 @@ hintBtn.onclick = async () => {
   hintOut.innerHTML = m
     ? '<b>' + m.from + " → " + m.to + "</b>"
       + (m.promo ? "=" + m.promo.toUpperCase() : "")
-      + ' <span class="note">' + fmtScore(data.score) + "  d" + data.depth
+      + ' <span class="note">' + scoreFor(state.turn, data.score) + "  d" + data.depth
       + "</span>"
     : "no move";
   renderHintBtn(); draw();
