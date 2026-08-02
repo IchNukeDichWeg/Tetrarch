@@ -30,3 +30,4 @@ tetrarch_export/
 # Third-party bundle used only as a local sparring partner. Never committed.
 variants.js
 test_engine
+test_engine2
