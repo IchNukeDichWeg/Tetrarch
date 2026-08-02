@@ -181,7 +181,14 @@
 <script>
 const SEATS = ["R","B","Y","G"];
 const NAME  = {R:"Red", B:"Blue", Y:"Yellow", G:"Green"};
-const COLOUR = {r:"#d64f4f", b:"#4f86d6", y:"#d6b23f", g:"#46a85c", d:"#6d7382"};
+// chess.com's board: a light/dark pair with the four armies drawn on top of
+// it, rather than coloured pieces on a dark grid. Pieces are filled in their
+// seat colour and outlined in near-black, which is what keeps yellow legible
+// on the light square and red legible on the dark one -- the previous drop
+// shadow only worked because every square was dark.
+const LIGHT = "#eeeed2", DARK = "#769656", EDGE = "#3d4a2e";
+const OUTLINE = "#1b1b18";
+const COLOUR = {r:"#c8443c", b:"#3a6fb8", y:"#e0b93a", g:"#3f9455", d:"#8a8f7c"};
 const GLYPH = {P:"♟", N:"♞", B:"♝", R:"♜", Q:"♛", K:"♚"};
 //: Teams are seat & 1: Red and Yellow against Blue and Green.
 const TEAM = {R:0, Y:0, B:1, G:1};
@@ -253,6 +260,25 @@ const teamsOn = () => game.mode === "teams";
 
 // --- rendering -------------------------------------------------------------
 
+
+// chess.com prints the coordinate inside the outermost squares rather than in
+// a margin, so the board stays the same size. Drawn in the opposite square
+// colour, which is what keeps it readable on both.
+function drawCoord(ctx, f, r, x, y){
+  const left = !playable(f-1, r), bottom = !playable(f, r-1);
+  if (!left && !bottom) return;
+  ctx.font = "600 " + Math.round(CELL*0.22) + "px system-ui, sans-serif";
+  ctx.fillStyle = (f+r)%2 ? DARK : LIGHT;
+  if (left){
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.fillText(String(r+1), x+3, y+2);
+  }
+  if (bottom){
+    ctx.textAlign = "right"; ctx.textBaseline = "bottom";
+    ctx.fillText("abcdefghijklmn"[f], x+CELL-3, y+CELL-2);
+  }
+}
+
 function draw(){
   ctx.clearRect(0,0,cv.width,cv.height);
   const legalFrom = new Set(), targets = new Set();
@@ -269,8 +295,9 @@ function draw(){
     if (!playable(f,r)) continue;
     const [sx, sy] = toScreen(f, r);
     const x = MARGIN + sx*CELL, y = MARGIN + sy*CELL, nm = sqName(f,r);
-    ctx.fillStyle = (f+r)%2 ? "#3a3f4a" : "#2a2e37";
+    ctx.fillStyle = (f+r)%2 ? LIGHT : DARK;
     ctx.fillRect(x,y,CELL,CELL);
+    drawCoord(ctx, f, r, x, y);
     if (lastMove && (nm === lastMove.from || nm === lastMove.to)){
       // Under the pieces, and a wash rather than an outline, so it never
       // competes with the hint or the selected square.
@@ -284,12 +311,14 @@ function draw(){
     }
     const p = state ? state.grid[r][f] : null;
     if (p){
+      ctx.font = (CELL-14) + "px serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
       const glyph = GLYPH[p.t] || "?";
-      ctx.font = (CELL-16) + "px serif";
-      ctx.textAlign="center"; ctx.textBaseline="middle";
-      ctx.fillStyle = "rgba(0,0,0,.55)";
-      ctx.fillText(glyph, x+CELL/2+1, y+CELL/2+2);
       ctx.globalAlpha = p.dead ? 0.45 : 1;
+      ctx.lineWidth = Math.max(2, CELL / 16);
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = OUTLINE;
+      ctx.strokeText(glyph, x+CELL/2, y+CELL/2+1);
       ctx.fillStyle = COLOUR[p.dead ? "d" : p.c] || "#999";
       ctx.fillText(glyph, x+CELL/2, y+CELL/2+1);
       ctx.globalAlpha = 1;
