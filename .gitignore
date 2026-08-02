@@ -26,3 +26,7 @@ tetrarch-v*.tar.gz
 tetrarch_export/
 
 .DS_Store
+
+# Third-party bundle used only as a local sparring partner. Never committed.
+variants.js
+test_engine
