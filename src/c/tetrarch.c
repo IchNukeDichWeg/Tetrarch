@@ -13,6 +13,12 @@
  * Section references (§n) are to docs/RULES.md.
  */
 
+/* clock_gettime and CLOCK_MONOTONIC are POSIX, not ISO C, and glibc hides them
+ * under -std=c11 unless this is set before any header is pulled in. Apple's
+ * headers expose them either way, so the omission compiled cleanly on macOS
+ * and only broke on Linux. It has to stay above the includes. */
+#define _POSIX_C_SOURCE 199309L
+
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
