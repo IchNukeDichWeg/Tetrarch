@@ -779,22 +779,86 @@ static int nn_acc_ok = 0;
 
 /* Add (sign +1) or remove (sign -1) one piece's contribution, in all four
  * perspectives at once. */
+static int nn_feature_of(int sq, int persp, int color, int type)
+{
+    int rel = (color - persp) & 3;
+    return (rel * 6 + type) * 160 + P.compact[P.rot_to_persp[persp][sq]];
+}
+
+/* One perspective, one feature row, applied now. */
+static void nn_row(int persp, int feature, int sign)
+{
+    const int16_t *row = nn_w1 + (size_t)feature * NN_L1;
+    int32_t *acc = nn_acc[persp];
+    int j;
+    if (sign > 0) { for (j = 0; j < NN_L1; j++) acc[j] += row[j]; }
+    else          { for (j = 0; j < NN_L1; j++) acc[j] -= row[j]; }
+}
+
+/* Lazy perspectives.
+ *
+ * A profile of the search put this work at 23% of the time -- it ran on every
+ * make and unmake for all four perspectives, while an evaluation reads only
+ * `nn_acc[b->turn]`. Three quarters of it was paid at nodes that never looked
+ * at it.
+ *
+ * Toggles are therefore queued per perspective and applied when that
+ * perspective is read. The queue cancels: pushing the exact inverse of the
+ * entry on top pops it instead, so descending into a subtree and unwinding
+ * out of it again costs no row arithmetic at all for a perspective nobody
+ * evaluated. Cancelling only an exact inverse is what makes this safe -- the
+ * pair is arithmetically a no-op whatever order it arrived in, so a queue
+ * that fails to cancel is slower and never wrong.
+ *
+ * The queue is bounded and flushes when full, so a pathological line costs
+ * time rather than correctness. */
+#define NN_PEND_MAX 1024
+typedef struct { int32_t feature; int32_t sign; } NnPend;
+static NnPend nn_pend[4][NN_PEND_MAX];
+static int nn_pend_n[4];
+
+static void nn_flush(int persp)
+{
+    int i;
+    for (i = 0; i < nn_pend_n[persp]; i++)
+        nn_row(persp, nn_pend[persp][i].feature, nn_pend[persp][i].sign);
+    nn_pend_n[persp] = 0;
+}
+
+static void nn_push(int persp, int feature, int sign)
+{
+    int n = nn_pend_n[persp];
+    if (n > 0 && nn_pend[persp][n - 1].feature == feature
+              && nn_pend[persp][n - 1].sign == -sign) {
+        nn_pend_n[persp] = n - 1;
+        return;
+    }
+    if (n == NN_PEND_MAX) { nn_flush(persp); n = 0; }
+    nn_pend[persp][n].feature = feature;
+    nn_pend[persp][n].sign = sign;
+    nn_pend_n[persp] = n + 1;
+}
+
+/* Applied to every perspective immediately. Only the rebuild uses this; the
+ * search goes through the queue. */
+static void nn_toggle_now(uint8_t piece, int sq, int sign)
+{
+    int persp, color = P.pc_color[piece], type;
+    if (color == DEAD_UNKNOWN) return;
+    type = P.feature_type[P.pc_type[piece]];
+    for (persp = 0; persp < 4; persp++)
+        nn_row(persp, nn_feature_of(sq, persp, color, type), sign);
+}
+
 static void nn_toggle(uint8_t piece, int sq, int sign)
 {
-    int persp, j, color = P.pc_color[piece], type;
+    int persp, color = P.pc_color[piece], type;
     /* A piece with no recorded origin has no colour to make relative, so it
      * switches on no feature -- the same rule the full refresh applies. */
     if (color == DEAD_UNKNOWN) return;
     type = P.feature_type[P.pc_type[piece]];
-    for (persp = 0; persp < 4; persp++) {
-        int rel = (color - persp) & 3;
-        int feature = (rel * 6 + type) * 160
-                      + P.compact[P.rot_to_persp[persp][sq]];
-        const int16_t *row = nn_w1 + (size_t)feature * NN_L1;
-        int32_t *acc = nn_acc[persp];
-        if (sign > 0) { for (j = 0; j < NN_L1; j++) acc[j] += row[j]; }
-        else          { for (j = 0; j < NN_L1; j++) acc[j] -= row[j]; }
-    }
+    for (persp = 0; persp < 4; persp++)
+        nn_push(persp, nn_feature_of(sq, persp, color, type), sign);
 }
 
 /* Deltas are safe only when the accumulator actually describes the board in
@@ -816,13 +880,16 @@ static void nn_acc_set_key(uint64_t key) { nn_acc_key = key; }
 static void nn_refresh(const TtBoard *b)
 {
     int persp, sq;
-    for (persp = 0; persp < 4; persp++)
+    for (persp = 0; persp < 4; persp++) {
         memcpy(nn_acc[persp], nn_b1, sizeof(nn_b1));
+        /* Anything queued described the position we are abandoning. */
+        nn_pend_n[persp] = 0;
+    }
     for (sq = 0; sq < NSQ; sq++) {
         uint8_t p;
         if (!P.valid[sq]) continue;
         p = b->sq[sq];
-        if (p) nn_toggle(p, sq, +1);
+        if (p) nn_toggle_now(p, sq, +1);
     }
     nn_acc_key = b->key;
     nn_acc_ok = 1;
@@ -837,7 +904,9 @@ int tt_nnue_acc_matches(const TtBoard *b)
     int32_t save[4][NN_L1];
     uint64_t save_key = nn_acc_key;
     int ok;
+    int persp;
     if (!nn_loaded || !nn_acc_ok) return -1;
+    for (persp = 0; persp < 4; persp++) nn_flush(persp);
     memcpy(save, nn_acc, sizeof(save));
     nn_refresh(b);
     ok = memcmp(save, nn_acc, sizeof(save)) == 0;
@@ -872,10 +941,17 @@ int tt_load_net(const TtNetView *v)
     nn_b4 = v->b4[0];
     nn_loaded = 1;
     nn_acc_ok = 0;                 /* different weights: rebuild on next eval */
+    nn_pend_n[0] = nn_pend_n[1] = nn_pend_n[2] = nn_pend_n[3] = 0;
     return 1;
 }
 
-void tt_unload_net(void) { nn_loaded = 0; nn_acc_ok = 0; }
+void tt_unload_net(void)
+{
+    int persp;
+    nn_loaded = 0;
+    nn_acc_ok = 0;
+    for (persp = 0; persp < 4; persp++) nn_pend_n[persp] = 0;
+}
 
 int tt_net_loaded(void) { return nn_loaded; }
 
@@ -967,6 +1043,7 @@ static int32_t nnue_eval(const TtBoard *b)
     int j, k, persp = b->turn;
 
     if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
+    nn_flush(persp);
     acc = nn_acc[persp];
 
     /* crelu bounds these to [0,127] and the extras to [-127,127], so the whole

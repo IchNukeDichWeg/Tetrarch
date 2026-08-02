@@ -497,6 +497,48 @@ checkmate. selftest pins the never-invents property.
 Screened +36.62 ± 15.43 over 2,000 first -- the confirm landed almost exactly on
 the screen. Released as **v4**.
 
+### Lazy accumulator perspectives -- +59.8% NPS, no A/B needed
+
+Same argument as the int8 propagation: the evaluation returns the same integer,
+so the search takes the same path. Verified rather than asserted -- 120 full
+searches over all five setups compared between the two builds, identical nodes,
+scores, best moves and evaluations, plus the 14,662-pair accumulator
+differential and the deep unwind that selftest.py already ran.
+
+The engine maintained all four perspective accumulators on every make and
+unmake. An evaluation reads exactly one of them, `nn_acc[b->turn]`, so three
+quarters of that work was paid at nodes that never looked at it.
+
+Toggles are now queued per perspective and applied when that perspective is
+read. The queue cancels: pushing the exact inverse of the entry on top pops it
+instead, so descending into a subtree and unwinding out again costs no row
+arithmetic at all for a perspective nobody evaluated. Cancelling **only** an
+exact inverse is what makes it safe -- such a pair is arithmetically a no-op
+whatever order it arrived in, so a queue that fails to cancel is slower and
+never wrong. That matters because make and unmake are not exact reverses for
+castling, where the rook pair arrives in the same order both ways.
+
+M2 Pro, depth 7, builds alternated in one session:
+
+| build | nps | |
+|---|---:|---|
+| eager, all four perspectives | 1,157,392 | 1.000x |
+| lazy, queued per perspective | 1,849,366 | **1.598x** |
+
+**This was found by a sampling profile, and the micro-benchmark had it exactly
+backwards.** `bench.py --profile` reported the evaluation at 26.7% of a node
+and the accumulator at about 8%, described here as "cheap, not a hidden tax".
+Sampling the running search said 3.1% and 23.3%. The micro-benchmark times a
+component by running it on one position hundreds of thousands of times, which
+kept the same few 512-byte rows of a 2 MB table resident; a real search scatters
+across it. Component timings taken in isolation do not merely have wide error
+bars, they can invert the ranking. Profile the real thing.
+
+A first attempt to fix it by vectorising the accumulator's widening add was
+**4% slower** and was dropped: the compiler already auto-vectorises that loop,
+and the cost was never arithmetic. It was memory traffic, and the fix had to be
+doing less of it rather than doing it faster.
+
 ### Net v5 -- CONFIRMED at both instruments, and the engine now plays with it
 
 Generation 5: 125,000 self-play games at 7,500 nodes with net v4 teaching,
