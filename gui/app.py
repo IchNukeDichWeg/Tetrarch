@@ -395,7 +395,10 @@ def api_eval():
         "nps": top.nps,
         "best": move_str(top.best) if top.best else None,
         "lines": [{"move": move_str(r.best), "score": r.score,
-                   "depth": r.depth, "nodes": r.nodes} for r in results],
+                   "depth": r.depth, "nodes": r.nodes,
+                   "pv": [move_str(m) for m in
+                          (r.pv or core.pv(board, r.best))]}
+                  for r in results],
         "net": _LOADED_NET or "hand eval",
         "note": note,
     })

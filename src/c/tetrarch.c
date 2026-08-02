@@ -1449,6 +1449,66 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     return alpha;
 }
 
+/* --- principal variation --------------------------------------------------
+ *
+ * Walked out of the transposition table rather than collected during the
+ * search: every node already stores the move it chose, so following those from
+ * the root costs nothing and needs no triangular array threaded through
+ * alpha-beta.
+ *
+ * The price is that it can end early. An entry may have been overwritten, or
+ * hold a move that is not legal in the position that now maps to that slot, so
+ * the walk stops rather than printing a move nobody would play. A short PV is
+ * honest; a wrong one is not.
+ *
+ * `first` is the root move the search returned. tt_search deliberately does
+ * NOT store the root: writing an entry there would evict another and change
+ * replacement pressure, and the node counts pinned in selftest -- and every
+ * A/B behind them -- would move for the sake of a display feature. So the
+ * caller hands the root move in and the table supplies the rest.
+ */
+#define MAX_PV 32
+
+int tt_pv(TtBoard *b, uint32_t first, uint32_t *out, int max)
+{
+    uint32_t legal[MAX_MOVES];
+    TtUndo undo[MAX_PV];
+    uint64_t seen[MAX_PV];
+    int n = 0, i, k;
+
+    if (max <= 0) return 0;
+    if (max > MAX_PV) max = MAX_PV;
+
+    if (first) {
+        k = tt_gen_legal(b, legal);
+        for (i = 0; i < k; i++) if (legal[i] == first) break;
+        if (i == k) return 0;              /* not a move in this position */
+        out[0] = first;
+        seen[0] = b->key;
+        tt_make(b, first, &undo[0]);
+        n = 1;
+    }
+    if (!tt_table) { if (n) tt_unmake(b, out[0], &undo[0]); return n ? 1 : 0; }
+
+    while (n < max) {
+        TtEntry *slot = &tt_table[b->key & tt_mask];
+        uint32_t mv = slot->best;
+        int repeat = 0;
+        if (slot->key != b->key || !mv) break;
+        for (i = 0; i < n; i++) if (seen[i] == b->key) { repeat = 1; break; }
+        if (repeat) break;                 /* a cycle, not a variation */
+        k = tt_gen_legal(b, legal);
+        for (i = 0; i < k; i++) if (legal[i] == mv) break;
+        if (i == k) break;                 /* stale slot: not legal here */
+        seen[n] = b->key;
+        out[n] = mv;
+        tt_make(b, mv, &undo[n]);
+        n++;
+    }
+    for (i = n - 1; i >= 0; i--) tt_unmake(b, out[i], &undo[i]);
+    return n;
+}
+
 static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
                          int ply)
 {

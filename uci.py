@@ -218,10 +218,16 @@ class Engine:
             return
 
         def line(r, rank=None):
+            # The whole variation, not just the move: walked out of the
+            # transposition table, and short rather than wrong if an entry has
+            # been overwritten (core.pv).
+            moves = r.pv or core.pv(self.board, r.best) \
+                or ([r.best] if r.best else [])
             print("info depth %d%s score %s nodes %d nps %d time %d pv %s"
                   % (r.depth, "" if rank is None else " multipv %d" % rank,
                      score_string(r.score), r.nodes, r.nps,
-                     int(r.elapsed * 1000), move_str(r.best)))
+                     int(r.elapsed * 1000),
+                     " ".join(move_str(m) for m in moves)))
 
         if self.multipv > 1:
             def report(rs):

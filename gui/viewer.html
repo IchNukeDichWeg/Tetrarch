@@ -485,8 +485,9 @@ document.getElementById("evalBtn").onclick = async () => {
   const head = `${seat}'s team to move · depth ${d.depth} · `
              + `${d.nodes.toLocaleString()} nodes`;
   const rows = (d.lines || [{move: d.best, score: d.score}]).map((l, i) =>
-    `<div><span class="num">${i + 1}.</span> <b>${l.move}</b> `
-    + `<span class="muted">${cpText(l.score)}</span></div>`).join("");
+    `<div><span class="num">${i + 1}.</span> <b>${cpText(l.score)}</b> `
+    + `<span class="muted">${(l.pv && l.pv.length ? l.pv : [l.move]).join(" ")}`
+    + `</span></div>`).join("");
   out.innerHTML = `<div class="muted">${head}</div>${rows}`;
 };
 document.getElementById("sample").onclick = () => {

@@ -63,6 +63,10 @@ class Result:
         self.depth = 0
         self.nodes = 0
         self.elapsed = 0.0
+        #: Filled by search_multi only. The normal path leaves it empty and
+        #: the caller walks the table itself, because there the root's own
+        #: search stored every node below it.
+        self.pv = []
 
     @property
     def nps(self):
@@ -174,7 +178,7 @@ def search_multi(board, limits, lines=1, info=None):
             if child.aborted:
                 aborted = True
                 break
-            scored.append((-child.score, move))
+            scored.append((-child.score, move, child.best))
             if budget is not None and \
                     (time.perf_counter() - started) * 1000.0 >= budget:
                 aborted = True
@@ -183,14 +187,21 @@ def search_multi(board, limits, lines=1, info=None):
         if aborted or len(scored) != len(order):
             break                       # a partial depth cannot be ranked
 
-        scored.sort(key=lambda pair: -pair[0])
-        order = [move for _, move in scored]
+        scored.sort(key=lambda triple: -triple[0])
+        order = [move for _, move, _ in scored]
 
         out = []
-        for score, move in scored[:lines]:
+        for score, move, child_best in scored[:lines]:
             item = Result()
             item.best, item.score, item.depth = move, score, depth
             item.nodes, item.elapsed = nodes, time.perf_counter() - started
+            # Each child was searched as its own root, and tt_search does not
+            # store a root -- so the table has nothing for the position right
+            # after `move`. Seed the walk with the child's own best move and
+            # the table supplies the rest.
+            undo = board.make(move)
+            item.pv = [move] + core.pv(board, child_best)
+            board.unmake(move, undo)
             out.append(item)
         if info:
             info(out)

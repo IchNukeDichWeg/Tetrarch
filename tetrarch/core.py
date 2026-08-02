@@ -241,6 +241,9 @@ def load(path=None):
         lib.tt_nnue_dims.argtypes = [ctypes.POINTER(ctypes.c_int32)]
         lib.tt_load_net.restype = ctypes.c_int
         lib.tt_load_net.argtypes = [ctypes.POINTER(TtNetView)]
+        lib.tt_pv.restype = ctypes.c_int
+        lib.tt_pv.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_uint32,
+                              ctypes.POINTER(ctypes.c_uint32), ctypes.c_int]
         lib.tt_set_mobility.argtypes = [ctypes.c_int]
         lib.tt_get_mobility.restype = ctypes.c_int
         lib.tt_net_loaded.restype = ctypes.c_int
@@ -353,6 +356,23 @@ def unload_net():
     lib = load()
     lib.tt_unload_net()
     lib.tt_clear()
+
+
+MAX_PV = 32
+
+
+def pv(board, first, limit=MAX_PV):
+    """The principal variation, walked out of the transposition table.
+
+    `first` is the move the search returned; the root is not in the table on
+    purpose (see tt_pv). Only meaningful straight after searching this
+    position, and it can come back short -- a stale entry is dropped rather
+    than printed, because a wrong variation is worse than a brief one.
+    """
+    buf = (ctypes.c_uint32 * MAX_PV)()
+    n = load().tt_pv(ctypes.byref(to_c(board)), ctypes.c_uint32(first or 0),
+                     buf, min(limit, MAX_PV))
+    return [buf[i] for i in range(n)]
 
 
 def set_mobility(on):
