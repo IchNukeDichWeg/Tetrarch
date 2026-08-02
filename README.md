@@ -43,6 +43,7 @@ rotation, against a null self-test of −2.64 ± 6.24 on the same harness.
 
 | release | feature | Elo | instrument |
 |---|---|---|---|
+| [v7](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v7) | lazy accumulator perspectives | **+63.37 ± 4.68** | fixed time |
 | [v7](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v7) | NNUE net v5 | **+7.78 ± 4.61** | fixed time |
 | [v6](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v6) | NNUE evaluation (net v4) | **+76.79 ± 6.87** | fixed time |
 | [v5](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v5) | quiescence check evasions | **+106.78 ± 6.88** | fixed nodes |

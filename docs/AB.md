@@ -533,10 +533,25 @@ too. Sampling could not reach it, so the position is constructed and pinned in
 selftest.py instead. A test that cannot fail is not evidence, and the honest
 response to one is to build the case by hand rather than to record a pass.
 
-### Lazy accumulator perspectives -- +59.8% NPS, no A/B needed
+### Lazy accumulator perspectives -- +59.8% NPS, and +63.37 Elo for it
 
-Same argument as the int8 propagation: the evaluation returns the same integer,
-so the search takes the same path. Verified rather than asserted -- 120 full
+**Fixed time, movetime 200, classic, both sides net v5, 19,999 games:
++63.37 +/- 4.68.**
+
+That is the number that says what speed is worth here. Net v5, a whole
+generation of self-play, was +7.78 on the same instrument; this one change is
+eight times it. The exchange rate is roughly +63 Elo for 1.45x on the machine
+it was measured on, so a doubling is worth somewhere near +115 -- higher than
+the +50 to +70 a two-player engine would expect, which is worth remembering
+before dismissing a 10% speedup as not worth the week.
+
+Measured against the v7 tree, which already had the int8 propagation, so the
+int8 and pin gains are NOT in this figure.
+
+The A/B was needed only because fixed time is where speed shows up. At fixed
+nodes it would be exactly zero by construction, both sides playing identical
+moves; that is a null self-test, not a measurement. The evaluation returns the
+same integer either way, so the search takes the same path. Verified rather than asserted -- 120 full
 searches over all five setups compared between the two builds, identical nodes,
 scores, best moves and evaluations, plus the 14,662-pair accumulator
 differential and the deep unwind that selftest.py already ran.

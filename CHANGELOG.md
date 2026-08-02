@@ -21,10 +21,19 @@ A third compounding generation, and a much smaller step than the ones before
 it -- net v4 had beaten the hand eval by +135.19 at fixed nodes. The returns
 on repeating this loop unchanged look thin.
 
-Also in this release, neither of which can change a move:
+The engine also searches about 2.4x more nodes per second than v6 did, with
+every move provably unchanged. Three changes, none of which can alter a
+decision:
 
-- The NNUE propagation runs as int8 SIMD, +23.5% NPS, bit-identical output.
-- A repetition the search is walking into scores as the draw it is.
+- Lazy accumulator perspectives, +59.8% NPS. Screened at fixed time over
+  19,999 games: **+63.37 +/- 4.68**, eight times what net v5 was worth on the
+  same instrument.
+- The NNUE propagation as int8 SIMD, +23.5% NPS, bit-identical output.
+- Pins computed once per node, so a move that cannot expose its own king skips
+  the attack scan, +3.9% NPS.
+
+And a rules gap closed: a repetition the search is walking into scores as the
+draw it is.
 
 ## v6 -- NNUE evaluation
 
