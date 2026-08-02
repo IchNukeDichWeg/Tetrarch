@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define NSQ 256
 #define NPIECE 36            /* 1 + 5 colours * 7 types */
@@ -404,8 +405,13 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
 
 /* --- make / unmake ------------------------------------------------------ */
 
+/* Counted so a per-call cost can be turned into a per-node share; a
+ * uint64 increment is nothing against the work either side of it. */
+static uint64_t search_makes;
+
 void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
 {
+    search_makes++;
     int frm = MV_FROM(m), to = MV_TO(m), flag = MV_FLAG(m), promo = MV_PROMO(m);
     int mover = b->turn, c, t;
     uint8_t piece = b->sq[frm], captured = b->sq[to], placed;
@@ -1096,10 +1102,13 @@ int32_t tt_eval(const TtBoard *b)
 
 /* Same value as tt_eval unless the lazy toggle is on and the bound is already
  * settled. NNUE has no cheap/expensive split, so it is unaffected. */
+static uint64_t search_evals;
+
 static inline int32_t tt_eval_bounded(const TtBoard *b, int32_t alpha,
                                       int32_t beta)
 {
     int32_t material, margin;
+    search_evals++;
     if (nn_loaded) return nnue_eval(b);
     if (!use_lazy_eval) return hand_eval(b);
     material = hand_material(b);
@@ -1353,6 +1362,8 @@ static void killers_clear(void) { memset(killers, 0, sizeof(killers)); }
 static int16_t history[4][NSQ][NSQ];
 static int use_history = 0;
 
+uint64_t tt_search_makes(void) { return search_makes; }
+uint64_t tt_search_evals(void) { return search_evals; }
 void tt_set_rep_detect(int on) { use_repetitions = on ? 1 : 0; }
 int tt_get_rep_detect(void) { return use_repetitions; }
 void tt_set_history(int on) { use_history = on ? 1 : 0; }
@@ -1691,6 +1702,65 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     return best;
 }
 
+/* --- component timing ------------------------------------------------------
+ *
+ * The Python wrappers each rebuild the whole TtBoard before they call across,
+ * which costs more than the thing being measured. These take one board and do
+ * the whole loop on this side, so what comes back is the component's own cost.
+ *
+ * Repeated `tt_eval` on one position finds the accumulator already matching
+ * and skips the refresh -- which is what a real leaf does too, because the
+ * deltas were paid by make on the way down. So what this measures is the
+ * propagation from the accumulator through 256-32-32-1, and that is the part
+ * a real search pays at every leaf. */
+static double now_sec(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec;
+}
+
+double tt_bench_eval(TtBoard *b, int iters)
+{
+    double t0;
+    int i;
+    int64_t sink = 0;
+    t0 = now_sec();
+    for (i = 0; i < iters; i++) sink += tt_eval(b);
+    t0 = now_sec() - t0;
+    if (sink == 0x7FFFFFFFFFFFFFFFLL) t0 = -t0;   /* keep the loop alive */
+    return t0;
+}
+
+double tt_bench_gen(TtBoard *b, int iters, int legal)
+{
+    static uint32_t buf[MAX_MOVES];
+    double t0;
+    int i;
+    int64_t sink = 0;
+    t0 = now_sec();
+    for (i = 0; i < iters; i++)
+        sink += legal ? tt_gen_legal(b, buf) : tt_gen_pseudo(b, buf);
+    t0 = now_sec() - t0;
+    if (sink == 0x7FFFFFFFFFFFFFFFLL) t0 = -t0;
+    return t0;
+}
+
+double tt_bench_makeunmake(TtBoard *b, int iters)
+{
+    static uint32_t buf[MAX_MOVES];
+    TtUndo u;
+    double t0;
+    int i, n = tt_gen_legal(b, buf);
+    if (n <= 0) return 0.0;
+    t0 = now_sec();
+    for (i = 0; i < iters; i++) {
+        tt_make(b, buf[i % n], &u);
+        tt_unmake(b, buf[i % n], &u);
+    }
+    return now_sec() - t0;
+}
+
 typedef struct {
     uint64_t nodes;
     int32_t score;
@@ -1712,6 +1782,8 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     int n, i, legal = 0, me = b->turn;
 
     search_nodes = 0;
+    search_makes = 0;
+    search_evals = 0;
     search_limit = node_limit ? node_limit : (uint64_t)-1;
     search_aborted = 0;
     if (!lmr_built) lmr_build();

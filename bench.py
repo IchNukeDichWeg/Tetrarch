@@ -5,10 +5,33 @@
     python3 bench.py --depth 6
     python3 bench.py --rounds 9      # for an NPS comparison
 
-Until the search exists this benches **perft** through the C core: legal move
-generation plus make/unmake, which is the whole per-node loop there is at
-Phase 2. When the search lands in Phase 3 the node count becomes the search's,
-and the number printed here becomes the bench signature quoted in commits.
+    python3 bench.py --perft         # the old Phase 2 signature
+    python3 bench.py --profile       # where a node's time actually goes
+
+The default benches the **search**, which is what governs how long a data
+generation run takes and what a fixed-time A/B is really measuring. `--perft`
+keeps the Phase 2 number -- legal move generation plus make/unmake and nothing
+else -- which is a movegen measurement and cannot see the evaluation at all.
+The two are not comparable and the signature quoted in commits is the search
+one.
+
+`--profile` times the components separately inside C, because reaching them
+from Python rebuilds the whole board per call and that costs more than any of
+them. Each cost is then weighted by how often a node actually calls it, which
+is counted rather than assumed -- assuming one evaluation per node overstates
+its share by nearly two times, because interior nodes recurse instead of
+evaluating and only the quiescence leaves pay for it.
+
+**The per-call figures are a floor, and "unaccounted" is therefore a ceiling.**
+Each component is measured by running it on one position hundreds of thousands
+of times, so every table and every cache line it touches is warm. A real search
+calls it on a position it has never seen. Do not read "unaccounted" as a
+measurement of move ordering and the transposition table: it is those plus the
+cache misses this method cannot reproduce.
+
+The number to trust for the evaluation's total cost is not in this table at
+all -- it is the difference between `bench.py` and `bench.py --net none`, which
+measures the whole engine both ways and needs no attribution to be true.
 
 The positions are frozen as literal FEN4 rather than generated from a seed. A
 seeded generator would silently re-pick its positions the first time move
@@ -86,6 +109,57 @@ def machine():
     return " / ".join(bits)
 
 
+def search_round(depth):
+    """One search per position. Nodes are the search's, not perft's."""
+    nodes = 0
+    per_position = []
+    started = time.perf_counter()
+    for label, mode, fen in POSITIONS:
+        b = Board.from_fen4(fen, mode)
+        core.clear_hash()
+        t = time.perf_counter()
+        r = core.search(b, depth)
+        per_position.append((label, r.nodes, time.perf_counter() - t))
+        nodes += r.nodes
+    return nodes, time.perf_counter() - started, per_position
+
+
+def profile(depth, iters):
+    """Per-call cost of each component, weighted by how often a node calls it.
+
+    A per-call cost on its own says nothing about where the time goes -- the
+    cheapest component can dominate if it runs often enough. `gen_pseudo` runs
+    once per interior node and `evaluate` at most once, both close enough to 1
+    to use directly. Makes are counted for real, because that rate is the one
+    that is not obvious.
+    """
+    nodes = makes = evals = 0
+    secs = 0.0
+    for _, mode, fen in POSITIONS:
+        b = Board.from_fen4(fen, mode)
+        core.clear_hash()
+        t = time.perf_counter()
+        r = core.search(b, depth)
+        secs += time.perf_counter() - t
+        nodes += r.nodes
+        makes += core.search_makes()
+        evals += core.search_evals()
+    ns_node = secs / nodes * 1e9
+    per_node = {"gen_pseudo": 1.0, "make+unmake": makes / nodes,
+                "evaluate": evals / nodes, "gen_legal": 0.0}
+
+    rows = []
+    for what, label in (("gen", "gen_pseudo"), ("makeunmake", "make+unmake"),
+                        ("eval", "evaluate"), ("legal", "gen_legal")):
+        total = 0.0
+        for _, mode, fen in POSITIONS:
+            b = Board.from_fen4(fen, mode)
+            total += core.bench_component(b, what, iters)
+        ns = total / (iters * len(POSITIONS)) * 1e9
+        rows.append((label, ns, per_node[label], ns * per_node[label]))
+    return ns_node, nodes, makes / nodes, rows
+
+
 def one_round(depth):
     nodes = 0
     per_position = []
@@ -101,7 +175,20 @@ def one_round(depth):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--depth", type=int, default=5)
+    ap.add_argument("--depth", type=int, default=7,
+                    help="search depth; --perft overrides the default to 5")
+    ap.add_argument("--perft", action="store_true",
+                    help="bench movegen only, the Phase 2 signature")
+    ap.add_argument("--profile", action="store_true",
+                    help="per-component cost against the search's ns/node")
+    ap.add_argument("--iters", type=int, default=200000,
+                    help="calls per component under --profile")
+    # The engine plays with a net, so benching without one measures a path it
+    # never takes -- and the evaluation is exactly what a profile is looking
+    # for. "none" selects the hand eval.
+    ap.add_argument("--net", default="default", metavar="PATH",
+                    help="net to bench with; 'default' is the one the engine "
+                         "plays with, 'none' is the hand eval")
     ap.add_argument("--rounds", type=int, default=1, metavar="N",
                     help="repeat N times and report the median; round 1 is "
                          "discarded when N > 1")
@@ -112,13 +199,53 @@ def main():
         print("bench.py needs the C core: run ./setup.sh", file=sys.stderr)
         return 1
 
+    if args.net != "none":
+        path = args.net
+        if path == "default":
+            import uci
+            path = uci.DEFAULT_NET
+        try:
+            from tetrarch import nnue
+            core.load_net(nnue.Net.load(path))
+        except Exception as exc:                                # noqa: BLE001
+            print("could not load net %s: %s" % (path, exc), file=sys.stderr)
+            return 1
+
     print("machine: %s" % machine())
-    print("depth:   %d over %d positions" % (args.depth, len(POSITIONS)))
+    print("net:     %s" % ("loaded" if core.net_loaded() else "none (hand eval)"))
+
+    if args.profile:
+        depth = args.depth
+        ns_node, nodes, mpn, rows = profile(depth, args.iters)
+        print("depth:   %d over %d positions" % (depth, len(POSITIONS)))
+        print("search:  %d nodes, %.1f ns/node, %.2f makes/node"
+              % (nodes, ns_node, mpn))
+        print("component            ns/call  per node   ns/node   share")
+        for label, ns, rate, weighted in rows:
+            if rate == 0.0:
+                print("  %-18s %8.1f       --         --      --" % (label, ns))
+            else:
+                print("  %-18s %8.1f %9.2f %9.1f %6.1f%%"
+                      % (label, ns, rate, weighted, weighted / ns_node * 100.0))
+        accounted = sum(w for _, _, r, w in rows if r)
+        print("  %-18s %8s %9s %9.1f %6.1f%%"
+              % ("unaccounted", "", "", ns_node - accounted,
+                 (ns_node - accounted) / ns_node * 100.0))
+        print("\ngen_legal is not on the search's path -- it generates and then\n"
+              "filters every move, where the search filters one move at a time.\n"
+              "It is here to price the movegen the rest of the tooling calls.")
+        return 0
+
+    if args.perft and args.depth == 7:
+        args.depth = 5
+    print("depth:   %d over %d positions (%s)"
+          % (args.depth, len(POSITIONS), "perft" if args.perft else "search"))
 
     rates = []
     nodes = 0
     for r in range(args.rounds):
-        nodes, secs, per_position = one_round(args.depth)
+        nodes, secs, per_position = (one_round(args.depth) if args.perft
+                                     else search_round(args.depth))
         rate = nodes / secs
         rates.append(rate)
         if not args.quiet and r == 0:

@@ -261,6 +261,16 @@ def load(path=None):
         lib.tt_set_rep_history.argtypes = [ctypes.POINTER(ctypes.c_uint64),
                                            ctypes.c_int]
         lib.tt_set_rep_detect.argtypes = [ctypes.c_int]
+        lib.tt_search_makes.restype = ctypes.c_uint64
+        lib.tt_search_evals.restype = ctypes.c_uint64
+        lib.tt_bench_eval.restype = ctypes.c_double
+        lib.tt_bench_eval.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
+        lib.tt_bench_gen.restype = ctypes.c_double
+        lib.tt_bench_gen.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
+                                     ctypes.c_int]
+        lib.tt_bench_makeunmake.restype = ctypes.c_double
+        lib.tt_bench_makeunmake.argtypes = [ctypes.POINTER(TtBoard),
+                                            ctypes.c_int]
         lib.tt_get_rep_detect.restype = ctypes.c_int
         lib.tt_set_pvs.argtypes = [ctypes.c_int]
         lib.tt_get_pvs.restype = ctypes.c_int
@@ -544,6 +554,38 @@ def evaluate(b):
     lib = load()
     cb = to_c(b)
     return int(lib.tt_eval(ctypes.byref(cb)))
+
+
+def search_makes():
+    """Makes performed by the last tt_search. Reset per search."""
+    return int(load().tt_search_makes())
+
+
+def search_evals():
+    """Evaluations performed by the last tt_search. Reset per search.
+
+    Far below one per node: interior nodes recurse instead of evaluating, so
+    this is essentially the quiescence leaves.
+    """
+    return int(load().tt_search_evals())
+
+
+def bench_component(b, what, iters):
+    """Seconds for `iters` calls of one component, timed inside C.
+
+    `what` is "eval", "gen", "legal" or "makeunmake". The board is converted
+    once; a per-call conversion would cost more than any of them.
+    """
+    lib = load()
+    cb = to_c(b)
+    ref = ctypes.byref(cb)
+    if what == "eval":
+        return lib.tt_bench_eval(ref, iters)
+    if what in ("gen", "legal"):
+        return lib.tt_bench_gen(ref, iters, 1 if what == "legal" else 0)
+    if what == "makeunmake":
+        return lib.tt_bench_makeunmake(ref, iters)
+    raise ValueError("unknown component %r" % what)
 
 
 def set_repetitions(keys):
