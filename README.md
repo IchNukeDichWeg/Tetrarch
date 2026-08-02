@@ -43,6 +43,7 @@ against a null self-test of −2.64 ± 6.24 on the same harness.
 
 | release | feature | Elo | instrument |
 |---|---|---|---|
+| [v6](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v6) | NNUE evaluation (net v4) | **+76.79 ± 6.87** | fixed time |
 | [v5](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v5) | quiescence check evasions | **+106.78 ± 6.88** | fixed nodes |
 | [v4](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v4) | late move pruning | +36.09 ± 6.69 | fixed nodes |
 | [v3](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v3) | lazy evaluation | +42.88 ± 6.50 | fixed time |
@@ -130,16 +131,14 @@ docs/               rules, results, perft, protocol, releasing
 
 ## Status
 
-**Phase 4's gate is met.** Net v4 beats the hand eval by **+140.01 ± 16.97**
-and beats its own teacher, net v1, by **+93.95 ± 14.81**, both over 2,000 games
-at fixed nodes. That is the first net to beat the evaluation it was written to
-replace, and the first time generation N+1 beat generation N, which is the
-mechanism the whole NNUE phase rested on.
+**Phase 4 is done.** Net v4 is the engine's evaluation as of v6, confirmed at
+**+76.79 ± 6.87** on a clock and **+135.19 ± 7.36** at fixed nodes, 10,000
+games each. It also beats its own teacher, net v1, by **+90.22 ± 15.13** -- so
+generation N+1 beating generation N, the mechanism the whole NNUE phase rested
+on, holds on a clock and not just at equal nodes.
 
-It has not shipped yet. Both figures are screens rather than 10,000-game
-confirms, the net is 1.37× slower per node so a fixed-time result decides what
-actually plays, and `uci.py` still loads no net by default. The browser board
-defaults to net v4 today.
+The fixed-time instrument was certified with its own null before any of this
+was believed: −10.77 ± 13.96, inside noise.
 
 Net v2 and the analysis published with it are void: its training data came from
 an engine whose NNUE accumulator was corrupted from the second move of every

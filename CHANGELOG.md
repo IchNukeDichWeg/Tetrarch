@@ -8,6 +8,24 @@ See [`docs/RELEASING.md`](docs/RELEASING.md) for the rules and
 Distribution shown is the nine-bucket seat rotation (score sums 0, 0.5, 1 … 4),
 never a pentanomial -- one opening here is four games, not two.
 
+## v6 -- NNUE evaluation
+
+**+76.79 +/- 6.87** at fixed time and **+135.19 +/- 7.36** at fixed nodes,
+10,000 games each. The first release to change the evaluation rather than the
+search, and the first since v0 where a fresh clone plays differently.
+
+Net v4 was trained on 12.31 M positions from 149,986 games that net v1 played.
+Generation N+1 beating generation N is the mechanism the whole NNUE phase
+rested on, and it had never once been demonstrated before this.
+
+- The fixed-time instrument was certified with its own null first: -10.77 +/-
+  13.96, inside noise. Every earlier fixed-time result rested on an instrument
+  that had never been checked.
+- Lambda closed at 0.7: the 0.30 and 0.15 arms lose by 94.51 and 124.60.
+- Mobility in the hand eval rejected, at both instruments.
+- `uci.py` loads `nets/net-v4.nnue` unless told otherwise; `Net=none` still
+  selects the hand eval.
+
 ## v5 -- quiescence check evasions
 
 **+106.78 ± 6.88** · 10,000 games · fixed nodes 20,000 · Dist 28, 6, 224, 30,

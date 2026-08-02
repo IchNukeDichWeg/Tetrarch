@@ -122,6 +122,81 @@ its mistakes is not a record.
 `nets/net-v2.nnue` stays so the finding is checkable: its evaluations have
 stdev 177 where every sound net sits near 380.
 
+### Net v4 -- CONFIRMED, and the engine now plays with it
+
+| | fixed time (movetime 200) | fixed nodes (20,000) |
+|---|---|---|
+| vs hand eval | **+76.79 +/- 6.87** | **+135.19 +/- 7.36** |
+| games | 10,000 | 10,000 |
+| screen was | +81.18 +/- 16.22 | +140.01 +/- 16.97 |
+
+Both confirms landed inside their screens. Fixed TIME is the one that decides
+what ships, and it is the smaller number for the obvious reason: the net costs
+1.37x per node, so about 58 Elo of the fixed-node advantage is spent buying
+back the depth it loses. It keeps well over half.
+
+**The instrument was certified first.** Every fixed-time result in this file
+rests on an instrument that had never had a null run on it. It has now:
+**-10.77 +/- 13.96** over 2,000 games, 1.5 sigma, inside noise. Weaker than the
+fixed-nodes null (-2.64 +/- 6.24) because it is a fifth of the games -- fixed
+time costs 5.6x the wall clock per game. Worth noting the sign: the null
+disadvantages engine A slightly, and every fixed-time result here is positive
+FOR engine A, so if that bias is real it understates the gains rather than
+inventing them.
+
+Released as **v6**, the first release to change the evaluation rather than the
+search, and the first since v0 where a fresh clone plays differently.
+
+### Net v4 vs net v1 -- the loop compounds at both instruments
+
+| | Elo | games |
+|---|---|---|
+| fixed nodes | +93.95 +/- 14.81 | 2,000 |
+| fixed time | **+90.22 +/- 15.13** | 2,000 |
+
+The generational gain is not a fixed-nodes artefact: it survives a clock
+almost undiminished. That is what justifies spending server hours on
+generation 5 with net v4 teaching.
+
+### Lambda -- CLOSED at 0.7
+
+Three arms trained from one cache, played head to head against 0.7:
+
+| arm | Elo vs lambda 0.7 | games |
+|---|---|---|
+| lambda 0.30 | **-94.51 +/- 15.08** | 2,000 |
+| lambda 0.15 | **-124.60 +/- 15.58** | 2,000 |
+
+Monotone: the more weight on the game result, the worse. It tracks the
+evaluation spread exactly -- stdev 390 at 0.7, 287 at 0.3, 227 at 0.15 -- and
+the reason is that a game result is a 0/1 signal carrying no magnitude, so
+leaning on it teaches a win-probability shape with less centipawn range.
+
+This is the opposite of what the VOID net v2 post-mortem predicted, which is
+the third of its conclusions to be overturned by a measurement. Lambda stays
+0.7 and needs no further arms.
+
+### Mobility in the hand eval -- REJECTED at both instruments
+
+| | Elo | games |
+|---|---|---|
+| fixed nodes | -10.60 +/- 14.62 | 2,000 |
+| fixed time | **-42.42 +/- 14.35** | 2,000 |
+
+Split across both instruments on purpose, and the split is what makes the
+verdict clean. At fixed nodes it is inside noise: **the term does not improve
+the evaluation at all**, before any question of cost. At fixed time it loses
+clearly, which is the cost arriving on top -- its own, plus the lazy-eval
+margin widening from 384 to 1344.
+
+So this is not "a good term that is too expensive", and tightening the bound
+would not rescue it. The chess.com console dump that motivated it carries
+mobility as its largest positional term; ours reproduces none of that value,
+which says the useful thing is in HOW they compute it, not in the fact of
+counting reachable squares.
+
+Left in, default off, with this result attached.
+
 ### Net v4 -- the loop compounds
 
 First generation trained on data a *net* produced, from an engine that was not

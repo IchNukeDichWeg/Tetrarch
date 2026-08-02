@@ -12,6 +12,7 @@ Where Athena already made a choice, this matches it: a `Setup` option, and
 `position <setup>` / `position fen <FEN4>`.
 """
 
+import os
 import sys
 import time
 
@@ -26,9 +27,15 @@ from tetrarch import movegen as gen
 from tetrarch.search import Limits, search, search_multi, MATE_SCORE
 
 NAME = "Tetrarch"
+#: The evaluation the engine plays with unless told otherwise. Net v4 beats the
+#: hand eval by +76.79 +/- 6.87 at fixed time and +135.19 +/- 7.36 at fixed
+#: nodes, both over 10,000 games (docs/AB.md). Derived at runtime, never a
+#: hardcoded path.
+DEFAULT_NET = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "nets", "net-v4.nnue")
 #: Integer release number. Incremented once per CONFIRMED Elo gain, never
 #: for a dormant toggle or a tooling change. See docs/RELEASING.md.
-VERSION = "5"
+VERSION = "6"
 AUTHOR = "IchNukeDichWeg"
 
 
@@ -44,6 +51,22 @@ class Engine:
         self.lmp_base = 4
         self.multipv = 1
         self.board = start_board(self.setup, self.mode)
+        self._load_default_net()
+
+    def _load_default_net(self):
+        """Play with the net unless the caller says otherwise.
+
+        A missing file is not fatal: the hand eval still plays, and a clone
+        without the net should start rather than refuse to.
+        """
+        if not os.path.exists(DEFAULT_NET):
+            return
+        try:
+            from tetrarch import nnue
+            core.load_net(nnue.Net.load(DEFAULT_NET))
+            self.net = DEFAULT_NET
+        except Exception as exc:                                # noqa: BLE001
+            print("info string could not load the default net: %s" % exc)
 
     # -- protocol ---------------------------------------------------------
 
@@ -55,9 +78,12 @@ class Engine:
         print("option name Mode type combo default teams var teams var ffa")
         print("option name Hash type spin default %d min 1 max 4096"
               % core.DEFAULT_TT_MB)
-        # No net loaded means the throwaway hand eval. One binary, two evals,
-        # so the NNUE-vs-hand A/B is a single setoption apart.
-        print("option name Net type string default <none>")
+        # Two evals in one binary, so the NNUE-vs-hand A/B is a single
+        # setoption apart. "none" selects the hand eval.
+        print("option name Net type string default %s"
+              % (os.path.relpath(DEFAULT_NET, os.path.dirname(
+                  os.path.abspath(__file__)))
+                 if os.path.exists(DEFAULT_NET) else "<none>"))
         print("option name Killers type check default true")
         # Dormant: correct, but structurally dead at the depths
         # this engine reaches. See docs/AB.md.
