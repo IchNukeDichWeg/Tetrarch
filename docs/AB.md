@@ -497,6 +497,42 @@ checkmate. selftest pins the never-invents property.
 Screened +36.62 ± 15.43 over 2,000 first -- the confirm landed almost exactly on
 the screen. Released as **v4**.
 
+### Legality fast path from pins -- +3.9% NPS, no A/B needed
+
+Every move used to be made and then checked with a full attack scan on the
+king. Pins are now computed once per node from a between/through table, and a
+move that cannot expose its own king skips the scan entirely.
+
+The predicate is one-sided: it answers "certainly legal" or "do not know",
+never "illegal", so anything it declines falls through to the scan that was
+always there. A pin it misses costs speed; only a pin it claims is absent when
+present would be a bug.
+
+| build | nps | |
+|---|---:|---|
+| scan every move | 1,732,406 | 1.000x |
+| pins, scan only when unsure | 1,799,525 | **1.039x** |
+
+Small, and worth saying why: computing the pins costs something at every node,
+and it buys back only the scans on moves that were going to be legal anyway.
+`tt_is_attacked` was 8.2% of a profile, so 3.9% is most of what was available.
+This is not the shape of change that pays like the accumulator did.
+
+Verified: perft is exact over all five setups and gates `tt_gen_legal`
+directly; 120 full searches compared against a `-DNO_PIN_FASTPATH` build with
+identical nodes, scores, best moves and evaluations; and the two answers are
+compared on every move of 2,686 positions in selftest.py.
+
+**One mutation of five could not be falsified by sampling.** Removing the
+en-passant exclusion produced zero disagreements over 89,819 random positions,
+834 of which had an en passant available. The case is real all the same: en
+passant empties a square that is not the destination, so king, capturer, victim
+and an enemy slider sharing a line means the capture opens it, and the pin scan
+stops at our own pawn and never learns the square behind it is about to empty
+too. Sampling could not reach it, so the position is constructed and pinned in
+selftest.py instead. A test that cannot fail is not evidence, and the honest
+response to one is to build the case by hand rather than to record a pass.
+
 ### Lazy accumulator perspectives -- +59.8% NPS, no A/B needed
 
 Same argument as the int8 propagation: the evaluation returns the same integer,

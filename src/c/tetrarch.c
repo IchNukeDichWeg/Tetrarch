@@ -135,6 +135,7 @@ static int initialised = 0;
  * are applied here, where the board actually changes. */
 static int  nn_delta_on_for(uint64_t key);
 static void nn_toggle(uint8_t piece, int sq, int sign);
+static void build_ray_steps(void);
 static void nn_acc_set_key(uint64_t key);
 
 /* --- introspection, so the binding can assert layout agreement ---------- */
@@ -146,6 +147,7 @@ int tt_undo_size(void) { return (int)sizeof(TtUndo); }
 void tt_init(const TtParams *p)
 {
     memcpy(&P, p, sizeof(TtParams));
+    build_ray_steps();
     initialised = 1;
 }
 
@@ -604,14 +606,157 @@ void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
     b->key = u->key;
 }
 
+/* --- pins, and the legality fast path -------------------------------------
+ *
+ * Every move used to be made and then checked with a full attack scan on the
+ * king. Most moves cannot possibly expose their own king, and knowing which
+ * costs one scan per node instead of one per move.
+ *
+ * `ray_step` is the between/through table: the step from a towards b when the
+ * two are on a line, 0 otherwise. It says both whether b is on a ray from a
+ * and which way to walk it, which is all the geometry the pin test needs.
+ *
+ * The fast path is deliberately one-sided. It returns "certainly legal" or
+ * "do not know", never "illegal", so anything it declines falls through to the
+ * scan that was always there. A pin the scan finds and this misses costs
+ * speed; only a pin this claims is absent when it is present would be a bug,
+ * which is why the differential in selftest.py compares the two answers on
+ * every move of every position rather than sampling. */
+static int8_t ray_step[NSQ][NSQ];
+
+static void build_ray_steps(void)
+{
+    int a, i;
+    memset(ray_step, 0, sizeof(ray_step));
+    for (a = 0; a < NSQ; a++) {
+        if (!P.valid[a]) continue;
+        for (i = 0; i < 8; i++) {
+            int d = P.queen_dirs[i];
+            int t = (a + d) & 255;
+            while (P.valid[t]) {
+                ray_step[a][t] = (int8_t)d;
+                t = (t + d) & 255;
+            }
+        }
+    }
+}
+
+static int is_diag(int d)
+{
+    int i;
+    for (i = 0; i < 4; i++) if (P.diag[i] == d) return 1;
+    return 0;
+}
+
+typedef struct { int16_t sq; int16_t dir; } Pin;
+
+/* Own pieces standing between the king and an enemy slider that would attack
+ * it if they moved off the line. At most one per direction, so at most 8. */
+static int compute_pins(const TtBoard *b, int me, int king, Pin *pins)
+{
+    int i, n = 0;
+    if (king < 0) return 0;
+    for (i = 0; i < 8; i++) {
+        int d = P.queen_dirs[i], diag = is_diag(d);
+        int t = (king + d) & 255, own = -1;
+        while (P.valid[t]) {
+            uint8_t p = b->sq[t];
+            if (p) {
+                if (own < 0) {
+                    /* A teammate's piece shields the king too, but this seat
+                     * cannot move it, so nothing behind it is pinned for us. */
+                    if (P.pc_color[p] != me) break;
+                    own = t;
+                } else {
+                    int pt = P.pc_type[p];
+                    if (hostile(b, p, me)
+                        && (queenish(pt) || (diag ? pt == BISHOP : pt == ROOK))) {
+                        pins[n].sq = (int16_t)own;
+                        pins[n].dir = (int16_t)d;
+                        n++;
+                    }
+                    break;
+                }
+            }
+            t = (t + d) & 255;
+        }
+    }
+    return n;
+}
+
+/* 1 when the move cannot leave this seat's own king attacked, 0 when it might
+ * and the scan has to decide. Never says illegal. */
+static int surely_legal(uint32_t m, int king, const Pin *pins, int npins,
+                        int in_chk)
+{
+    int frm, to, i;
+#ifdef NO_PIN_FASTPATH
+    /* Always "do not know", so every move takes the scan. The engine behaves
+     * exactly as it did before this existed, which is what makes the claim
+     * that it changes nothing measurable rather than argued. */
+    (void)m; (void)king; (void)pins; (void)npins; (void)in_chk;
+    (void)frm; (void)to; (void)i;
+    return 0;
+#else
+    /* In check, the king itself moving, or castling: all need the scan. En
+     * passant clears a third square, so it can open a line no pin test saw. */
+    if (in_chk || king < 0 || MV_FLAG(m) == F_EP) return 0;
+    frm = MV_FROM(m);
+    if (frm == king) return 0;
+    for (i = 0; i < npins; i++) {
+        if (pins[i].sq != frm) continue;
+        /* Pinned: still legal while it stays on the line it is shielding. A
+         * slider cannot pass through the pinner, so anywhere reachable on that
+         * ray either blocks still or captures the pinner. */
+        to = MV_TO(m);
+        return ray_step[king][to] == pins[i].dir;
+    }
+    return 1;                      /* not pinned, not the king, not in check */
+#endif
+}
+
+/* Differential for selftest: does the fast path ever call a move certainly
+ * legal that the scan rejects? Returns the number of such moves, so 0 is the
+ * only acceptable answer. Counting rather than flagging means a regression
+ * reports how wrong it is. */
+int tt_legality_disagreements(TtBoard *b)
+{
+    uint32_t buf[MAX_MOVES];
+    Pin pins[8];
+    TtUndo u;
+    int n = tt_gen_pseudo(b, buf);
+    int me = b->turn, i, bad = 0;
+    int king0 = b->kings[me];
+    int in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
+    int npins = compute_pins(b, me, king0, pins);
+    for (i = 0; i < n; i++) {
+        int king, really;
+        if (!surely_legal(buf[i], king0, pins, npins, in_chk)) continue;
+        tt_make(b, buf[i], &u);
+        king = b->kings[me];
+        really = king < 0 || !tt_is_attacked(b, king, me);
+        tt_unmake(b, buf[i], &u);
+        if (!really) bad++;
+    }
+    return bad;
+}
+
 int tt_gen_legal(TtBoard *b, uint32_t *out)
 {
     uint32_t buf[MAX_MOVES];
+    Pin pins[8];
     TtUndo u;
     int n = tt_gen_pseudo(b, buf);
     int me = b->turn, i, k = 0;
+    int king0 = b->kings[me];
+    int in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
+    int npins = compute_pins(b, me, king0, pins);
     for (i = 0; i < n; i++) {
         int king, ok;
+        if (surely_legal(buf[i], king0, pins, npins, in_chk)) {
+            out[k++] = buf[i];
+            continue;
+        }
         tt_make(b, buf[i], &u);
         king = b->kings[me];
         ok = king < 0 || !tt_is_attacked(b, king, me);
@@ -1604,6 +1749,8 @@ int tt_get_qs_evasions(void) { return use_qs_evasions; }
 
 static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
 {
+    Pin pins[8];
+    int king0, npins;
     uint32_t *moves;
     int32_t *scores;
     TtUndo u;
@@ -1631,15 +1778,18 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
     score_moves(b, moves, scores, n, 0, -1);
+    king0 = b->kings[me];
+    npins = compute_pins(b, me, king0, pins);
 
     for (i = 0; i < n; i++) {
-        int king;
+        int king, skip;
         pick_move(moves, scores, n, i);
         /* In check every legal move is a candidate; otherwise captures only. */
         if (!in_chk && !is_capture(b, moves[i])) continue;
+        skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
-        if (king >= 0 && tt_is_attacked(b, king, me)) {
+        if (!skip && king >= 0 && tt_is_attacked(b, king, me)) {
             tt_unmake(b, moves[i], &u);
             continue;
         }
@@ -1724,6 +1874,8 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     TtUndo u;
     TtEntry *slot = 0;
     int n, i, legal = 0, quiets = 0, me = b->turn, in_chk;
+    Pin pins[8];
+    int king0, npins;
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
 
@@ -1760,9 +1912,11 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
     score_moves(b, moves, scores, n, ttmove, ply);
+    king0 = b->kings[me];
+    npins = compute_pins(b, me, king0, pins);
 
     for (i = 0; i < n; i++) {
-        int king;
+        int king, skip;
         int32_t score;
         int is_capture_before, reduction;
         pick_move(moves, scores, n, i);
@@ -1778,9 +1932,10 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         }
         if (!is_capture_before) quiets++;
 
+        skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
-        if (king >= 0 && tt_is_attacked(b, king, me)) {
+        if (!skip && king >= 0 && tt_is_attacked(b, king, me)) {
             tt_unmake(b, moves[i], &u);
             continue;
         }
@@ -1922,7 +2077,8 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     uint32_t *moves, best_move = 0;
     int32_t *scores, best = -INF_SCORE, alpha = -INF_SCORE;
     TtUndo u;
-    int n, i, legal = 0, me = b->turn;
+    Pin pins[8];
+    int n, i, legal = 0, me = b->turn, king0, npins, in_chk;
 
     search_nodes = 0;
     search_makes = 0;
@@ -1942,14 +2098,18 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     score_moves(b, moves, scores, n,
                 (tt_table && tt_table[b->key & tt_mask].key == b->key)
                 ? tt_table[b->key & tt_mask].best : 0, 0);
+    king0 = b->kings[me];
+    in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
+    npins = compute_pins(b, me, king0, pins);
 
     for (i = 0; i < n; i++) {
-        int king;
+        int king, skip;
         int32_t score;
         pick_move(moves, scores, n, i);
+        skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
-        if (king >= 0 && tt_is_attacked(b, king, me)) {
+        if (!skip && king >= 0 && tt_is_attacked(b, king, me)) {
             tt_unmake(b, moves[i], &u);
             continue;
         }

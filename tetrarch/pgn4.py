@@ -53,6 +53,7 @@ TERMINATORS = {"#": "checkmate", "R": "resign", "T": "timeout",
 #: modes (§3.6): the code names the POSITION, so it is the same in Teams and
 #: FFA, and `modern` carries no tag at all because it is the live default.
 NAMED_STARTS = {
+    "4pc": "modern",
     "4pco": "classic",
     "4pcb": "by",
     "4pcn": "byg",

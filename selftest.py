@@ -962,6 +962,57 @@ def test_search(workers=1):
           core.qs_evasions_enabled())
     check("repetition detection default on", core.rep_detect_enabled())
 
+    # The legality fast path decides most moves are legal without making them,
+    # from the pins computed once per node. It is one-sided by construction --
+    # it answers "certainly legal" or "do not know" -- so the only way it can
+    # be wrong is by calling a move legal that the full attack scan rejects.
+    # perft gates gen_legal exactly, but the search has its own three copies of
+    # the filter, so the two answers are compared directly on every move of
+    # every position rather than sampled.
+    rng = random.Random(5150)
+    bad = seen = in_check = 0
+    for _ in range(120):
+        b = start_board(rng.choice(SETUPS))
+        for _ in range(rng.randrange(0, 45)):
+            moves = list(fast.gen_legal(b))
+            if not moves:
+                break
+            b.make(rng.choice(moves))
+            bad += core.legality_disagreements(b)
+            seen += 1
+            if fast.in_check(b, b.turn):
+                in_check += 1
+    check("legality fast path never contradicts the scan", bad == 0,
+          "%d positions, %d of them in check" % (seen, in_check))
+    check("and the sample reached positions in check", in_check > 0)
+
+    # Random play does not reach the one case the fast path has to decline.
+    # 89,819 sampled positions produced 834 with an en passant available and
+    # not one where taking it exposed the king, so the exclusion of F_EP was
+    # unfalsifiable by sampling and is pinned by construction instead.
+    #
+    # King, our capturing pawn, the victim pawn and an enemy rook share the
+    # d-file. En passant empties BOTH pawn squares, and the pin scan cannot
+    # see it: the scan stops at our own pawn on d6 and never learns that d7
+    # is about to empty as well.
+    ep_case = ("R-0,0,1,1-0,0,0,0-0,0,0,0-0,0,0,0-0-"
+               "{'enPassant':('','c7:d7','','')}-"
+               "3,dyR,dyN,dyB,dyK,dyQ,dyB,dyN,dyR,3/"
+               "3,dyP,dyP,dyP,dyP,dyP,dyP,dyP,dyP,3/14/"
+               "bR,bP,1,bR,8,dgP,dgR/bN,bP,10,dgP,dgN/bB,bP,10,dgP,dgB/"
+               "bK,bP,10,dgP,dgQ/bQ,bP,1,bP,8,dgP,dgK/bB,bP,1,rP,8,dgP,dgB/"
+               "bN,bP,10,dgP,dgN/bR,bP,1,rK,8,dgP,dgR/14/"
+               "3,rP,rP,rP,rP,rP,rP,rP,rP,3/3,rR,rN,rB,rQ,rK,rB,rN,rR,3")
+    epb = Board.from_fen4(ep_case, MODE_TEAMS)
+    ep_moves = [move_str(m) for m in fast.gen_pseudo(epb)
+                if mv_flag(m) == F_EP]
+    check("the en passant case still offers the capture", ep_moves == ["d6c7"],
+          str(ep_moves))
+    check("and taking it is illegal, by discovered check",
+          "d6c7" not in [move_str(m) for m in fast.gen_legal(epb)])
+    check("the fast path declines it rather than allowing it",
+          core.legality_disagreements(epb) == 0)
+
     core.set_hash(16)
     pins = []
     for setup in SETUPS:

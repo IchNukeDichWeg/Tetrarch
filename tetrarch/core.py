@@ -265,6 +265,8 @@ def load(path=None):
         lib.tt_set_rep_history.argtypes = [ctypes.POINTER(ctypes.c_uint64),
                                            ctypes.c_int]
         lib.tt_set_rep_detect.argtypes = [ctypes.c_int]
+        lib.tt_legality_disagreements.restype = ctypes.c_int
+        lib.tt_legality_disagreements.argtypes = [ctypes.POINTER(TtBoard)]
         lib.tt_search_makes.restype = ctypes.c_uint64
         lib.tt_search_evals.restype = ctypes.c_uint64
         lib.tt_bench_eval.restype = ctypes.c_double
@@ -558,6 +560,13 @@ def evaluate(b):
     lib = load()
     cb = to_c(b)
     return int(lib.tt_eval(ctypes.byref(cb)))
+
+
+def legality_disagreements(b):
+    """Moves the legality fast path calls certainly legal that the full
+    attack scan rejects. Zero is the only acceptable answer."""
+    cb = to_c(b)
+    return int(load().tt_legality_disagreements(ctypes.byref(cb)))
 
 
 def search_makes():
