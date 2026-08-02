@@ -626,7 +626,15 @@ It scores the FIRST repeat rather than the third. Threefold is what the rule
 pays out on, but a side that can repeat once can nearly always repeat again,
 and learning the same thing the honest way costs two more plies of shuffling.
 
-**Fixed nodes, 20k, classic, 2000 games: -13.38 +/- 14.42.**
+**Fixed nodes, 20k, classic, 2000 games, hand eval: -13.38 +/- 14.42.**
+A later fixed-time screen, also on the hand eval, gave -8.37 +/- 26.68 over
+552 games.
+
+Both were run without `--net`, which match.py reads as `Net=none` rather than
+as "use the engine's default" -- so these measured the search with the hand
+evaluation, not with the net the engine plays. That is sound for this feature,
+which is search-level and cannot care which evaluation is behind it, but the
+instrument should be stated rather than assumed.
 
 That interval spans zero, so this is not a measured improvement -- and the
 point estimate being negative is not evidence of harm either. The reason is

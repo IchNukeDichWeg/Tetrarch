@@ -148,12 +148,39 @@ an engine whose NNUE accumulator was corrupted from the second move of every
 game. Same method on a sound engine gives +94 where v2 gave −225. Both the
 result and the retraction are in [`docs/AB.md`](docs/AB.md).
 
-Not yet built: FFA paranoid search, repetition detection, an opening book,
-multithreading, and int8 SIMD for the hidden layers.
+Not yet built: FFA paranoid search, an opening book, multithreading, and
+bitboards. Repetition detection and int8 SIMD for the hidden layers landed in
+v7.
 
-## License
+## License and credit
 
 MIT -- see [LICENSE](LICENSE).
 
-Prior art read before designing this, and worth reading: `arianahejazyan/Athena`,
-`obryanlouis/4pchess`, `TheThirdOne/fen4`.
+No third-party code is vendored or copied into this repository. Everything here
+was written for it. What the projects below contributed was knowledge: what the
+rules of 4PC actually are, how the position format is spelled, and node counts
+to check a move generator against. Rules of a game and perft counts are facts
+rather than authorship, so nothing here is a derivative work -- but they saved
+a great deal of time and are worth reading, so they are named wherever they were
+used rather than only here.
+
+- [`arianahejazyan/Athena`](https://github.com/arianahejazyan/Athena) (MIT) --
+  C++ 4PC engine. Its `tests/data/perft.txt` is the external cross-check for
+  the `modern` move generator ([`docs/PERFT.md`](docs/PERFT.md)), and its
+  `Setup` option and `position <setup>` form are the protocol conventions this
+  engine matches ([`docs/PROTOCOL.md`](docs/PROTOCOL.md)). Castling geometry,
+  en passant and promotion behaviour were read from it and cited throughout
+  [`docs/RULES.md`](docs/RULES.md) as `[athena]`.
+- [`obryanlouis/4pchess`](https://github.com/obryanlouis/4pchess) -- C++ 4PC
+  engine, Teams only. Cited as `[4pc]` where it settles a rule question.
+- [`TheThirdOne/fen4`](https://github.com/TheThirdOne/fen4) -- Rust parser and
+  writer for the FEN4 position format, and normative for it here. Cited as
+  `[fen4]`.
+
+The full source list, including chess.com's own documentation and the live
+lobby, is the table at the top of [`docs/RULES.md`](docs/RULES.md); every rule
+in that file names where it came from and flags where it is an assumption
+instead.
+
+`numpy` and `flask` are runtime dependencies, installed rather than vendored,
+and are not redistributed here.
