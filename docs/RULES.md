@@ -692,6 +692,15 @@ advance by any seat -- [fen4] calls the field "ply since last pawn move or captu
 > No source defines repetition for 4PC. Including the alive mask is not optional -- a
 > position with a seat eliminated is a different game, as the brief says.
 
+The **search** honours this from v6 on: a repeat scores 0 rather than being evaluated
+as a new position (`setoption name Repetitions`, default on, docs/AB.md). It scores
+the first repeat, not the third -- a deliberate departure from the rule as written,
+on the grounds that a side able to repeat once can nearly always repeat again.
+
+The **game loop** still does not adjudicate a threefold draw. `match.py` and
+`gen_data.py` terminate a shuffle on the 200-ply halfmove clock instead, which
+reaches the same result by a slower road, so nothing is scored wrongly -- only late.
+
 ### 10.3 Insufficient material
 
 **[C]** Exists, awards +10 to each active player [cc-terms].

@@ -1256,6 +1256,56 @@ static uint64_t search_nodes;
 static uint64_t search_limit;
 static int search_aborted;
 
+/* Repetition (§10.2). Positions already played arrive from Python before the
+ * search; the search path is appended as it descends, so a single backward
+ * scan covers both at once.
+ *
+ * The scan stops at the last irreversible move, which `halfmove` counts: no
+ * position before a capture or a pawn advance can equal one after it. Since
+ * the key includes the side to move and the alive mask, stopping short can
+ * only ever miss a repetition, never invent one.
+ *
+ * A repeat scores 0 on the first hit rather than the third. Threefold is what
+ * the rule pays out on, but a side that can repeat once can almost always
+ * repeat again, and scoring the first one keeps the search from convincing
+ * itself a shuffle is progress. Two extra plies of shuffling would have to be
+ * searched to learn the same thing. */
+#define REP_MAX (MAX_DEPTH + 1024)
+static uint64_t rep_keys[REP_MAX];
+static int rep_root;                  /* played positions, before the root */
+/* On by default: without it the engine cannot score a draw it is walking
+ * into, which is a rules gap rather than a tuning choice. The toggle exists so
+ * the claim can be measured like any other, not because off is a real
+ * configuration. */
+static int use_repetitions = 1;
+
+void tt_set_rep_history(const uint64_t *keys, int n)
+{
+    int i, cap = REP_MAX - MAX_DEPTH - 1;
+    if (n < 0) n = 0;
+    if (n > cap) { keys += n - cap; n = cap; }   /* keep the most recent */
+    for (i = 0; i < n; i++) rep_keys[i] = keys[i];
+    rep_root = n;
+}
+
+static int is_repetition(const TtBoard *b, int ply)
+{
+    int top = rep_root + ply;         /* written by the nodes above this one */
+    int lo = top - b->halfmove;
+    int step = 4, i;
+    if (lo < 0) lo = 0;
+    /* The key carries the side to move, so only a position an exact multiple
+     * of the seat cycle back can match -- four plies while every seat is
+     * alive, which in Teams is the whole game (§7). A dead seat shortens the
+     * cycle, and rather than work out by how much, fall back to every ply:
+     * this runs at every node and the wrong stride would silently stop
+     * detecting anything. */
+    if (!(b->alive[0] && b->alive[1] && b->alive[2] && b->alive[3])) step = 1;
+    for (i = top - step; i >= lo; i -= step)
+        if (rep_keys[i] == b->key) return 1;
+    return 0;
+}
+
 static inline int is_capture(const TtBoard *b, uint32_t m)
 {
     return b->sq[MV_TO(m)] != 0 || MV_FLAG(m) == F_EP;
@@ -1303,6 +1353,8 @@ static void killers_clear(void) { memset(killers, 0, sizeof(killers)); }
 static int16_t history[4][NSQ][NSQ];
 static int use_history = 0;
 
+void tt_set_rep_detect(int on) { use_repetitions = on ? 1 : 0; }
+int tt_get_rep_detect(void) { return use_repetitions; }
 void tt_set_history(int on) { use_history = on ? 1 : 0; }
 int tt_get_history(void) { return use_history; }
 
@@ -1521,6 +1573,13 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
 
+    /* Ahead of the transposition probe: a repetition is a property of the path
+     * taken, not of the position, so a stored score from a different path must
+     * not be allowed to answer first. For the same reason the draw is returned
+     * without being stored. */
+    if (use_repetitions && is_repetition(b, ply)) return 0;
+    rep_keys[rep_root + ply] = b->key;
+
     if (tt_table) {
         slot = &tt_table[b->key & tt_mask];
         if (slot->key == b->key) {
@@ -1659,6 +1718,8 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     /* Killers are per-search, not per-game: a stale table from another
      * position orders by moves that meant something somewhere else. */
     if (use_killers) killers_clear();
+    /* The root sits at ply 0 of the path, so children at ply 1 can see it. */
+    rep_keys[rep_root] = b->key;
 
     moves = search_buf[0];
     scores = order_buf[0];

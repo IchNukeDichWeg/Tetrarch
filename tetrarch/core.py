@@ -258,6 +258,10 @@ def load(path=None):
         lib.tt_get_killers.restype = ctypes.c_int
         lib.tt_set_history.argtypes = [ctypes.c_int]
         lib.tt_get_history.restype = ctypes.c_int
+        lib.tt_set_rep_history.argtypes = [ctypes.POINTER(ctypes.c_uint64),
+                                           ctypes.c_int]
+        lib.tt_set_rep_detect.argtypes = [ctypes.c_int]
+        lib.tt_get_rep_detect.restype = ctypes.c_int
         lib.tt_set_pvs.argtypes = [ctypes.c_int]
         lib.tt_get_pvs.restype = ctypes.c_int
         lib.tt_set_lmr.argtypes = [ctypes.c_int]
@@ -446,6 +450,16 @@ def killers_enabled():
     return bool(load().tt_get_killers())
 
 
+def set_rep_detect(on):
+    """Repetition detection (§10.2). Default on: without it the search cannot
+    score a draw it is walking into. The toggle exists to measure that."""
+    load().tt_set_rep_detect(1 if on else 0)
+
+
+def rep_detect_enabled():
+    return bool(load().tt_get_rep_detect())
+
+
 def set_history(on):
     """History-heuristic ordering for the quiet tail. Off by default: at the
     depths this engine currently reaches it does nothing (docs/AB.md)."""
@@ -532,13 +546,27 @@ def evaluate(b):
     return int(lib.tt_eval(ctypes.byref(cb)))
 
 
-def search(b, depth, node_limit=0):
+def set_repetitions(keys):
+    """Hand the search the keys of positions already played (§10.2).
+
+    The list is the game up to but not including the position about to be
+    searched -- the root supplies its own key. It persists until replaced, so
+    it has to be set per search, not per process.
+    """
+    lib = load()
+    keys = list(keys)
+    buf = (ctypes.c_uint64 * max(len(keys), 1))(*keys)
+    lib.tt_set_rep_history(buf, len(keys))
+
+
+def search(b, depth, node_limit=0, repetitions=()):
     """One fixed-depth search. Returns a TtResult.
 
     Iterative deepening and time management stay in Python at the root; this
     is the per-node loop only.
     """
     lib = load()
+    set_repetitions(repetitions)
     cb = to_c(b)
     out = TtResult()
     lib.tt_search(ctypes.byref(cb), depth, node_limit, ctypes.byref(out))

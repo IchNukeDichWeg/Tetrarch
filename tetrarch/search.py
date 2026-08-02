@@ -73,11 +73,13 @@ class Result:
         return int(self.nodes / self.elapsed) if self.elapsed > 0 else 0
 
 
-def search(board, limits, info=None):
+def search(board, limits, info=None, repetitions=()):
     """Iterative deepening. Returns a `Result`.
 
     `info` is called with the Result after each completed depth, for the
-    protocol's `info` lines.
+    protocol's `info` lines. `repetitions` is the keys of the positions the
+    game already passed through, so the search can see a repetition it is
+    walking into (§10.2); the root's own key is not among them.
     """
     assert board.mode == MODE_TEAMS, "FFA search arrives in Phase 5 (§ brief)"
     assert all(board.alive), \
@@ -100,7 +102,7 @@ def search(board, limits, info=None):
             if remaining_nodes <= 0:
                 break
 
-        r = core.search(board, depth, remaining_nodes)
+        r = core.search(board, depth, remaining_nodes, repetitions)
         out.nodes += r.nodes
         out.elapsed = time.perf_counter() - started
 
@@ -127,7 +129,7 @@ def search(board, limits, info=None):
     return out
 
 
-def search_multi(board, limits, lines=1, info=None):
+def search_multi(board, limits, lines=1, info=None, repetitions=()):
     """The best `lines` root moves, each with its own exact score.
 
     With `lines == 1` this defers to `search()` exactly, so the engine's own
@@ -149,7 +151,7 @@ def search_multi(board, limits, lines=1, info=None):
     if not legal:
         return []
     if lines <= 1:
-        best = search(board, limits, info)
+        best = search(board, limits, info, repetitions)
         return [best] if best.best else []
 
     lines = min(lines, len(legal))
@@ -158,6 +160,10 @@ def search_multi(board, limits, lines=1, info=None):
     max_depth = limits.depth or limits.max_depth
     nodes = 0
     out = []
+    # Each line is searched from the child, so the root itself joins the played
+    # history -- otherwise a line that walks straight back into the current
+    # position would not be seen as the repetition it is.
+    history = list(repetitions) + [board.key]
     # Searched best-first at each new depth, which is worth a lot even without
     # root cutoffs: the transposition table is warm for the good moves.
     order = list(legal)
@@ -172,7 +178,7 @@ def search_multi(board, limits, lines=1, info=None):
                     aborted = True
                     break
             undo = board.make(move)
-            child = core.search(board, depth - 1, remaining)
+            child = core.search(board, depth - 1, remaining, history)
             board.unmake(move, undo)
             nodes += child.nodes
             if child.aborted:

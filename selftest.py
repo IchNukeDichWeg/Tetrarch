@@ -960,6 +960,7 @@ def test_search(workers=1):
     check("lmp default on (confirmed)", core.lmp_enabled())
     check("qsearch evasions default on (confirmed)",
           core.qs_evasions_enabled())
+    check("repetition detection default on", core.rep_detect_enabled())
 
     core.set_hash(16)
     pins = []
@@ -1144,6 +1145,95 @@ def _sparse_teams(rng):
     b.find_kings()
     b.recompute_key()
     return b
+
+
+def test_repetition():
+    section("repetition (10.2)")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+
+    # The search cannot be caught repeating by simply searching deeper: all
+    # four seats have to move and return for a position to recur, so the
+    # shallowest real repetition is eight plies down and costs more than this
+    # file should spend. Instead the played-game history is the lever -- a key
+    # injected there is indistinguishable, inside the search, from a position
+    # that genuinely occurred, and it bites at ply 1.
+    #
+    # Where it is injected matters. The side to move is part of the key, so a
+    # position can only recur a whole seat cycle back; the scan knows that and
+    # strides four plies at a time. A key planted anywhere else is one the
+    # search is right to ignore, so PAD puts it exactly four plies above the
+    # node that must see it.
+    core.set_hash(16)
+    rng = random.Random(7)
+    cases = []
+    for _ in range(40):
+        b = start_board("classic")
+        for _ in range(rng.randrange(4, 20)):
+            moves = list(fast.gen_legal(b))
+            if not moves:
+                break
+            b.make(rng.choice(moves))
+        if not list(fast.gen_legal(b)):
+            continue
+        b.halfmove = 40                      # a long reversible stretch
+        core.clear_hash()
+        plain = core.search(b, 4)
+        if not plain.best:
+            continue
+        # A pawn move or a capture zeroes the clock, so no earlier position can
+        # be reached across it. Only a quiet best move tests anything.
+        if PC_TYPE[b.sq[mv_from(plain.best)]] == PAWN or b.sq[mv_to(plain.best)]:
+            continue
+        u = b.make(plain.best)
+        child = b.key
+        b.unmake(plain.best, u)
+        # rep_root = len(history); the root sits at index len(history) and the
+        # child at len(history) + 1, so a stride of four lands on index 1.
+        history = [0, child, 0, 0]
+        cases.append((b, plain, child, history))
+        if len(cases) == 5:
+            break
+
+    check("found positions whose best move is quiet", len(cases) == 5,
+          "got %d" % len(cases))
+
+    drawn, unrelated, bounded, offcycle = [], [], [], []
+    for b, plain, child, history in cases:
+        name = move_str(plain.best)
+        plainly = (plain.best, plain.score)
+
+        core.clear_hash()
+        seen = core.search(b, 4, repetitions=history)
+        drawn.append((name, seen.best != plain.best or seen.score == 0))
+
+        # A key on no path at all must leave the search untouched, or the check
+        # above would pass for a search merely disturbed by any history.
+        core.clear_hash()
+        other = core.search(b, 4, repetitions=[0, child ^ 0x9E3779B97F4A7C15,
+                                               0, 0])
+        unrelated.append((name, (other.best, other.score) == plainly))
+
+        # The real key one ply off the seat cycle is a position with a
+        # different side to move, so it cannot be the same position.
+        core.clear_hash()
+        skew = core.search(b, 4, repetitions=[0, 0, child, 0])
+        offcycle.append((name, (skew.best, skew.score) == plainly))
+
+        # The same real key, now out of the clock's reach, must also do
+        # nothing: that bound is what stops a repetition being seen across a
+        # capture or a pawn move.
+        b.halfmove = 0
+        core.clear_hash()
+        cut = core.search(b, 4, repetitions=history)
+        b.halfmove = 40
+        bounded.append((name, (cut.best, cut.score) == plainly))
+
+    check_all("a repeated position scores the draw", drawn)
+    check_all("a key on no path changes nothing", unrelated)
+    check_all("a key off the seat cycle changes nothing", offcycle)
+    check_all("the halfmove clock bounds the scan", bounded)
 
 
 def test_nnue():
@@ -1867,6 +1957,7 @@ def main():
     test_rotation()
     test_eval()
     test_search(workers)
+    test_repetition()
     test_nnue()
     test_pgn4_named_start()
     test_resume()

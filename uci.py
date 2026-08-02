@@ -51,6 +51,7 @@ class Engine:
         self.lmp_base = 4
         self.multipv = 1
         self.board = start_board(self.setup, self.mode)
+        self.history = []
         self._load_default_net()
 
     def _load_default_net(self):
@@ -97,6 +98,9 @@ class Engine:
         print("option name LMPMaxDepth type spin default 3 min 0 max 8")
         print("option name LMPBase type spin default 4 min 1 max 32")
         print("option name QSEvasions type check default true")
+        # A draw the search is walking into has to score as one. Off is for
+        # measuring the difference, not for playing.
+        print("option name Repetitions type check default true")
         # Hand eval only; a loaded net ignores it. Default off until it has
         # won an A/B, and it must pay for widening the lazy-eval margin
         # (docs/AB.md) as well as for its own cost.
@@ -124,10 +128,12 @@ class Engine:
             if value.lower() in SETUPS:
                 self.setup = value.lower()
                 self.board = start_board(self.setup, self.mode)
+                self.history = []
         elif name == "mode":
             if value.lower() in MODE_NAMES:
                 self.mode = MODE_NAMES.index(value.lower())
                 self.board = start_board(self.setup, self.mode)
+                self.history = []
         elif name == "hash":
             self.hash_mb = max(1, int(value))
             core.set_hash(self.hash_mb)
@@ -147,6 +153,8 @@ class Engine:
             self.multipv = max(1, min(int(value), 64))
         elif name == "mobility":
             core.set_mobility(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "repetitions":
+            core.set_rep_detect(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "qsevasions":
             core.set_qs_evasions(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name in ("lmpmaxdepth", "lmpbase"):
@@ -177,6 +185,7 @@ class Engine:
     def cmd_ucinewgame(self, _args):
         core.clear_hash()
         self.board = start_board(self.setup, self.mode)
+        self.history = []
 
     def cmd_position(self, args):
         if not args:
@@ -199,8 +208,14 @@ class Engine:
             print("info string unrecognised position %r" % args[0])
             return
 
+        # Every position the game passed through, so the search can tell a
+        # repetition from a transposition (§10.2). The board's own key is not
+        # included: the root supplies that itself.
+        self.history = []
         for token in moves:
+            self.history.append(self.board.key)
             if not self.play(token):
+                self.history.pop()
                 print("info string illegal move %s" % token)
                 break
 
@@ -267,14 +282,16 @@ class Engine:
                     line(r, rank)
                 sys.stdout.flush()
 
-            results = search_multi(self.board, limits, self.multipv, report)
+            results = search_multi(self.board, limits, self.multipv,
+                                   report, self.history)
             best = results[0].best if results else None
         else:
             def report(r):
                 line(r)
                 sys.stdout.flush()
 
-            best = search(self.board, limits, report).best
+            best = search(self.board, limits, report,
+                          self.history).best
         print("bestmove %s" % (move_str(best) if best else "0000"))
 
     def cmd_stop(self, _args):

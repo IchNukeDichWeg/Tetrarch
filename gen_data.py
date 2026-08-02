@@ -72,6 +72,9 @@ def play_one(job):
 
     start_fen4 = board.to_fen4().replace("\n", "")
     moves, scores = [], []
+    # Every position the game has been through, so a self-play game cannot
+    # shuffle for 200 plies believing each repeat is a fresh position (§10.2).
+    history = []
     result, reason = None, ""
     resign_run = 0
 
@@ -94,13 +97,14 @@ def play_one(job):
         # deepening is what turns a node budget into a usable move. A raw
         # fixed-depth call with a shallow budget just aborts inside the first
         # subtree.
-        r = search(board, Limits(depth=depth, nodes=nodes))
+        r = search(board, Limits(depth=depth, nodes=nodes), None, history)
         if not r.best:
             result, reason = 0.5, "no move"
             break
         # Store from team 0's perspective so the trainer never has to guess.
         scores.append(r.score if (board.turn & 1) == 0 else -r.score)
         moves.append(move_str(r.best))
+        history.append(board.key)
         board.make(r.best)
 
         if abs(scores[-1]) >= RESIGN_CP:

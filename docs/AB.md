@@ -497,6 +497,38 @@ checkmate. selftest pins the never-invents property.
 Screened +36.62 ± 15.43 over 2,000 first -- the confirm landed almost exactly on
 the screen. Released as **v4**.
 
+### Repetition detection -- built, NOT a measured gain, default on
+
+`setoption name Repetitions`, default **on**. A position the search is walking
+into that has already occurred scores 0 instead of being evaluated as if it
+were new.
+
+Before this the search had no notion of a repetition at all. A side that was
+winning could shuffle and read every repeat as a fresh position, and a side
+that was losing could not steer into the draw the rule pays out on (§10.2).
+
+Two things bound the scan. The last irreversible move, which `halfmove` counts:
+nothing before a capture or a pawn advance can be repeated after it. And the
+seat cycle: the side to move is part of the key, so only a position four plies
+back can match, which the scan strides over. A dead seat shortens that cycle,
+so with any seat dead the stride drops to one ply.
+
+It scores the FIRST repeat rather than the third. Threefold is what the rule
+pays out on, but a side that can repeat once can nearly always repeat again,
+and learning the same thing the honest way costs two more plies of shuffling.
+
+**Fixed nodes, 20k, classic, 2000 games: -13.38 +/- 14.42.**
+
+That interval spans zero, so this is not a measured improvement -- and the
+point estimate being negative is not evidence of harm either. The reason is
+visible in the same run: 98.45% of those games ended in checkmate, 1.45% were
+adjudicated, and **not one reached the fifty-move rule**. Repetitions barely
+arise at 20k nodes from random openings, so the instrument has almost nothing
+to measure. It is kept on because scoring a draw as a draw is a rules gap
+rather than a tuning choice, not because the harness endorsed it.
+
+A fixed-time run is the one that would catch the scan's cost; it is not done.
+
 ### Quiescence check evasions -- CONFIRMED, default on
 
 `setoption name QSEvasions`, default **on**. When the side to move is in check
