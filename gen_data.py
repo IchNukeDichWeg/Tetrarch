@@ -123,12 +123,24 @@ def play_one(job):
             "result": result, "reason": reason}
 
 
+def setup_for(index, setup):
+    """Which setup game `index` is played from.
+
+    `all` round-robins the five, so a resumed or truncated run still ends up
+    with an even split rather than whatever prefix it reached. The five differ
+    only in where the kings and queens start, which is exactly the part of the
+    board a learned evaluation memorises per square -- a net trained on one of
+    them has no signal at all for the others.
+    """
+    return SETUPS[index % len(SETUPS)] if setup == "all" else setup
+
+
 def jobs(start, count, args):
     """A generator, so Pool's thread-backed task handler feeds workers lazily
     rather than materialising millions of items in a queue."""
     for i in range(start, start + count):
-        yield (i, args.seed * 1000003 + i, args.setup, args.opening_plies,
-               args.nodes, args.depth)
+        yield (i, args.seed * 1000003 + i, setup_for(i, args.setup),
+               args.opening_plies, args.nodes, args.depth)
 
 
 def resume_index(path):
@@ -180,7 +192,9 @@ def main():
                     help="node budget per move (default 5000)")
     ap.add_argument("--depth", type=int, default=8,
                     help="depth ceiling per move (default 8)")
-    ap.add_argument("--setup", default=DEFAULT_SETUP, choices=SETUPS)
+    ap.add_argument("--setup", default=DEFAULT_SETUP,
+                    choices=list(SETUPS) + ["all"],
+                    help="one setup, or `all` to round-robin the five")
     ap.add_argument("--opening-plies", type=int, default=10)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--net", metavar="PATH",
