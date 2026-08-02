@@ -590,6 +590,45 @@ A first attempt to fix it by vectorising the accumulator's widening add was
 and the cost was never arithmetic. It was memory traffic, and the fix had to be
 doing less of it rather than doing it faster.
 
+### Net v6 -- REJECTED, and the loop has reversed
+
+Generation 6: 125,000 self-play games at **18,000** nodes with net v5
+teaching, 8 epochs at lambda 0.7, epoch 6 selected on held-out loss.
+
+**Fixed nodes, 20,000, classic, 20,000 games: -30.29 +/- 4.65.**
+
+Six times the error bar the wrong way. Net v5 stays the engine's evaluation.
+
+The point of this generation was to raise label quality rather than teacher
+strength: every previous one used 5,000 to 7,500 nodes per move, and this
+one used 18,000, affordable only because the engine got 2.4x faster the same
+day. Deeper labels made the net worse.
+
+**It also reached a lower held-out loss than v5 did and played 30 Elo worse.**
+The two losses are not strictly comparable, being measured on different
+validation splits, but the direction is the point: the metric the trainer
+optimises moved one way and playing strength moved the other. Every run prints
+"Held-out loss is NOT Elo" and this is the first time that line has been
+load-bearing.
+
+What this does not tell us is which change did it. This generation moved the
+teacher (v4 to v5) and the node budget (7,500 to 18,000) together, exactly the
+confound flagged when generation 5 did the same thing. Generation 5 got away
+with it by winning. This one did not, and the cost of that shortcut is that a
+rejection carries no diagnosis.
+
+The trend across the whole phase, all at fixed nodes:
+
+| generation | teacher | nodes | result |
+|---|---|---:|---|
+| v4 | v1 | 5,000 | **+135.19** vs hand eval |
+| v5 | v4 | 7,500 | **+10.50** vs v4 |
+| v6 | v5 | 18,000 | **-30.29** vs v5 |
+
+Set against +63.37 for one afternoon of profiling, self-play of this shape has
+stopped paying and is now costing. A seventh generation in the same shape is
+not obviously worth the machine time.
+
 ### Net v5 -- CONFIRMED at both instruments, and the engine now plays with it
 
 Generation 5: 125,000 self-play games at 7,500 nodes with net v4 teaching,
