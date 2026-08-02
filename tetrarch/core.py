@@ -54,6 +54,8 @@ class TtParams(ctypes.Structure):
         ("castle", ctypes.c_int32 * 10 * 2 * 2 * 4),
         ("piece_value", ctypes.c_int32 * B.NTYPE),
         ("king_danger", ctypes.c_int32),
+        ("mobility", ctypes.c_int32),
+        ("mobility_cap", ctypes.c_int32),
         ("rot_to_persp", ctypes.c_uint8 * NSQ * 4),
         ("feature_type", ctypes.c_int32 * B.NTYPE),
     ]
@@ -178,6 +180,8 @@ def build_params():
     for t in range(B.NTYPE):
         p.piece_value[t] = eval_hand.PIECE_VALUE[t]
     p.king_danger = eval_hand.KING_DANGER
+    p.mobility = eval_hand.MOBILITY
+    p.mobility_cap = eval_hand.MOBILITY_CAP
 
     # NNUE geometry, from the same definition the trainer uses.
     from . import nnue
@@ -237,6 +241,8 @@ def load(path=None):
         lib.tt_nnue_dims.argtypes = [ctypes.POINTER(ctypes.c_int32)]
         lib.tt_load_net.restype = ctypes.c_int
         lib.tt_load_net.argtypes = [ctypes.POINTER(TtNetView)]
+        lib.tt_set_mobility.argtypes = [ctypes.c_int]
+        lib.tt_get_mobility.restype = ctypes.c_int
         lib.tt_net_loaded.restype = ctypes.c_int
         lib.tt_nnue_acc_matches.restype = ctypes.c_int
         lib.tt_nnue_acc_matches.argtypes = [ctypes.POINTER(TtBoard)]
@@ -347,6 +353,16 @@ def unload_net():
     lib = load()
     lib.tt_unload_net()
     lib.tt_clear()
+
+
+def set_mobility(on):
+    """Mobility in the hand eval. Mirrors eval_hand.USE_MOBILITY, which
+    selftest keeps in step so the two evals stay comparable."""
+    load().tt_set_mobility(1 if on else 0)
+
+
+def mobility_enabled():
+    return bool(load().tt_get_mobility())
 
 
 def net_loaded():

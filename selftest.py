@@ -42,6 +42,7 @@ from tetrarch import movegen as fast
 from tetrarch import movegen_slow as slow
 from tetrarch import core
 from tetrarch import eval_hand
+from tetrarch.board import SQUARES as SQUARES_ALL
 from tetrarch import search
 from tetrarch import pgn4
 
@@ -821,13 +822,38 @@ def test_eval():
     if not HAVE_C:
         check("C core is built", False, "run ./setup.sh")
         return
-    rng = random.Random(19)
-    bad = 0
-    for _ in range(400):
+    # Both toggle states: the shipped default AND the one being measured. A
+    # comparison that only covers the state nobody is running is no gate.
+    rows = []
+    for on in (False, True):
+        eval_hand.USE_MOBILITY = on
+        core.set_mobility(on)
+        rng = random.Random(19)
+        bad = 0
+        for _ in range(400):
+            b = random_position(rng)
+            if eval_hand.evaluate(b) != core.evaluate(b):
+                bad += 1
+        rows.append(("mobility %s" % ("on" if on else "off"), bad == 0))
+    eval_hand.USE_MOBILITY = False
+    core.set_mobility(False)
+    check_all("Python and C eval agree bit for bit", rows)
+    check("mobility defaults off, in both", not core.mobility_enabled()
+          and not eval_hand.USE_MOBILITY)
+
+    # The term has to be bounded, or the lazy-eval margin built on it is a
+    # guess and the cutoff guarantee goes with it.
+    rng = random.Random(23)
+    worst = 0
+    for _ in range(300):
         b = random_position(rng)
-        if eval_hand.evaluate(b) != core.evaluate(b):
-            bad += 1
-    check("Python and C eval agree bit for bit", bad == 0, "%d differ" % bad)
+        for sq in SQUARES_ALL:
+            piece = b.sq[sq]
+            if piece:
+                worst = max(worst, eval_hand.piece_mobility(b, sq, piece))
+    check("no piece ever exceeds the mobility cap",
+          worst <= eval_hand.MOBILITY_CAP,
+          "worst seen %d, cap %d" % (worst, eval_hand.MOBILITY_CAP))
     check("eval is integer only",
           isinstance(eval_hand.evaluate(start_board("classic")), int))
 

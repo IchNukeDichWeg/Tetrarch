@@ -83,8 +83,10 @@ typedef struct {
     int32_t n_promo_choices[2];
     int32_t king_home[4][2];      /* the two central squares per seat */
     int32_t castle[4][2][2][10];
-    int32_t piece_value[NTYPE];   /* throwaway eval: deleted at Phase 4 */
+    int32_t piece_value[NTYPE];   /* hand eval, mirrored from eval_hand.py */
     int32_t king_danger;
+    int32_t mobility;             /* centipawns per reachable square */
+    int32_t mobility_cap;         /* per piece; what bounds the term */
     uint8_t rot_to_persp[4][NSQ]; /* board turned so `persp` sits where Red is */
     int32_t feature_type[NTYPE];  /* PQUEEN folds onto QUEEN */
 } TtParams;
@@ -963,9 +965,86 @@ static int32_t hand_danger(const TtBoard *b)
     return total;
 }
 
+/* --- mobility -------------------------------------------------------------
+ *
+ * Squares a piece could move to, ignoring pins and check. chess.com's own
+ * evaluation carries mobility as its largest positional term, larger than king
+ * safety, and this had none.
+ *
+ * Capped per piece. The cap is not an optimisation: it is what gives the term
+ * a provable maximum, and lazy evaluation stays sound only while the margin it
+ * bails on bounds everything the cheap half leaves out.
+ *
+ * Pawns and kings are excluded -- a pawn's mobility is nearly constant and
+ * there are eight per seat paying for it. Mirrors eval_hand.py exactly;
+ * selftest compares the two bit for bit in both toggle states.
+ */
+static int32_t piece_mobility(const TtBoard *b, int sq, uint8_t piece)
+{
+    const int32_t *dirs;
+    int ndirs, sliding, i, count = 0;
+    int mine = P.pc_color[piece];
+
+    switch (P.pc_type[piece]) {
+    case KNIGHT: dirs = P.knight_deltas; ndirs = 8; sliding = 0; break;
+    case BISHOP: dirs = P.diag;          ndirs = 4; sliding = 1; break;
+    case ROOK:   dirs = P.ortho;         ndirs = 4; sliding = 1; break;
+    case QUEEN:
+    case PQUEEN: dirs = P.queen_dirs;    ndirs = 8; sliding = 1; break;
+    default:     return 0;
+    }
+
+    for (i = 0; i < ndirs; i++) {
+        int t = sq;
+        for (;;) {
+            uint8_t other;
+            t = (t + dirs[i]) & 255;
+            if (!P.valid[t]) break;
+            other = b->sq[t];
+            if (other) {
+                if (P.pc_color[other] != mine) count++;
+                break;
+            }
+            count++;
+            if (!sliding || count >= P.mobility_cap) break;
+        }
+        if (count >= P.mobility_cap) return P.mobility_cap;
+    }
+    return count;
+}
+
+static int32_t hand_mobility(const TtBoard *b)
+{
+    int me = b->turn & 1;
+    int32_t total = 0;
+    int sq;
+
+    for (sq = 0; sq < NSQ; sq++) {
+        uint8_t p;
+        int colour;
+        int32_t m;
+        if (!P.valid[sq]) continue;
+        p = b->sq[sq];
+        if (!p) continue;
+        colour = P.pc_color[p];
+        if (colour == DEAD_UNKNOWN || !b->alive[colour]) continue;
+        m = piece_mobility(b, sq, p) * P.mobility;
+        total += ((colour & 1) == me) ? m : -m;
+    }
+    return total;
+}
+
+/* Default OFF until it has won an A/B, like every other feature here. */
+static int use_mobility = 0;
+
+void tt_set_mobility(int on) { use_mobility = on ? 1 : 0; }
+int tt_get_mobility(void) { return use_mobility; }
+
 static int32_t hand_eval(const TtBoard *b)
 {
-    return hand_material(b) + hand_danger(b);
+    int32_t total = hand_material(b) + hand_danger(b);
+    if (use_mobility) total += hand_mobility(b);
+    return total;
 }
 
 /* --- lazy evaluation ------------------------------------------------------
@@ -990,7 +1069,22 @@ static int use_lazy_eval = 1;
 void tt_set_lazy_eval(int on) { use_lazy_eval = on ? 1 : 0; }
 int tt_get_lazy_eval(void) { return use_lazy_eval; }
 
-static int32_t lazy_margin(void) { return 4 * 8 * P.king_danger; }
+/* Everything hand_eval adds on top of material, bounded.
+ *
+ * King danger is at most 4 seats x 8 squares. Mobility is at most the capped
+ * count for every piece a seat can have, and only two seats sit on each side,
+ * so the widest the term can swing is 2 x 16 x cap x weight.
+ *
+ * Turning mobility on therefore widens the margin a long way, and a wider
+ * margin bails less often -- lazy evaluation is worth +42.88, so mobility has
+ * to pay for weakening it as well as for its own cost. That is a real trade
+ * and it is what the fixed-time A/B measures. */
+static int32_t lazy_margin(void)
+{
+    int32_t margin = 4 * 8 * P.king_danger;
+    if (use_mobility) margin += 2 * 16 * P.mobility_cap * P.mobility;
+    return margin;
+}
 
 /* One binary, two evals: a net is loaded or it is not. That is what makes the
  * NNUE-vs-hand A/B a single setoption apart rather than two builds. */

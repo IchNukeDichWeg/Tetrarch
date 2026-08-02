@@ -1,12 +1,13 @@
-"""Throwaway hand evaluation.
+"""Hand evaluation.
 
-# throwaway: deleted at Phase 4
+It was written as a throwaway -- "do not tune it, do not extend it, do not A/B
+against it" -- to bootstrap net v0 and then be deleted. That reasoning held
+while every net lost. It stopped holding when the hand eval turned out to be
+the strongest evaluation in the project for four releases running, so it is now
+also the baseline a net has to beat, and a baseline worth strengthening: a net
+that only beats a deliberately bad opponent has not been shown to be good.
 
-This exists for exactly one reason: NNUE is the eval from day one, but a net
-needs labelled positions and there is no engine yet to produce them. So this
-plays badly enough to self-play a few million positions, net v0 gets trained on
-them, and then this file goes away. Do not tune it, do not extend it, do not
-A/B against it.
+Extended deliberately, by decision, with the mobility term below.
 
 Material on the FFA capture values (§8.1) plus a crude king-danger term.
 Integer arithmetic only, because `selftest.py` asserts this agrees with the C
@@ -18,8 +19,8 @@ Section references (§n) are to docs/RULES.md.
 """
 
 from .board import (
-    SQUARES, QUEEN_DIRS, VALID, PC_COLOR, PC_TYPE, DEAD_UNKNOWN,
-    PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, PQUEEN, NTYPE,
+    SQUARES, QUEEN_DIRS, KNIGHT_DELTAS, DIAG, ORTHO, VALID, PC_COLOR, PC_TYPE,
+    DEAD_UNKNOWN, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, PQUEEN, NTYPE,
 )
 from .movegen import is_attacked
 
@@ -35,6 +36,76 @@ PIECE_VALUE[KING] = 0
 PIECE_VALUE[PQUEEN] = 100
 
 KING_DANGER = 12
+
+#: Centipawns per square a piece can reach. chess.com's own evaluation carries
+#: mobility as its largest positional term -- larger than king safety -- and
+#: this had none at all, which is the most obvious hole in it.
+#: Mirrors the C toggle. Default off, like every feature that has not yet won
+#: an A/B; selftest keeps the two in step and compares both states.
+USE_MOBILITY = False
+
+MOBILITY = 3
+#: Counted mobility per piece is capped. Not for speed: the cap is what gives
+#: the term a tight maximum, and lazy evaluation is only sound while the margin
+#: it bails on is a true bound on everything the cheap half omits.
+MOBILITY_CAP = 10
+#: Pawns and kings are excluded. A pawn's mobility is nearly constant and says
+#: little, and there are eight of them per seat paying the cost.
+MOBILITY_DIRS = {
+    KNIGHT: (KNIGHT_DELTAS, False),
+    BISHOP: (DIAG, True),
+    ROOK: (ORTHO, True),
+    QUEEN: (QUEEN_DIRS, True),
+    PQUEEN: (QUEEN_DIRS, True),
+}
+
+
+def piece_mobility(b, sq, piece):
+    """Squares this piece could move to, ignoring pins and check, capped.
+
+    A square counts when it is empty or holds something this seat does not own
+    -- the same rule the generator uses, so the number means what a player
+    would mean by it.
+    """
+    entry = MOBILITY_DIRS.get(PC_TYPE[piece])
+    if entry is None:
+        return 0
+    dirs, sliding = entry
+    mine = PC_COLOR[piece]
+    count = 0
+    for d in dirs:
+        t = sq
+        while True:
+            t = (t + d) & 255
+            if not VALID[t]:
+                break
+            other = b.sq[t]
+            if other:
+                if PC_COLOR[other] != mine:
+                    count += 1
+                break
+            count += 1
+            if not sliding or count >= MOBILITY_CAP:
+                break
+        if count >= MOBILITY_CAP:
+            return MOBILITY_CAP
+    return count
+
+
+def mobility(b):
+    """Mobility, from the side to move's team, in centipawns."""
+    me = b.turn & 1
+    total = 0
+    for sq in SQUARES:
+        p = b.sq[sq]
+        if not p:
+            continue
+        color = PC_COLOR[p]
+        if color == DEAD_UNKNOWN or not b.alive[color]:
+            continue
+        m = piece_mobility(b, sq, p) * MOBILITY
+        total += m if (color & 1) == me else -m
+    return total
 
 
 def evaluate(b):
@@ -73,4 +144,4 @@ def evaluate(b):
         penalty = danger * KING_DANGER
         total += -penalty if (color & 1) == me else penalty
 
-    return total
+    return total + (mobility(b) if USE_MOBILITY else 0)

@@ -268,6 +268,12 @@ NET_ELO = [
              "not a head-to-head A/B"},
     {"file": "net-v2.nnue", "label": "v2", "vs": "v1", "elo": None,
      "note": "measured under the accumulator bug -- the number does not stand"},
+    {"file": "net-v4.nnue", "label": "v4", "vs": "v1",
+     "elo": 93.95, "err": 14.81,
+     "note": "and +140.01 \u00b1 16.97 against the hand eval, the first net to "
+             "beat it. Fixed nodes; the net is 1.37x slower per node, so the "
+             "fixed-time result is the one that decides what ships. "
+             "There is no v3 -- that generation's data was discarded."},
 ]
 
 
