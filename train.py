@@ -283,6 +283,57 @@ def quantise(model):
 
 # --- self check -------------------------------------------------------------
 
+def _hms(secs):
+    secs = int(round(secs))
+    if secs < 60:
+        return "%ds" % secs
+    if secs < 3600:
+        return "%dm%02ds" % (secs // 60, secs % 60)
+    return "%dh%02dm%02ds" % (secs // 3600, secs % 3600 // 60, secs % 60)
+
+
+def summarise_run(history, out_dir):
+    """The end-of-run report.
+
+    `history` is (epoch, train loss, held-out loss, seconds) per epoch. Pure so
+    that --self-check can exercise the epoch picking, which is the only part
+    here that can be wrong quietly: reporting the wrong epoch as best would
+    send someone to A/B a net that is not the one the run selected.
+    """
+    best_epoch, best_val = min(((e, v) for e, _, v, _ in history),
+                               key=lambda pair: pair[1])
+    total = sum(s for _, _, _, s in history)
+    last = history[-1][0]
+
+    out = ["", "epoch   train     held-out      time"]
+    for epoch, train_loss, val, secs in history:
+        out.append("  %3d   %.5f   %.5f   %7s%s"
+                   % (epoch, train_loss, val, _hms(secs),
+                      "   <- best" if epoch == best_epoch else ""))
+
+    out.append("")
+    out.append("best epoch %d of %d, held-out loss %.5f"
+               % (best_epoch, last, best_val))
+    if len(history) > 1:
+        if best_epoch == last:
+            out.append("The last epoch was the best one, so this run may still "
+                       "have been improving.")
+            out.append("Consider more epochs before reading anything into the "
+                       "number.")
+        else:
+            stalled = last - best_epoch
+            out.append("%d later epoch%s did not improve on it."
+                       % (stalled, "" if stalled == 1 else "s"))
+    out.append("net-best.nnue is epoch %d: %s"
+               % (best_epoch, os.path.join(out_dir, "net-best.nnue")))
+    out.append("%d epochs in %s" % (len(history), _hms(total)))
+    out.append("")
+    out.append("Held-out loss is NOT Elo. Promote only on a measured A/B "
+               "against the net")
+    out.append("the engine currently plays with.")
+    return "\n".join(out)
+
+
 def self_check():
     """The two invariants this file's fast paths rest on.
 
@@ -329,8 +380,29 @@ def self_check():
     pad = float(np.abs(model.w1[nnue.NFEATURES]).max())
     assert pad == 0.0, "pad row picked up weight: %.3e" % pad
 
+    # 4. the report names the epoch the run actually selected. A ranking that
+    #    is right by accident on a monotone run is not a check, so the best
+    #    value sits in the middle and the losses are not sorted either way.
+    mixed = [(1, 0.9, 0.50, 61.0), (2, 0.8, 0.30, 62.0),
+             (3, 0.7, 0.41, 63.0), (4, 0.6, 0.35, 64.0)]
+    report = summarise_run(mixed, "nets/x")
+    assert "best epoch 2 of 4" in report, report
+    assert "0.30000" in report, report
+    assert "2 later epochs did not improve" in report, report
+    assert "net-best.nnue is epoch 2" in report, report
+    # A tie keeps the earlier epoch: it trained for less and generalised the
+    # same, and net-best.nnue was written on strict improvement, so the later
+    # one never overwrote it.
+    tied = [(1, 0.9, 0.30, 1.0), (2, 0.8, 0.30, 1.0)]
+    assert "best epoch 1 of 2" in summarise_run(tied, "n"), "tie went late"
+    # Still falling at the end is the case worth saying out loud.
+    falling = [(1, 0.9, 0.50, 1.0), (2, 0.8, 0.40, 1.0)]
+    assert "may still" in summarise_run(falling, "n")
+    assert _hms(59) == "59s" and _hms(61) == "1m01s" and _hms(3661) == "1h01m01s"
+
     print("train.py self-check: gradient matches the scatter (%.2e), "
-          "pad row zero after 5 steps, %d features" % (worst, nnue.NFEATURES))
+          "pad row zero after 5 steps, %d features, report picks the right "
+          "epoch" % (worst, nnue.NFEATURES))
 
 
 def _d_acc_of(model, cache, d_out):
@@ -422,6 +494,7 @@ def main():
     model = Model(args.seed)
     opt = Adam(model, lr=args.lr)
     best = float("inf")
+    history = []
 
     for epoch in range(1, args.epochs + 1):
         started = time.time()
@@ -449,8 +522,10 @@ def main():
 
         val = evaluate_loss(model, data, val_index, args.batch, args.blend)
         secs = time.time() - started
+        train_loss = running / max(batches, 1)
+        history.append((epoch, train_loss, val, secs))
         print("epoch %d  train %.5f  val %.5f  %.0fs"
-              % (epoch, running / max(batches, 1), val, secs))
+              % (epoch, train_loss, val, secs))
 
         path = os.path.join(args.out, "net-epoch%02d.nnue" % epoch)
         quantise(model).save(path)
@@ -459,9 +534,7 @@ def main():
             quantise(model).save(os.path.join(args.out, "net-best.nnue"))
             print("  new best -> %s" % os.path.join(args.out, "net-best.nnue"))
 
-    print("\nbest held-out loss %.5f" % best)
-    print("Held-out loss is NOT Elo. Promote only on a measured A/B against "
-          "the hand-eval build.")
+    print(summarise_run(history, args.out))
     return 0
 
 
