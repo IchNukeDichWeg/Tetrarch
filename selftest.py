@@ -980,6 +980,22 @@ def test_search(workers=1):
     check("qsearch evasions default on (confirmed)",
           core.qs_evasions_enabled())
     check("repetition detection default on", core.rep_detect_enabled())
+    check("SEE ordering default off (dormant)", not core.see_order_enabled())
+    check("SEE pruning default off (dormant)", not core.see_prune_enabled())
+
+    # A dormant toggle that does nothing when switched on is worse than no
+    # toggle: the A/B would measure two identical engines and report a null.
+    moved = []
+    for name, setter in (("SEEOrder", core.set_see_order),
+                         ("SEEPrune", core.set_see_prune)):
+        core.clear_hash()
+        before = core.search(start_board("classic"), 6).nodes
+        setter(True)
+        core.clear_hash()
+        after = core.search(start_board("classic"), 6).nodes
+        setter(False)
+        moved.append((name, before != after))
+    check_all("each SEE toggle changes the search when enabled", moved)
 
     # The legality fast path decides most moves are legal without making them,
     # from the pins computed once per node. It is one-sided by construction --

@@ -265,6 +265,10 @@ def load(path=None):
         lib.tt_set_rep_history.argtypes = [ctypes.POINTER(ctypes.c_uint64),
                                            ctypes.c_int]
         lib.tt_set_rep_detect.argtypes = [ctypes.c_int]
+        lib.tt_set_see_order.argtypes = [ctypes.c_int]
+        lib.tt_get_see_order.restype = ctypes.c_int
+        lib.tt_set_see_prune.argtypes = [ctypes.c_int]
+        lib.tt_get_see_prune.restype = ctypes.c_int
         lib.tt_see.restype = ctypes.c_int32
         lib.tt_see.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_uint32]
         lib.tt_legality_disagreements.restype = ctypes.c_int
@@ -562,6 +566,24 @@ def evaluate(b):
     lib = load()
     cb = to_c(b)
     return int(lib.tt_eval(ctypes.byref(cb)))
+
+
+def set_see_order(on):
+    """Order captures by SEE rather than MVV-LVA. Default off."""
+    load().tt_set_see_order(1 if on else 0)
+
+
+def see_order_enabled():
+    return bool(load().tt_get_see_order())
+
+
+def set_see_prune(on):
+    """Skip losing captures in quiescence. Default off."""
+    load().tt_set_see_prune(1 if on else 0)
+
+
+def see_prune_enabled():
+    return bool(load().tt_get_see_prune())
 
 
 def see(b, move):

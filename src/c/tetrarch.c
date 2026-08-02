@@ -1740,6 +1740,18 @@ static inline int is_capture(const TtBoard *b, uint32_t m)
  * docs/AB.md. The toggle stays so it can be turned off for a future A/B.
  */
 #define KILLERS_PER_PLY 2
+/* Both default OFF: each changes which moves are searched, so each owes a
+ * fixed-nodes A/B before it becomes the default, like every other feature
+ * here. They are separate toggles because they are separate claims -- better
+ * ordering and a smaller quiescence tree can win or lose independently. */
+static int use_see_order = 0;
+static int use_see_prune = 0;
+
+void tt_set_see_order(int on) { use_see_order = on ? 1 : 0; }
+int tt_get_see_order(void) { return use_see_order; }
+void tt_set_see_prune(int on) { use_see_prune = on ? 1 : 0; }
+int tt_get_see_prune(void) { return use_see_prune; }
+
 #define KILLER_BASE (1 << 14)
 
 static uint32_t killers[MAX_DEPTH][KILLERS_PER_PLY];
@@ -1814,7 +1826,11 @@ static void score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
             int vv = victim ? P.piece_value[P.pc_type[victim]]
                             : P.piece_value[PAWN];
             int av = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
-            s = (1 << 16) + vv * 16 - av;
+            /* SEE keeps captures in the same band -- it spans about +/-900
+             * against a 65,536 base, so a losing capture still sorts above
+             * every killer and history move. Whether it should is a separate
+             * question and a separate experiment. */
+            s = (1 << 16) + (use_see_order ? tt_see(b, m) : vv * 16 - av);
         } else {
             if (use_killers && ply < MAX_DEPTH) {
                 if (m == killers[ply][0]) s = KILLER_BASE + 1;
@@ -1906,6 +1922,11 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
         pick_move(moves, scores, n, i);
         /* In check every legal move is a candidate; otherwise captures only. */
         if (!in_chk && !is_capture(b, moves[i])) continue;
+        /* A capture that loses material once the exchange settles is not a
+         * line worth a subtree. Promotions are exempt: SEE prices the pieces
+         * traded and not the piece gained, so it under-rates them. */
+        if (use_see_prune && !in_chk && !MV_PROMO(moves[i])
+            && tt_see(b, moves[i]) < 0) continue;
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];

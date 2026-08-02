@@ -101,6 +101,11 @@ class Engine:
         # A draw the search is walking into has to score as one. Off is for
         # measuring the difference, not for playing.
         print("option name Repetitions type check default true")
+        # Both dormant until an A/B says otherwise. SEE prices a capture after
+        # the exchange settles; ordering by it and pruning on it are separate
+        # claims and separate toggles.
+        print("option name SEEOrder type check default false")
+        print("option name SEEPrune type check default false")
         # Hand eval only; a loaded net ignores it. Default off until it has
         # won an A/B, and it must pay for widening the lazy-eval margin
         # (docs/AB.md) as well as for its own cost.
@@ -153,6 +158,10 @@ class Engine:
             self.multipv = max(1, min(int(value), 64))
         elif name == "mobility":
             core.set_mobility(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "seeorder":
+            core.set_see_order(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "seeprune":
+            core.set_see_prune(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "repetitions":
             core.set_rep_detect(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "qsevasions":
