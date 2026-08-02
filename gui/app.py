@@ -274,20 +274,29 @@ NET_ELO = [
     {"file": "net-v2.nnue", "label": "v2", "vs": "v1", "elo": None,
      "note": "measured under the accumulator bug -- the number does not stand"},
     {"file": "net-v4.nnue", "label": "v4", "vs": "v1",
-     "elo": 93.95, "err": 14.81,
-     "note": "and +140.01 \u00b1 16.97 against the hand eval, the first net to "
-             "beat it. Fixed nodes; the net is 1.37x slower per node, so the "
-             "fixed-time result is the one that decides what ships. "
-             "There is no v3 -- that generation's data was discarded."},
+     "elo": 90.22, "err": 15.13, "default": True,
+     "note": "Shipped in v6: the engine's evaluation. Against the hand eval "
+             "+76.79 \u00b1 6.87 on a clock and +135.19 \u00b1 7.36 at fixed "
+             "nodes, 10,000 games each. The figure shown is against its own "
+             "teacher, net v1, at fixed time -- generation N+1 beating "
+             "generation N is what the whole NNUE phase rested on. "
+             "There is no v3: that generation's data was discarded."},
 ]
+
+
+@app.route("/api/version")
+def api_version():
+    """So a page can say which engine it is talking to rather than assume."""
+    import uci
+    return jsonify({"version": uci.VERSION, "name": uci.NAME})
 
 
 @app.route("/api/play/nets")
 def api_play_nets():
     """Nets on disk, each with what it measured against the previous one.
 
-    All of them lost. The hand eval is still the strongest evaluation here,
-    which is why it stays the default.
+    Net v4 is the engine's evaluation as of v6 and the default here. v0 and v1
+    lost; v2 is void, having been trained on data a broken engine produced.
     """
     try:
         found = set(n for n in os.listdir(NETS_DIR) if n.endswith(".nnue"))

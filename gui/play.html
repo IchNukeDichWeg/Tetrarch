@@ -99,7 +99,7 @@
 </style>
 
 <header>
-  <h1>Tetrarch -- play</h1>
+  <h1>Tetrarch <span id="ver" class="note"></span> -- play</h1>
   <span class="note">click a piece, then its destination</span>
   <a href="/">← PGN4 viewer</a>
 </header>
@@ -712,8 +712,10 @@ function showNetNote(){
   const file = document.getElementById("net").value;
   const el = document.getElementById("netnote");
   if (!file || file === "none"){
-    el.innerHTML = "The hand eval -- no tempo term, so a symmetric start "
-                 + "scores exactly 0.";
+    el.innerHTML = "The hand eval. What the engine played until v6, and now "
+                 + "the baseline a net has to beat: net v4 beats it by "
+                 + "+76.79 &plusmn; 6.87 on a clock. No tempo term, so a "
+                 + "symmetric start scores exactly 0.";
     return;
   }
   const e = netInfo.find(n => n.file === file);
@@ -725,11 +727,13 @@ function showNetNote(){
       + "Yellow: it learned a first-move advantage the hand eval has no term "
       + "for. The bar starts off-centre for that reason, not a fault.</div>"
     : "";
+  const shipped = e.default
+    ? '<div class="note">This is what the engine plays with.</div>' : "";
   el.innerHTML = (e.elo === null || e.elo === undefined
                   ? '<span class="warn">no usable result</span>'
                   : '<span class="' + cls + '">' + eloText(e).trim() + "</span>")
                + (e.note ? '<div class="note">' + e.note + "</div>" : "")
-               + tempo;
+               + tempo + shipped;
 }
 document.getElementById("net").onchange = showNetNote;
 
@@ -800,6 +804,10 @@ document.getElementById("mode").onchange = () => {
         + "FFA needs a paranoid search -- Phase 5, not built.</div>");
   else say('<span class="note">press New game</span>');
 };
+
+fetch("/api/version").then(r => r.json()).then(d => {
+  document.getElementById("ver").textContent = "v" + d.version;
+}).catch(() => {});
 
 fetch("/api/play/nets").then(r => r.json()).then(d => {
   netInfo = d.nets || [];
