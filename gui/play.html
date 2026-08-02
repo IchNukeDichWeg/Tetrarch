@@ -136,7 +136,7 @@
         <input type="range" id="movetime" min="100" max="5000" step="100" value="1000">
       </label>
       <div class="row">
-        <label>Eval<select id="net"><option value="">hand eval</option></select></label>
+        <label>Eval<select id="net"><option value="none">hand eval</option></select></label>
         <label>Bottom<select id="view">
           <option value="0">Red</option><option value="1">Blue</option>
           <option value="2">Yellow</option><option value="3">Green</option>
@@ -711,19 +711,25 @@ function eloText(e){
 function showNetNote(){
   const file = document.getElementById("net").value;
   const el = document.getElementById("netnote");
-  if (!file){
-    el.innerHTML = "The hand eval. Still the strongest evaluation here — "
-                 + "every net so far has lost its A/B.";
+  if (!file || file === "none"){
+    el.innerHTML = "The hand eval — no tempo term, so a symmetric start "
+                 + "scores exactly 0.";
     return;
   }
   const e = netInfo.find(n => n.file === file);
   if (!e){ el.textContent = ""; return; }
   const cls = e.elo === null || e.elo === undefined ? "warn"
             : (e.elo > 0 ? "good" : "bad");
+  const tempo = e.file === "net-v4.nnue"
+    ? '<div class="note">Scores a symmetric start around +2.5 for Red &amp; '
+      + "Yellow: it learned a first-move advantage the hand eval has no term "
+      + "for. The bar starts off-centre for that reason, not a fault.</div>"
+    : "";
   el.innerHTML = (e.elo === null || e.elo === undefined
                   ? '<span class="warn">no usable result</span>'
                   : '<span class="' + cls + '">' + eloText(e).trim() + "</span>")
-               + (e.note ? '<div class="note">' + e.note + "</div>" : "");
+               + (e.note ? '<div class="note">' + e.note + "</div>" : "")
+               + tempo;
 }
 document.getElementById("net").onchange = showNetNote;
 
@@ -802,6 +808,8 @@ fetch("/api/play/nets").then(r => r.json()).then(d => {
     const o = document.createElement("option");
     o.value = n.file;
     o.textContent = n.label + eloText(n);
+    // The strongest evaluation available is the sensible default to play.
+    if (n.file === "net-v4.nnue") o.selected = true;
     sel.appendChild(o);
   }
   showNetNote();

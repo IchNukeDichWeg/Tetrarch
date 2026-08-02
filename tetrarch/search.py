@@ -123,6 +123,92 @@ def search(board, limits, info=None):
     return out
 
 
+def search_multi(board, limits, lines=1, info=None):
+    """The best `lines` root moves, each with its own exact score.
+
+    With `lines == 1` this defers to `search()` exactly, so the engine's own
+    play is untouched by the feature existing -- every A/B in docs/AB.md was
+    measured on that path and none of them is invalidated here.
+
+    Above 1 it is an ANALYSIS mode and costs accordingly. Alpha-beta at the
+    root only produces an exact score for the best move; the rest come back as
+    bounds, which is useless for ranking. So each root move is searched with a
+    full window instead, and the root loses its cutoffs. Expect several times
+    the nodes of a normal search to the same depth. That is the price of the
+    other lines being real numbers rather than upper bounds.
+
+    Returns a list of `Result`, best first.
+    """
+    assert board.mode == MODE_TEAMS, "FFA search arrives in Phase 5 (§ brief)"
+
+    legal = gen.gen_legal(board)
+    if not legal:
+        return []
+    if lines <= 1:
+        best = search(board, limits, info)
+        return [best] if best.best else []
+
+    lines = min(lines, len(legal))
+    started = time.perf_counter()
+    budget = limits.budget_ms()
+    max_depth = limits.depth or limits.max_depth
+    nodes = 0
+    out = []
+    # Searched best-first at each new depth, which is worth a lot even without
+    # root cutoffs: the transposition table is warm for the good moves.
+    order = list(legal)
+
+    for depth in range(2, max_depth + 1):
+        scored, aborted = [], False
+        for move in order:
+            remaining = 0
+            if limits.nodes:
+                remaining = limits.nodes - nodes
+                if remaining <= 0:
+                    aborted = True
+                    break
+            undo = board.make(move)
+            child = core.search(board, depth - 1, remaining)
+            board.unmake(move, undo)
+            nodes += child.nodes
+            if child.aborted:
+                aborted = True
+                break
+            scored.append((-child.score, move))
+            if budget is not None and \
+                    (time.perf_counter() - started) * 1000.0 >= budget:
+                aborted = True
+                break
+
+        if aborted or len(scored) != len(order):
+            break                       # a partial depth cannot be ranked
+
+        scored.sort(key=lambda pair: -pair[0])
+        order = [move for _, move in scored]
+
+        out = []
+        for score, move in scored[:lines]:
+            item = Result()
+            item.best, item.score, item.depth = move, score, depth
+            item.nodes, item.elapsed = nodes, time.perf_counter() - started
+            out.append(item)
+        if info:
+            info(out)
+
+        if abs(out[0].score) >= MATE_SCORE - 100:
+            break
+        if budget is not None and \
+                out[0].elapsed * 1000.0 >= budget * NEXT_DEPTH_FRACTION:
+            break
+        if limits.nodes and nodes >= limits.nodes:
+            break
+
+    if not out:                          # never finished depth 2
+        best = search(board, limits)
+        out = [best] if best.best else []
+    return out
+
+
 # --- reference, used only by selftest ---------------------------------------
 
 def _quiesce(board, alpha, beta, ply=0):

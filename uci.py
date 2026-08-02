@@ -23,7 +23,7 @@ from tetrarch.board import (
 )
 from tetrarch import core
 from tetrarch import movegen as gen
-from tetrarch.search import Limits, search, MATE_SCORE
+from tetrarch.search import Limits, search, search_multi, MATE_SCORE
 
 NAME = "Tetrarch"
 #: Integer release number. Incremented once per CONFIRMED Elo gain, never
@@ -42,6 +42,7 @@ class Engine:
         self.lmr_min_move = 3
         self.lmp_max_depth = 3
         self.lmp_base = 4
+        self.multipv = 1
         self.board = start_board(self.setup, self.mode)
 
     # -- protocol ---------------------------------------------------------
@@ -70,6 +71,10 @@ class Engine:
         print("option name LMPMaxDepth type spin default 3 min 0 max 8")
         print("option name LMPBase type spin default 4 min 1 max 32")
         print("option name QSEvasions type check default true")
+        # Analysis only. Above 1 the root loses its cutoffs so every line has
+        # an exact score instead of a bound, which costs several times the
+        # nodes -- see search_multi. 1 is the path every A/B was measured on.
+        print("option name MultiPV type spin default 1 min 1 max 64")
         print("uciok")
 
     def cmd_isready(self, _args):
@@ -108,6 +113,8 @@ class Engine:
             core.set_lazy_eval(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "lmp":
             core.set_lmp(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "multipv":
+            self.multipv = max(1, min(int(value), 64))
         elif name == "qsevasions":
             core.set_qs_evasions(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name in ("lmpmaxdepth", "lmpbase"):
@@ -210,14 +217,27 @@ class Engine:
             print("bestmove %s" % (move_str(legal[0]) if legal else "0000"))
             return
 
-        def report(r):
-            print("info depth %d score %s nodes %d nps %d time %d pv %s"
-                  % (r.depth, score_string(r.score), r.nodes, r.nps,
+        def line(r, rank=None):
+            print("info depth %d%s score %s nodes %d nps %d time %d pv %s"
+                  % (r.depth, "" if rank is None else " multipv %d" % rank,
+                     score_string(r.score), r.nodes, r.nps,
                      int(r.elapsed * 1000), move_str(r.best)))
-            sys.stdout.flush()
 
-        result = search(self.board, limits, report)
-        print("bestmove %s" % (move_str(result.best) if result.best else "0000"))
+        if self.multipv > 1:
+            def report(rs):
+                for rank, r in enumerate(rs, 1):
+                    line(r, rank)
+                sys.stdout.flush()
+
+            results = search_multi(self.board, limits, self.multipv, report)
+            best = results[0].best if results else None
+        else:
+            def report(r):
+                line(r)
+                sys.stdout.flush()
+
+            best = search(self.board, limits, report).best
+        print("bestmove %s" % (move_str(best) if best else "0000"))
 
     def cmd_stop(self, _args):
         # Single-threaded: `go` has already returned by the time this is read.

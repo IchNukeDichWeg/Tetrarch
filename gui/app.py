@@ -41,13 +41,17 @@ from tetrarch.board import (Board, MODE_FFA, MODE_TEAMS, SETUPS,  # noqa: E402
 from tetrarch import pgn4                                        # noqa: E402
 from tetrarch import core                                        # noqa: E402
 from tetrarch import movegen as gen                              # noqa: E402
-from tetrarch.search import Limits, search                       # noqa: E402
+from tetrarch.search import Limits, search, search_multi         # noqa: E402
 
 app = Flask(__name__)
 ENGINE_LOCK = threading.Lock()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NETS_DIR = os.path.join(os.path.dirname(HERE), "nets")
+#: What both pages evaluate with unless told otherwise. Net v4 beats the hand
+#: eval by +140.01 +/- 16.97 at fixed nodes, so it is the strongest evaluation
+#: here and the sensible thing to show a human. Pass "none" for the hand eval.
+DEFAULT_NET = "net-v4.nnue"
 
 
 @app.route("/")
@@ -172,7 +176,8 @@ def api_play_engine():
                         "paranoid search from Phase 5"}), 409
 
     movetime = max(50, min(int(payload.get("movetime", 1000)), 30000))
-    want_net = (payload.get("net") or "").strip()
+    want_net = payload.get("net")
+    want_net = DEFAULT_NET if want_net is None else want_net.strip()
     with ENGINE_LOCK:
         note = _select_net(want_net)
         core.clear_hash()
@@ -369,15 +374,30 @@ def api_eval():
         return jsonify({"unsupported":
                         "FFA and eliminated-seat search arrive in Phase 5"})
 
+    # Above one line the root gives up its cutoffs so every line has a real
+    # score rather than a bound; that costs several times the nodes, which is
+    # why it is asked for rather than always on.
+    lines = max(1, min(int(payload.get("lines", 1)), 8))
+    want = payload.get("net", DEFAULT_NET)
     with ENGINE_LOCK:
+        # Selected inside the lock: the loaded net is global state, so without
+        # this the viewer would analyse with whatever the play page left behind.
+        note = _select_net("" if want in (None, "none") else want)
         core.clear_hash()
-        result = search(board, Limits(depth=depth))
+        results = search_multi(board, Limits(depth=depth), lines)
+    if not results:
+        return jsonify({"error": "no move found"}), 500
+    top = results[0]
     return jsonify({
-        "score": result.score,
-        "depth": result.depth,
-        "nodes": result.nodes,
-        "nps": result.nps,
-        "best": move_str(result.best) if result.best else None,
+        "score": top.score,
+        "depth": top.depth,
+        "nodes": top.nodes,
+        "nps": top.nps,
+        "best": move_str(top.best) if top.best else None,
+        "lines": [{"move": move_str(r.best), "score": r.score,
+                   "depth": r.depth, "nodes": r.nodes} for r in results],
+        "net": _LOADED_NET or "hand eval",
+        "note": note,
     })
 
 

@@ -102,8 +102,16 @@
       <h2>Evaluation</h2>
       <div class="row">
         <button id="evalBtn">Evaluate</button>
-        <span id="evalOut" class="muted"></span>
+        <label class="muted">lines
+          <select id="evalLines">
+            <option>1</option><option>3</option><option>5</option>
+          </select></label>
+        <label class="muted">depth
+          <select id="evalDepth">
+            <option>4</option><option selected>6</option><option>8</option>
+          </select></label>
       </div>
+      <div id="evalOut" class="muted"></div>
     </div>
     <div class="card"><h2>Moves</h2><div id="moves" class="muted">nothing loaded</div></div>
   </div>
@@ -452,16 +460,34 @@ document.getElementById("prev").onclick = () => goto(ply-1);
 document.getElementById("next").onclick = () => goto(ply+1);
 document.getElementById("last").onclick = () => goto(frames.length-1);
 document.getElementById("flip").onchange = e => { flipped = e.target.checked?1:0; draw(); };
+function cpText(cp){
+  if (Math.abs(cp) >= 29900)
+    return (cp > 0 ? "#" : "-#") + Math.ceil((30000 - Math.abs(cp)) / 2);
+  return (cp >= 0 ? "+" : "") + (cp / 100).toFixed(2);
+}
+
 document.getElementById("evalBtn").onclick = async () => {
   const out = document.getElementById("evalOut");
-  out.textContent = "thinking…";
+  const lines = parseInt(document.getElementById("evalLines").value, 10);
+  const depth = parseInt(document.getElementById("evalDepth").value, 10);
+  out.textContent = lines > 1 ? "thinking… (several lines costs several times "
+                              + "the nodes)" : "thinking…";
   // The server wants a FEN4; rebuild one from the frame we are showing.
   const r = await fetch("/api/eval", {method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({fen4: toFen4(frames[ply]), mode, depth: 6})});
+    body: JSON.stringify({fen4: toFen4(frames[ply]), mode, depth, lines})});
   const d = await r.json();
-  out.textContent = d.error || d.terminal || d.unsupported ||
-    `${d.score > 0 ? "+" : ""}${(d.score/100).toFixed(2)} for ${NAME[SEATS[frames[ply].turn]]}'s team · depth ${d.depth} · ${d.nodes.toLocaleString()} nodes`;
+  if (d.error || d.terminal || d.unsupported){
+    out.textContent = d.error || d.terminal || d.unsupported;
+    return;
+  }
+  const seat = NAME[SEATS[frames[ply].turn]];
+  const head = `${seat}'s team to move · depth ${d.depth} · `
+             + `${d.nodes.toLocaleString()} nodes`;
+  const rows = (d.lines || [{move: d.best, score: d.score}]).map((l, i) =>
+    `<div><span class="num">${i + 1}.</span> <b>${l.move}</b> `
+    + `<span class="muted">${cpText(l.score)}</span></div>`).join("");
+  out.innerHTML = `<div class="muted">${head}</div>${rows}`;
 };
 document.getElementById("sample").onclick = () => {
   document.getElementById("pgn").value =

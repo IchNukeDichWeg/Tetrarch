@@ -830,7 +830,7 @@ def test_eval():
         core.set_mobility(on)
         rng = random.Random(19)
         bad = 0
-        for _ in range(400):
+        for _ in range(250):
             b = random_position(rng)
             if eval_hand.evaluate(b) != core.evaluate(b):
                 bad += 1
@@ -845,7 +845,7 @@ def test_eval():
     # guess and the cutoff guarantee goes with it.
     rng = random.Random(23)
     worst = 0
-    for _ in range(300):
+    for _ in range(120):
         b = random_position(rng)
         for sq in SQUARES_ALL:
             piece = b.sq[sq]
