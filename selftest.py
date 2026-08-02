@@ -1306,6 +1306,74 @@ def test_repetition():
     check_all("the halfmove clock bounds the scan", bounded)
 
 
+def test_see():
+    section("static exchange evaluation")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+
+    def pos(extra, turn=RED):
+        b = Board()
+        b.mode = MODE_TEAMS
+        for c in range(4):
+            b.alive[c] = True
+        kings = {"h1": (RED, KING), "a8": (BLUE, KING),
+                 "g14": (YELLOW, KING), "n7": (GREEN, KING)}
+        for name, (col, typ) in dict(kings, **extra).items():
+            sq = sq_from_name(name)
+            b.sq[sq] = make_piece(col, typ)
+            if typ == KING:
+                b.kings[col] = sq
+        b.turn = turn
+        b.recompute_key()
+        return b
+
+    def see(b, token):
+        move = [m for m in fast.gen_pseudo(b) if move_str(m) == token]
+        return core.see(b, move[0]) if move else None
+
+    # Hand-computed, because the point of SEE is a specific number and a
+    # property test would pass on an implementation that always said zero.
+    cases = [
+        ("an undefended pawn is worth a pawn",
+         {"g5": (RED, ROOK), "g9": (BLUE, PAWN)}, "g5g9", 100),
+        ("rook takes pawn defended by a pawn",
+         {"g5": (RED, ROOK), "g9": (BLUE, PAWN), "f10": (BLUE, PAWN)},
+         "g5g9", -400),
+        # The case the usual early-exit gets wrong: it answers -400 because it
+        # stops before seeing that the second rook recaptures.
+        ("...with a second rook behind it, the exchange runs out",
+         {"g5": (RED, ROOK), "g9": (BLUE, PAWN), "f10": (BLUE, PAWN),
+          "g2": (RED, ROOK)}, "g5g9", -300),
+        ("queen for queen with a recapture is level",
+         {"g5": (RED, QUEEN), "g9": (BLUE, QUEEN), "f10": (BLUE, PAWN)},
+         "g5g9", 0),
+        ("pawn takes knight",
+         {"f8": (RED, PAWN), "g9": (BLUE, KNIGHT)}, "f8g9", 300),
+    ]
+    results = []
+    for name, extra, token, want in cases:
+        got = see(pos(extra), token)
+        results.append((name, got == want))
+    check_all("hand-computed exchanges", results)
+
+    # A teammate defends too: Teams is what makes the two-player swap-off valid
+    # at all, so a defender of the other seat on our team has to count.
+    mate = pos({"g5": (RED, ROOK), "g9": (BLUE, PAWN), "f10": (BLUE, PAWN),
+                "g12": (YELLOW, ROOK)})
+    check("a teammate's defender counts", see(mate, "g5g9") == -300,
+          str(see(mate, "g5g9")))
+
+    # FFA has no alternating swap-off, and returning a plausible number there
+    # would be worse than refusing.
+    ffa = pos({"g5": (RED, ROOK), "g9": (BLUE, PAWN)})
+    ffa.mode = MODE_FFA
+    ffa.recompute_key()
+    check("FFA returns 0 rather than a number nobody should trust",
+          core.see(ffa, [m for m in fast.gen_pseudo(ffa)
+                         if move_str(m) == "g5g9"][0]) == 0)
+
+
 def test_book():
     section("opening book (book.py)")
     if not HAVE_C:
@@ -2090,6 +2158,7 @@ def main():
     test_eval()
     test_search(workers)
     test_repetition()
+    test_see()
     test_book()
     test_nnue()
     test_pgn4_named_start()

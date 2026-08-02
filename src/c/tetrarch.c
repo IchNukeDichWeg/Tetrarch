@@ -741,6 +741,127 @@ int tt_legality_disagreements(TtBoard *b)
     return bad;
 }
 
+/* --- static exchange evaluation -------------------------------------------
+ *
+ * What a capture is really worth once both sides have finished trading on the
+ * square. Move ordering currently scores a capture as victim*16 - attacker,
+ * which rates "queen takes defended pawn" as brilliant.
+ *
+ * The two-player swap-off applies unchanged in TEAMS and only there. Recapture
+ * order follows the seat rotation, and team = seat & 1 with the turn advancing
+ * by one, so the side to move on the square alternates every ply exactly as it
+ * does in two-player chess. In FFA it does not -- three separate opponents may
+ * each decline -- so this is not used there, and tt_see says so rather than
+ * returning a number nobody should trust.
+ *
+ * Pins and legality are ignored, as everywhere else this algorithm is used: a
+ * recapture that turns out to be illegal makes the estimate pessimistic, never
+ * unsound as an ordering key. */
+
+/* Cheapest piece of `seat`'s team attacking `to`, skipping squares already
+ * spent in the exchange. Returns the square, or -1. */
+static int see_attacker(const TtBoard *b, int to, int seat, const uint8_t *gone)
+{
+    int best = -1, best_val = 1 << 30, i;
+
+    for (i = 0; i < 8; i++) {
+        int t = (to + P.knight_deltas[i]) & 255;
+        uint8_t p;
+        if (!P.valid[t] || gone[t]) continue;
+        p = b->sq[t];
+        if (p && P.pc_type[p] == KNIGHT && same_team(b->mode, P.pc_color[p], seat)
+            && P.piece_value[KNIGHT] < best_val) {
+            best = t; best_val = P.piece_value[KNIGHT];
+        }
+    }
+    /* A pawn on to-d attacks `to` when d is one of that seat's capture deltas. */
+    for (i = 0; i < 4; i++) {
+        int d = P.diag[i], t = (to - d) & 255;
+        uint8_t p;
+        if (!P.valid[t] || gone[t]) continue;
+        p = b->sq[t];
+        if (p && P.pc_type[p] == PAWN && same_team(b->mode, P.pc_color[p], seat)) {
+            int c = P.pc_color[p];
+            if ((P.pawn_takes[c][0] == d || P.pawn_takes[c][1] == d)
+                && P.piece_value[PAWN] < best_val) {
+                best = t; best_val = P.piece_value[PAWN];
+            }
+        }
+    }
+    /* Sliders, walked outward so a piece behind a spent one takes its place --
+     * the x-ray that makes an exchange come out differently than it looks. */
+    for (i = 0; i < 8; i++) {
+        int d = P.queen_dirs[i], t = (to + d) & 255, diag = is_diag(d);
+        while (P.valid[t]) {
+            uint8_t p = b->sq[t];
+            if (!gone[t] && p) {
+                int pt = P.pc_type[p];
+                int hits = queenish(pt) || (diag ? pt == BISHOP : pt == ROOK);
+                if (hits && same_team(b->mode, P.pc_color[p], seat)
+                    && P.piece_value[pt] < best_val) {
+                    best = t; best_val = P.piece_value[pt];
+                }
+                break;
+            }
+            t = (t + d) & 255;
+        }
+    }
+    /* The king last: it is only a legal recapturer when nothing else answers,
+     * and giving it a value here would let it out-bid a real piece. */
+    for (i = 0; i < 8; i++) {
+        int t = (to + P.queen_dirs[i]) & 255;
+        uint8_t p;
+        if (!P.valid[t] || gone[t]) continue;
+        p = b->sq[t];
+        if (p && P.pc_type[p] == KING && same_team(b->mode, P.pc_color[p], seat)
+            && best < 0) {
+            best = t; best_val = P.piece_value[KING];
+        }
+    }
+    return best;
+}
+
+int32_t tt_see(const TtBoard *b, uint32_t m)
+{
+    uint8_t gone[NSQ];
+    int32_t gain[40];
+    int to = MV_TO(m), frm = MV_FROM(m), d = 0;
+    int seat = b->turn, attacker;
+    int32_t attacker_val;
+
+    if (b->mode == MODE_FFA) return 0;          /* see the note above */
+    memset(gone, 0, sizeof(gone));
+
+    if (MV_FLAG(m) == F_EP) gain[0] = P.piece_value[PAWN];
+    else gain[0] = b->sq[to] ? P.piece_value[P.pc_type[b->sq[to]]] : 0;
+
+    attacker_val = P.piece_value[P.pc_type[b->sq[frm]]];
+    gone[frm] = 1;
+
+    /* The usual implementation breaks out early once neither side would enter
+     * the continuation. That is a real speedup and it is why most engines do
+     * it, but it returns a BOUND rather than the value: on a rook takes
+     * defended pawn with our own rook behind it, the exact answer is -300 and
+     * the pruned one is -400. Engines get away with that because they only ask
+     * `SEE >= threshold`. The intended use here is a sign test in quiescence,
+     * where a bound that crosses zero would prune a capture that is actually
+     * sound, so this runs the exchange out. The list is at most one entry per
+     * attacker, so the cost is bounded and small. */
+    for (;;) {
+        d++;
+        gain[d] = attacker_val - gain[d - 1];
+        seat = (seat + 1) & 3;
+        attacker = see_attacker(b, to, seat, gone);
+        if (attacker < 0 || d >= 38) break;
+        attacker_val = P.piece_value[P.pc_type[b->sq[attacker]]];
+        gone[attacker] = 1;
+    }
+    /* Fold back: at every step the side to move could have stopped instead. */
+    while (--d > 0)
+        if (-gain[d] < gain[d - 1]) gain[d - 1] = -gain[d];
+    return gain[0];
+}
+
 int tt_gen_legal(TtBoard *b, uint32_t *out)
 {
     uint32_t buf[MAX_MOVES];

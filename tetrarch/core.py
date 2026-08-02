@@ -265,6 +265,8 @@ def load(path=None):
         lib.tt_set_rep_history.argtypes = [ctypes.POINTER(ctypes.c_uint64),
                                            ctypes.c_int]
         lib.tt_set_rep_detect.argtypes = [ctypes.c_int]
+        lib.tt_see.restype = ctypes.c_int32
+        lib.tt_see.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_uint32]
         lib.tt_legality_disagreements.restype = ctypes.c_int
         lib.tt_legality_disagreements.argtypes = [ctypes.POINTER(TtBoard)]
         lib.tt_search_makes.restype = ctypes.c_uint64
@@ -560,6 +562,13 @@ def evaluate(b):
     lib = load()
     cb = to_c(b)
     return int(lib.tt_eval(ctypes.byref(cb)))
+
+
+def see(b, move):
+    """What a capture is worth after the exchange settles. Teams only;
+    returns 0 in FFA, where recapture order does not alternate."""
+    cb = to_c(b)
+    return int(load().tt_see(ctypes.byref(cb), move))
 
 
 def legality_disagreements(b):
