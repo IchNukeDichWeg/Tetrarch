@@ -276,7 +276,7 @@ def summarise(by_opening, games, elapsed):
     played = sum(1 for g in games if g.get("score") is not None)
 
     lines = []
-    lines.append("games %d  score %.1f/%d  rate %.4f"
+    lines.append("games %d  score %.2f/%d  rate %.4f"
                  % (played, total, played, total / played if played else 0.0))
 
     if complete:
@@ -301,7 +301,37 @@ def summarise(by_opening, games, elapsed):
         lines.append("%d openings have an INCOMPLETE rotation and are excluded "
                      "from the Elo -- an incomplete rotation is seat bias, not "
                      "a result." % partial)
-    lines.append("%.1fs elapsed" % elapsed)
+
+    # What the games looked like, not just how they scored. A short mean game
+    # or a collapsed decisive rate says the instrument moved, and that is worth
+    # seeing next to the Elo rather than only in the raw log.
+    plies = [g["plies"] for g in games if g.get("plies")]
+    if plies:
+        reasons = {}
+        for g in games:
+            # An empty reason must not crash the summary: a leg that loses its
+            # one reported line to a formatting slip has to be run again.
+            words = (g.get("reason") or "unknown").split()
+            key = words[0] if words else "unknown"
+            reasons[key] = reasons.get(key, 0) + 1
+        decisive = sum(v for k, v in reasons.items()
+                       if k in ("checkmate", "resign"))
+        lines.append("Games %.2f plies mean, %.2f median, %d..%d"
+                     % (sum(plies) / len(plies), sorted(plies)[len(plies) // 2],
+                        min(plies), max(plies)))
+        lines.append("Ended %s"
+                     % ", ".join("%s %d (%.2f%%)"
+                                 % (k, v, 100.0 * v / len(games))
+                                 for k, v in sorted(reasons.items(),
+                                                    key=lambda kv: -kv[1])))
+        lines.append("Decisive %.2f%%" % (100.0 * decisive / len(games)))
+
+    if elapsed > 0:
+        hrs, rem = divmod(int(elapsed), 3600)
+        mins, secs = divmod(rem, 60)
+        lines.append("Time %.2fs (%dh%02dm%02ds)  %.2f games/min  %.2f games/s"
+                     % (elapsed, hrs, mins, secs,
+                        played * 60.0 / elapsed, played / elapsed))
     return "\n".join(lines)
 
 
