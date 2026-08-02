@@ -714,15 +714,15 @@ function showNetNote(){
   if (!file || file === "none"){
     el.innerHTML = "The hand eval. What the engine played until v6, and now "
                  + "the baseline a net has to beat: net v4 beats it by "
-                 + "+76.79 &plusmn; 6.87 on a clock. No tempo term, so a "
-                 + "symmetric start scores exactly 0.";
+                 + "+76.79 &plusmn; 6.87 on a clock, and v5 beats v4 again. "
+                 + "No tempo term, so a symmetric start scores exactly 0.";
     return;
   }
   const e = netInfo.find(n => n.file === file);
   if (!e){ el.textContent = ""; return; }
   const cls = e.elo === null || e.elo === undefined ? "warn"
             : (e.elo > 0 ? "good" : "bad");
-  const tempo = e.file === "net-v4.nnue"
+  const tempo = (e.file === "net-v4.nnue" || e.file === "net-v5.nnue")
     ? '<div class="note">Scores a symmetric start around +2.5 for Red &amp; '
       + "Yellow: it learned a first-move advantage the hand eval has no term "
       + "for. The bar starts off-centre for that reason, not a fault.</div>"
@@ -816,8 +816,9 @@ fetch("/api/play/nets").then(r => r.json()).then(d => {
     const o = document.createElement("option");
     o.value = n.file;
     o.textContent = n.label + eloText(n);
-    // The strongest evaluation available is the sensible default to play.
-    if (n.file === "net-v4.nnue") o.selected = true;
+    // Follow the server's own default rather than naming a net here, so a
+    // promotion does not have to be repeated in this file.
+    if (n.default) o.selected = true;
     sel.appendChild(o);
   }
   showNetNote();

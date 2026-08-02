@@ -27,15 +27,15 @@ from tetrarch import movegen as gen
 from tetrarch.search import Limits, search, search_multi, MATE_SCORE
 
 NAME = "Tetrarch"
-#: The evaluation the engine plays with unless told otherwise. Net v4 beats the
-#: hand eval by +76.79 +/- 6.87 at fixed time and +135.19 +/- 7.36 at fixed
-#: nodes, both over 10,000 games (docs/AB.md). Derived at runtime, never a
-#: hardcoded path.
+#: The evaluation the engine plays with unless told otherwise. Net v5 beats
+#: net v4 by +7.78 +/- 4.61 at fixed time and +10.50 +/- 4.59 at fixed nodes,
+#: both over 20,000 games (docs/AB.md). Derived at runtime, never a hardcoded
+#: path.
 DEFAULT_NET = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "nets", "net-v4.nnue")
+                           "nets", "net-v5.nnue")
 #: Integer release number. Incremented once per CONFIRMED Elo gain, never
 #: for a dormant toggle or a tooling change. See docs/RELEASING.md.
-VERSION = "6"
+VERSION = "7"
 AUTHOR = "IchNukeDichWeg"
 
 

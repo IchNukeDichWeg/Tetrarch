@@ -51,7 +51,7 @@ NETS_DIR = os.path.join(os.path.dirname(HERE), "nets")
 #: What both pages evaluate with unless told otherwise. Net v4 beats the hand
 #: eval by +140.01 +/- 16.97 at fixed nodes, so it is the strongest evaluation
 #: here and the sensible thing to show a human. Pass "none" for the hand eval.
-DEFAULT_NET = "net-v4.nnue"
+DEFAULT_NET = "net-v5.nnue"
 
 
 @app.route("/")
@@ -274,13 +274,19 @@ NET_ELO = [
     {"file": "net-v2.nnue", "label": "v2", "vs": "v1", "elo": None,
      "note": "measured under the accumulator bug -- the number does not stand"},
     {"file": "net-v4.nnue", "label": "v4", "vs": "v1",
-     "elo": 90.22, "err": 15.13, "default": True,
-     "note": "Shipped in v6: the engine's evaluation. Against the hand eval "
-             "+76.79 \u00b1 6.87 on a clock and +135.19 \u00b1 7.36 at fixed "
-             "nodes, 10,000 games each. The figure shown is against its own "
-             "teacher, net v1, at fixed time -- generation N+1 beating "
-             "generation N is what the whole NNUE phase rested on. "
-             "There is no v3: that generation's data was discarded."},
+     "elo": 90.22, "err": 15.13,
+     "note": "Shipped in v6. Against the hand eval +76.79 \u00b1 6.87 on a "
+             "clock and +135.19 \u00b1 7.36 at fixed nodes, 10,000 games "
+             "each. The figure shown is against its own teacher, net v1, at "
+             "fixed time -- generation N+1 beating generation N is what the "
+             "whole NNUE phase rested on. There is no v3: that generation's "
+             "data was discarded."},
+    {"file": "net-v5.nnue", "label": "v5", "vs": "v4",
+     "elo": 7.78, "err": 4.61, "default": True,
+     "note": "Shipped in v7: the engine's evaluation. Against net v4, "
+             "+7.78 \u00b1 4.61 at fixed time and +10.50 \u00b1 4.59 at "
+             "fixed nodes, 20,000 games each. A third compounding "
+             "generation, and a much smaller step than the ones before it."},
 ]
 
 
@@ -295,7 +301,7 @@ def api_version():
 def api_play_nets():
     """Nets on disk, each with what it measured against the previous one.
 
-    Net v4 is the engine's evaluation as of v6 and the default here. v0 and v1
+    Net v5 is the engine's evaluation as of v7 and the default here. v0 and v1
     lost; v2 is void, having been trained on data a broken engine produced.
     """
     try:

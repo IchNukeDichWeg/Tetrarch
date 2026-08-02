@@ -8,6 +8,24 @@ See [`docs/RELEASING.md`](docs/RELEASING.md) for the rules and
 Distribution shown is the nine-bucket seat rotation (score sums 0, 0.5, 1 … 4),
 never a pentanomial -- one opening here is four games, not two.
 
+## v7 -- net v5
+
+The engine plays with net v5. Generation 5: 125,000 self-play games at 7,500
+nodes with net v4 teaching, 8 epochs at lambda 0.7, epoch 5 selected on
+held-out loss.
+
+Against net v4, 20,000 games at each instrument: **+7.78 +/- 4.61** at fixed
+time and **+10.50 +/- 4.59** at fixed nodes. Both clear zero and agree.
+
+A third compounding generation, and a much smaller step than the ones before
+it -- net v4 had beaten the hand eval by +135.19 at fixed nodes. The returns
+on repeating this loop unchanged look thin.
+
+Also in this release, neither of which can change a move:
+
+- The NNUE propagation runs as int8 SIMD, +23.5% NPS, bit-identical output.
+- A repetition the search is walking into scores as the draw it is.
+
 ## v6 -- NNUE evaluation
 
 **+76.79 +/- 6.87** at fixed time and **+135.19 +/- 7.36** at fixed nodes,

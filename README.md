@@ -38,11 +38,12 @@ free-for-all every seat has to be human, because the paranoid search is Phase 5.
 
 ## Strength
 
-Every gain below is measured over 10,000 games with a full four-game seat rotation,
-against a null self-test of −2.64 ± 6.24 on the same harness.
+Every gain below is measured over at least 10,000 games with a full four-game seat
+rotation, against a null self-test of −2.64 ± 6.24 on the same harness.
 
 | release | feature | Elo | instrument |
 |---|---|---|---|
+| [v7](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v7) | NNUE net v5 | **+7.78 ± 4.61** | fixed time |
 | [v6](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v6) | NNUE evaluation (net v4) | **+76.79 ± 6.87** | fixed time |
 | [v5](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v5) | quiescence check evasions | **+106.78 ± 6.88** | fixed nodes |
 | [v4](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v4) | late move pruning | +36.09 ± 6.69 | fixed nodes |
@@ -131,7 +132,9 @@ docs/               rules, results, perft, protocol, releasing
 
 ## Status
 
-**Phase 4 is done.** Net v4 is the engine's evaluation as of v6, confirmed at
+**Phase 4 is done.** Net v5 is the engine's evaluation as of v7, beating net v4 by
+**+7.78 ± 4.61** on a clock and **+10.50 ± 4.59** at fixed nodes over 20,000 games
+each. Net v4, which it replaced, had beaten the hand eval by
 **+76.79 ± 6.87** on a clock and **+135.19 ± 7.36** at fixed nodes, 10,000
 games each. It also beats its own teacher, net v1, by **+90.22 ± 15.13** -- so
 generation N+1 beating generation N, the mechanism the whole NNUE phase rested

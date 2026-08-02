@@ -497,6 +497,33 @@ checkmate. selftest pins the never-invents property.
 Screened +36.62 ± 15.43 over 2,000 first -- the confirm landed almost exactly on
 the screen. Released as **v4**.
 
+### Net v5 -- CONFIRMED at both instruments, and the engine now plays with it
+
+Generation 5: 125,000 self-play games at 7,500 nodes with net v4 teaching,
+trained 8 epochs at lambda 0.7. Epoch 5 won on held-out loss; epochs 6 to 8
+did not improve on it, so the schedule was longer than the data needed.
+
+| | fixed time (movetime 200) | fixed nodes (20,000) |
+|---|---|---|
+| v5 vs v4 | **+7.78 +/- 4.61** | **+10.50 +/- 4.59** |
+
+20,000 games each. Both clear zero and the two agree, which is what promotion
+requires: fixed time is the deciding instrument (see below), and a net winning
+only at fixed nodes has not earned the default.
+
+The loop compounds a third time. It also compounds much less: v4 beat the hand
+eval by +135.19 at fixed nodes, and v5 beats v4 by +10.50 at the same
+instrument. Another generation of the same shape looks like a thin return on
+several hours of many-core time, and the honest read is that this approach is
+near its ceiling rather than that one more turn of the crank will pay.
+
+**A partial run of this A/B read -2.87 +/- 14.42 over 2,017 games and was
+called a null result.** It was not: the full 20,000 games put the answer at
++10.50, comfortably inside that earlier interval. An interval spanning -18 to
++13 says the measurement cannot see the effect, which is not the same as the
+effect being absent. Stopping an A/B early and reporting the point estimate is
+how a real gain gets discarded.
+
 ### NNUE propagation in int8 SIMD -- +23.5% NPS, no A/B needed
 
 Not an Elo measurement, and deliberately so. The evaluation returns the same
