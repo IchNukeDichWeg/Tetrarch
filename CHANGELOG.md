@@ -1,14 +1,14 @@
 # Changelog
 
-One entry per release. A release is one **confirmed Elo gain** — measured over
+One entry per release. A release is one **confirmed Elo gain** -- measured over
 10,000 games against a certified null, not a commit and not a dormant toggle.
 See [`docs/RELEASING.md`](docs/RELEASING.md) for the rules and
 [`docs/AB.md`](docs/AB.md) for the full campaign record including rejections.
 
 Distribution shown is the nine-bucket seat rotation (score sums 0, 0.5, 1 … 4),
-never a pentanomial — one opening here is four games, not two.
+never a pentanomial -- one opening here is four games, not two.
 
-## v5 — quiescence check evasions
+## v5 -- quiescence check evasions
 
 **+106.78 ± 6.88** · 10,000 games · fixed nodes 20,000 · Dist 28, 6, 224, 30,
 832, 40, 895, 22, 423
@@ -26,7 +26,7 @@ opponents.
   proves a theorem about the search that actually ships.
 - `SEARCH_PINS` re-measured; classic depth 5 7,449 → 7,669.
 
-## v4 — late move pruning
+## v4 -- late move pruning
 
 **+36.09 ± 6.69** · 10,000 games · fixed nodes 20,000 · Dist 96, 6, 437, 36,
 968, 33, 683, 16, 225
@@ -38,7 +38,7 @@ without a cutoff. Mean depth at the instrument 4.25 → 5.25, a full extra ply.
   checkmate that is not there. 0 invented mates over 84 positions.
 - `match.py` now suffixes a reused `--log` name instead of refusing to start.
 
-## v3 — lazy evaluation
+## v3 -- lazy evaluation
 
 **+42.88 ± 6.50** · 10,000 games · **fixed time** `movetime 200` · Dist 61, 13,
 428, 44, 953, 46, 719, 17, 219
@@ -49,7 +49,7 @@ Skips the king-danger term when material alone settles the bound. That term was
 - Measured on fixed **time**: it changes speed and not the tree, so a
   fixed-nodes campaign would have reported exactly zero.
 
-## v2 — late move reductions
+## v2 -- late move reductions
 
 **+35.07 ± 6.51** · 10,000 games · fixed nodes 20,000 · Dist 88, 12, 415, 39,
 1002, 45, 681, 16, 202
@@ -59,9 +59,9 @@ only if one raises alpha. Mean depth 3.73 → 4.25.
 
 - Rejected in the same window, kept dormant with their verdicts: **history
   heuristic** (dead at the depths this engine reaches) and **PVS** (actively
-  negative — 118.9% of baseline nodes at depth 4).
+  negative -- 118.9% of baseline nodes at depth 4).
 
-## v1 — killer moves
+## v1 -- killer moves
 
 **+50.42 ± 6.41** · 10,000 games · fixed nodes 20,000 · Dist 57, 8, 388, 31,
 969, 47, 763, 21, 216
@@ -76,7 +76,7 @@ largest single ordering gap.
 
 ## Before v1
 
-Phases 0–3: the rules pinned against sources, a 14×14 board with two
+Phases 0-3: the rules pinned against sources, a 14×14 board with two
 independently written move generators agreeing over 10 M positions, perft exact
 against Athena to depth 7, a C core, alpha-beta with a transposition table and
 quiescence, PGN4, the viewer, and the match runner.

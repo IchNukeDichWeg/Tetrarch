@@ -1,13 +1,13 @@
-# Tetrarch — Rules of Four-Player Chess
+# Tetrarch -- Rules of Four-Player Chess
 
 Normative rules reference for the engine. Target: **chess.com four-player chess**,
 `modern` and `classic` setups, FFA and Teams.
 
 Every rule below is one of:
 
-* **[C]** — Confirmed against a cited source.
-* **[D]** — Derived: proved from confirmed rules. The proof is given.
-* **ASSUMPTION:** — Could not be confirmed. A choice is made and stated, with the
+* **[C]** -- Confirmed against a cited source.
+* **[D]** -- Derived: proved from confirmed rules. The proof is given.
+* **ASSUMPTION:** -- Could not be confirmed. A choice is made and stated, with the
   cheapest experiment that would settle it.
 
 Nothing in this document is from memory. Where sources disagree, both readings are
@@ -19,19 +19,19 @@ recorded and the conflict is called out.
 
 | Key | Source |
 |-----|--------|
-| **[cc-terms]** | chess.com, *4 Player Chess* (Chess Terms) — <https://www.chess.com/terms/4-player-chess> |
-| **[cc-help]** | chess.com Help Center, *4 Player Chess (4PC)*, article 668 — <https://support.chess.com/article/668-4-player-chess-4pc> |
-| **[wb-play]** | Wikibooks, *Four-Player Chess / How to play?* — <https://en.wikibooks.org/wiki/Four-Player_Chess/How_to_play%3F> |
-| **[wb-nota]** | Wikibooks, *Four-Player Chess / Notation* — <https://en.wikibooks.org/wiki/Four-Player_Chess/Notation> |
-| **[wb-var]** | Wikibooks, *Four-Player Chess / Variants* — <https://en.wikibooks.org/wiki/Four-Player_Chess/Variants> |
-| **[fen4]** | `TheThirdOne/fen4` — Rust parser/writer for chess.com's FEN4. Read at `src/types.rs`, `src/from_str.rs`, `src/display.rs`, `tests/basic.rs`. **Normative for the position format.** |
-| **[athena]** | `arianahejazyan/Athena` — C++ 4PC engine. Read at `src/chess/{position.h,castle.h,square.h,movegen.cpp,position.cpp}`, `tests/data/perft.txt`. |
-| **[4pc]** | `obryanlouis/4pchess` — C++ 4PC engine (Teams only). Read at `board.cc`, `board.h`. |
-| **[cc-lobby]** | chess.com live 4PC lobby — the setup selector, its five presets, their in-app descriptions, and the rendered starting boards. Observed directly 2026-07-31. **Authoritative for starting positions**: it is the running game. |
+| **[cc-terms]** | chess.com, *4 Player Chess* (Chess Terms) -- <https://www.chess.com/terms/4-player-chess> |
+| **[cc-help]** | chess.com Help Center, *4 Player Chess (4PC)*, article 668 -- <https://support.chess.com/article/668-4-player-chess-4pc> |
+| **[wb-play]** | Wikibooks, *Four-Player Chess / How to play?* -- <https://en.wikibooks.org/wiki/Four-Player_Chess/How_to_play%3F> |
+| **[wb-nota]** | Wikibooks, *Four-Player Chess / Notation* -- <https://en.wikibooks.org/wiki/Four-Player_Chess/Notation> |
+| **[wb-var]** | Wikibooks, *Four-Player Chess / Variants* -- <https://en.wikibooks.org/wiki/Four-Player_Chess/Variants> |
+| **[fen4]** | `TheThirdOne/fen4` -- Rust parser/writer for chess.com's FEN4. Read at `src/types.rs`, `src/from_str.rs`, `src/display.rs`, `tests/basic.rs`. **Normative for the position format.** |
+| **[athena]** | `arianahejazyan/Athena` -- C++ 4PC engine. Read at `src/chess/{position.h,castle.h,square.h,movegen.cpp,position.cpp}`, `tests/data/perft.txt`. |
+| **[4pc]** | `obryanlouis/4pchess` -- C++ 4PC engine (Teams only). Read at `board.cc`, `board.h`. |
+| **[cc-lobby]** | chess.com live 4PC lobby -- the setup selector, its five presets, their in-app descriptions, and the rendered starting boards. Observed directly 2026-07-31. **Authoritative for starting positions**: it is the running game. |
 
 Retrieved 2026-07-31. The two chess.com pages are the only *authoritative* sources;
 the Wikibook is a good independent cross-check; the two engines are implementations
-and are treated as evidence, not authority — where they disagree with each other,
+and are treated as evidence, not authority -- where they disagree with each other,
 that is recorded explicitly (§5.4, §6.4).
 
 ---
@@ -42,9 +42,9 @@ that is recorded explicitly (§5.4, §6.4).
 [cc-terms] describes it as "160 squares because three extra ranks are added to each
 side."
 
-Files **a–n** (left to right), ranks **1–14** (bottom to top). Square names are
+Files **a-n** (left to right), ranks **1-14** (bottom to top). Square names are
 standard algebraic: `a1` … `n14`. [fen4] `Position::from_str` accepts exactly
-`[a-n]` followed by `1`–`14`, 2–3 characters.
+`[a-n]` followed by `1`-`14`, 2-3 characters.
 
 Removed corners (never playable):
 
@@ -79,8 +79,8 @@ conventions comment.
 
 **[C]** Two modes:
 
-* **FFA** — four independent players, points race. [cc-terms]
-* **Teams** — "two players each, who are always across the board from each other.
+* **FFA** -- four independent players, points race. [cc-terms]
+* **Teams** -- "two players each, who are always across the board from each other.
   Players cannot capture their teammate's pieces." [cc-terms] Standard pairing is
   **R+Y vs B+G**.
 
@@ -108,10 +108,10 @@ Home rows and their two central squares:
 
 | Seat | Home row | Central squares | Rook squares |
 |------|----------|-----------------|--------------|
-| Red | rank 1, files d–k | g1, h1 | d1, k1 |
-| Blue | file a, ranks 4–11 | a7, a8 | a4, a11 |
-| Yellow | rank 14, files d–k | g14, h14 | d14, k14 |
-| Green | file n, ranks 4–11 | n7, n8 | n4, n11 |
+| Red | rank 1, files d-k | g1, h1 | d1, k1 |
+| Blue | file a, ranks 4-11 | a7, a8 | a4, a11 |
+| Yellow | rank 14, files d-k | g14, h14 | d14, k14 |
+| Green | file n, ranks 4-11 | n7, n8 | n4, n11 |
 
 ### 3.2 [D] The naming scheme
 
@@ -120,7 +120,7 @@ label have their king and queen **swapped relative to Classic**.
 
 | Setup | Seats swapped vs Classic |
 |-------|--------------------------|
-| `classic` | — (the baseline) |
+| `classic` | -- (the baseline) |
 | `modern` | Blue, Green (i.e. implicitly "BG") |
 | `by` | Blue, Yellow |
 | `byg` | Blue, Yellow, Green |
@@ -154,7 +154,7 @@ centre):
 | `byg` | right | right | left | right | no |
 | `rg` | left | left | right | right | no |
 
-Only `classic` and `modern` are symmetric under 180° rotation — i.e. only in those two
+Only `classic` and `modern` are symmetric under 180° rotation -- i.e. only in those two
 do Teams partners (R+Y, B+G) start with identical shapes. This is worth knowing before
 running a Teams A/B on `by`, `byg` or `rg`: the seat-assignment bias those setups carry
 is structural, not noise.
@@ -162,7 +162,7 @@ is structural, not noise.
 `modern` is additionally symmetric under 90°, which is what [cc-lobby] means by "simple
 symmetry and basic defense lines that are the same for all colors."
 
-### 3.4 `classic` — the base position and Tetrarch's default
+### 3.4 `classic` -- the base position and Tetrarch's default
 
 ```
 R-0,0,0,0-1,1,1,1-1,1,1,1-0,0,0,0-0-
@@ -192,11 +192,11 @@ is the FEN4 [wb-nota] publishes as "the standard starting position". It is also
 and is the best explored setup among others, loved by most streamers and high-rated
 players. It has a lot of varied and asymmetric openings, yet has balance issues."
 
-**Tetrarch's default is `classic`** — project owner's decision, on the grounds that it
+**Tetrarch's default is `classic`** -- project owner's decision, on the grounds that it
 is where the theory and the strong opposition are. All five setups are implemented and
 tested; `classic` is what strength work targets.
 
-### 3.5 `modern` — chess.com's own default
+### 3.5 `modern` -- chess.com's own default
 
 ```
 R-0,0,0,0-1,1,1,1-1,1,1,1-0,0,0,0-0-
@@ -219,12 +219,12 @@ bR,bP,10,gP,gR/
 Kings: **rK h1, bK a7, yK g14, gK n8**. Matches [athena]'s `STARTPOS[0]` and the
 fixtures throughout [4pc]'s `board_test.cc`.
 
-**[C] `modern` is chess.com's default, and has been since 2022** — [cc-lobby] states
+**[C] `modern` is chess.com's default, and has been since 2022** -- [cc-lobby] states
 verbatim: "currently the default since 2022". This closes what was Open Item 1: the
 `fen4` crate and the Wikibook notation page simply predate the 2022 change and describe
 the older default. Both were right when written; neither is right now.
 
-Tetrarch must therefore be correct on `modern` even though it optimises for `classic` —
+Tetrarch must therefore be correct on `modern` even though it optimises for `classic` --
 it is what a random chess.com opponent will be playing.
 
 ### 3.6 Deriving the other three
@@ -238,7 +238,7 @@ the §3.3 table.
 ## 4. Piece movement
 
 **[C]** Knight, bishop, rook, queen and king move exactly as in chess. [wb-play]
-Sliding pieces stop at the board edge and at the removed corners — in the mailbox
+Sliding pieces stop at the board edge and at the removed corners -- in the mailbox
 representation this is `sq += delta while VALID[sq]`, with no special-casing.
 
 ### 4.1 Pawn direction
@@ -253,7 +253,7 @@ representation this is `sq += delta while VALID[sq]`, with no special-casing.
 | Green | −file (west) | file **m** | file−1, rank±1 |
 
 Home ranks confirmed independently by [fen4]'s round-trip test fixture, whose
-`enPassant` field reads `('i3:i4','c6:d6','f12:f11','l9:k9')` — a Red double push
+`enPassant` field reads `('i3:i4','c6:d6','f12:f11','l9:k9')` -- a Red double push
 i2→i4, a Blue b6→d6, a Yellow f13→f11, a Green m9→k9.
 
 **[C]** Double push is available only from the home rank/file. [fen4] exposes this as
@@ -281,11 +281,11 @@ Concrete squares:
 | Green | file g | file d |
 
 [athena] hardcodes `PROMOTES = 11` (`constants.h`) and applies it via
-`Square::promotes()` — i.e. Athena implements the Teams rank unconditionally.
+`Square::promotes()` -- i.e. Athena implements the Teams rank unconditionally.
 
 **[C]** A queen produced by promotion in FFA is a **"1-point queen"**: it is worth
 **+1** when captured, not +9. [cc-terms] "+1 for a pawn or promoted queen";
-[cc-help] "Pawns +1, 1-point Queens +1". This is a real, load-bearing rule — it means
+[cc-help] "Pawns +1, 1-point Queens +1". This is a real, load-bearing rule -- it means
 the board carries two distinguishable queen types and the NNUE feature set and the
 FFA points model must both know which is which.
 
@@ -299,10 +299,10 @@ FFA points model must both know which is which.
 This is the rule most likely to hide bugs, and the brief is right that it needs a
 lifetime rather than a boolean.
 
-### 5.1 Lifetime — the square belongs to the seat that pushed
+### 5.1 Lifetime -- the square belongs to the seat that pushed
 
 **[C]** The en-passant square is **per seat**, and is cleared when **that same seat
-moves again** — not when the next player moves.
+moves again** -- not when the next player moves.
 
 Two independent implementations agree:
 
@@ -326,7 +326,7 @@ opportunity ends when *X* is to move again.
 > owning seat's next move, exactly as both reference engines do. All four entries are
 > Zobrist-hashed.
 
-### 5.2 Geometry — two squares, not one
+### 5.2 Geometry -- two squares, not one
 
 **[C]** FEN4 records **both** squares as a colon-joined pair: "The first position is
 where a pawn can capture and the second is where the passing pawn should be removed
@@ -354,7 +354,7 @@ seats facing each other** (Red↔Yellow, Blue↔Green), in both modes:
 | Green (m→k) | file l | Blue pawn on file l | Blue pawn max file g (FFA) / j (Teams) | no |
 | Blue (b→d) | file c | Green pawn on file c | Green pawn min file h (FFA) / e (Teams) | no |
 
-**Every en passant in 4PC is between perpendicular seats** — R↔B, R↔G, Y↔B, Y↔G.
+**Every en passant in 4PC is between perpendicular seats** -- R↔B, R↔G, Y↔B, Y↔G.
 A pawn is captured en passant by a pawn moving on a *different axis*.
 
 This is worth writing into `selftest.py` as a positive assertion, not just a comment:
@@ -364,15 +364,15 @@ a movegen that ever emits a head-on en passant has a bug somewhere else.
 
 The two reference engines disagree, and at least one is wrong.
 
-A double push from `S` through `M` to `T` is attackable by **up to two** enemy pawns —
+A double push from `S` through `M` to `T` is attackable by **up to two** enemy pawns --
 the two that attack `M`.
 
 * [athena] generates both (`generate_enpass_moves` builds `source = target - take(color, i)`
-  for `i ∈ {0,1}`) — correct generation. But its *make-move* removes
+  for `i ∈ {0,1}`) -- correct generation. But its *make-move* removes
   `source + push(color)`, which is only the pushed pawn for one of the two flanks.
 * [4pc] only generates the flank where the pushed pawn sits directly in front of the
   capturing pawn (its EP branch requires `GetPiece(from + forward)` to be the enemy
-  pawn) — it misses the other flanking pawn entirely.
+  pawn) -- it misses the other flanking pawn entirely.
 
 **Tetrarch's rule (from first principles, and consistent with FEN4's `M:T` pair):**
 *any* pawn that attacks `M` may capture; the pawn removed is always the one recorded
@@ -381,7 +381,7 @@ at `T`. Both flanks generated, correct pawn removed in both cases.
 > **Perft cannot test this.** Measured through depth 7 (1.7 billion nodes), Tetrarch
 > and [athena] agree exactly, and they always will here: the case needs two of your
 > own pawns attacking the same skipped square, which costs six pawn moves at minimum
-> — ply 21 or later. See `PERFT.md` for the counting. The differential gate against
+> -- ply 21 or later. See `PERFT.md` for the counting. The differential gate against
 > the slow reference generator, which reaches such positions by scattering rather
 > than by playing to them, is the only check that covers this rule.
 
@@ -389,8 +389,8 @@ at `T`. Both flanks generated, correct pawn removed in both cases.
 
 The capturing pawn lands on `M`. In 4PC `M` may be occupied by a **third player's**
 piece, since `M` is a normal empty-or-occupied square from every other seat's point of
-view. [4pc] handles this explicitly — "there may be both en-passant and piece capture
-in the same move" — permitting the move when `M` holds a non-teammate piece and
+view. [4pc] handles this explicitly -- "there may be both en-passant and piece capture
+in the same move" -- permitting the move when `M` holds a non-teammate piece and
 recording both captures.
 
 So a single pawn move can remove two enemy pieces and, in FFA, score for both.
@@ -403,7 +403,7 @@ the capture, and either can drop a piece on `M`.
 > **ASSUMPTION:** when `M` is occupied, the en-passant capture is the *only* move
 > onto `M`, and it takes both pieces.
 >
-> Geometrically there is one move — the same pawn from the same square to the same
+> Geometrically there is one move -- the same pawn from the same square to the same
 > square. It cannot both be a plain capture of the occupant and an en-passant capture
 > of the pawn, and emitting two moves with identical `from`/`to` would make the
 > notation ambiguous. Tetrarch therefore suppresses the plain capture in favour of the
@@ -412,14 +412,14 @@ the capture, and either can drop a piece on `M`.
 > The alternative reading is that en passant is simply unavailable when `M` is
 > occupied, leaving a plain capture of the occupant. No source settles it.
 >
-> **Cheapest experiment:** set the position up on chess.com — double-push a pawn, park
+> **Cheapest experiment:** set the position up on chess.com -- double-push a pawn, park
 > a third player's piece on the skipped square, and see whether the capture is offered
 > and what it removes. Both generators implement the same choice, so flipping it is one
 > constant in each.
 
 ### 5.6 [D] An en passant capture can promote at the same time
 
-Blue's skipped squares lie on file c, ranks 4–11 — which includes **c8**, and c8 is
+Blue's skipped squares lie on file c, ranks 4-11 -- which includes **c8**, and c8 is
 Red's promotion rank in FFA (§4.2). A Red pawn on b7 or d7 capturing en passant onto
 c8 therefore promotes as it captures. The same holds in Teams via c11, and for every
 other perpendicular seat pair.
@@ -483,20 +483,20 @@ rows mirror: Blue short becomes a7 → a5 (rook a4 → a6), Green short becomes 
 > **ASSUMPTION:** FEN4 field 3 ("kingside") is the **short** side and field 4
 > ("queenside") is the **long** side, for every seat and every setup.
 >
-> This is the standard-chess meaning — White's king starts nearer the h-rook, and the
+> This is the standard-chess meaning -- White's king starts nearer the h-rook, and the
 > h-side is kingside. Carried over literally, "kingside" is the side the king starts
 > nearer. For the king-left seats (Blue and Green in `classic`; Red and Blue in `rg`)
 > that means "kingside" points toward the seat's **left**, which reads oddly but is
 > the only definition that is setup-independent.
 >
-> The alternative — "kingside" fixed to a compass direction per seat regardless of
-> where the king stands — would make the two arrays swap meaning between `classic` and
+> The alternative -- "kingside" fixed to a compass direction per seat regardless of
+> where the king stands -- would make the two arrays swap meaning between `classic` and
 > `modern` for Blue and Green. No source states which chess.com uses.
 >
 > **Cheapest experiment:** from a `classic` start, move Blue's a11 rook, export the
 > FEN4, and see which of the two arrays drops Blue's bit. If it is field 3, this
 > assumption holds. Thirty seconds, and it only matters for interop with chess.com's
-> own FEN4 — Tetrarch is self-consistent either way.
+> own FEN4 -- Tetrarch is self-consistent either way.
 
 ### 6.4 Known defect in the reference implementation
 
@@ -510,7 +510,7 @@ This is precisely the failure mode a hardcoded 128-entry square table invites, a
 is why §6.1 derives instead. With five setups rather than Athena's two, a table would
 need 320 entries and the same class of bug would be five times as likely.
 
-It does not affect the perft numbers in §12 (castling needs 2–3 pieces developed off
+It does not affect the perft numbers in §12 (castling needs 2-3 pieces developed off
 the back rank, far beyond depth 7), but it is the reason those numbers are treated as
 a cross-check rather than an oracle.
 
@@ -520,7 +520,7 @@ a cross-check rather than an oracle.
 
 **[C]** A player is in check when their king is attacked. In FFA a player can be in
 check from **up to three different players simultaneously**, and chess.com scores that
-explicitly — see §8. Legality is unchanged: you may not leave your own king in check,
+explicitly -- see §8. Legality is unchanged: you may not leave your own king in check,
 regardless of how many opponents attack it.
 
 **[C] Checkmate eliminates that player; the game continues.** "The game ends when
@@ -530,7 +530,7 @@ three players are eliminated." [cc-help]
 stalemated**, all of their pieces become inactive and are grayed out." [cc-terms]
 
 > **Correction to the brief.** The brief says "A stalemated player is skipped, not
-> drawn." The "not drawn" half is right — there is no game-wide draw. But the
+> drawn." The "not drawn" half is right -- there is no game-wide draw. But the
 > stalemated player is not merely skipped: they are **eliminated**, their pieces go
 > dead, and in FFA they are awarded **+20** for it. See §8.
 
@@ -564,7 +564,7 @@ Confirmed against **both** chess.com pages, which agree exactly.
 a rook, and +9 for a queen". [cc-help]: "Pawns +1, 1-point Queens +1 … Knights +3,
 Bishops +5, Rooks +5, Queens +9, Kings +20, Spare kings +3".
 
-The brief's numbers were correct, including **bishop = 5** (not 3 — the diagonals are
+The brief's numbers were correct, including **bishop = 5** (not 3 -- the diagonals are
 long on a 14×14 board). The two additions the brief did not have are the 1-point queen
 and the king/spare-king values.
 
@@ -579,7 +579,7 @@ and the king/spare-king values.
 | Checkmating an opponent | **+20** to the mating player |
 | Being stalemated (stalemating oneself) | **+20** to the **stalemated** player |
 | Stalemating a dead-king-walking (§9.2) | **+10** to *each* remaining active player |
-| Draw — threefold repetition, insufficient material, or 50-move | **+10** to each active player |
+| Draw -- threefold repetition, insufficient material, or 50-move | **+10** to each active player |
 
 [cc-terms]: "By checkmating an opponent (+20). By stalemating oneself (+20). By
 stalemating an opponent (+10 for each player still in the game)". [cc-help] resolves
@@ -626,7 +626,7 @@ inactive and are grayed out. **Capturing those pieces does not provide any point
 > but scoring for them is nil.
 
 **[C]** Dead pieces are first-class in the position format: FEN4 encodes them with a
-`d` prefix, optionally retaining the original seat — `dP`, `dK`, or `drP`, `dbN`,
+`d` prefix, optionally retaining the original seat -- `dP`, `dK`, or `drP`, `dbN`,
 `dyB`, `dgR`. [fen4] `from_str.rs`. Tetrarch keeps the originating seat, because the
 NNUE feature index and any future scoring variant both need it.
 
@@ -664,39 +664,39 @@ Parsed and preserved; not implemented.
 
 **[C]** A 50-move-rule draw exists and awards +10 to each active player [cc-terms].
 FEN4 carries a **single global** half-move counter, reset on any capture or pawn
-advance by any seat — [fen4] calls the field "ply since last pawn move or capture";
+advance by any seat -- [fen4] calls the field "ply since last pawn move or capture";
 [athena] calls it `fifty_move_clock` and increments it once per ply.
 
 > **ASSUMPTION:** the threshold is **50 moves per seat = 200 plies**.
 >
 > Neither chess.com page states the ply count, and neither reference engine enforces
-> a threshold at all — [athena] tracks the clock but never tests it, [4pc] has no
+> a threshold at all -- [athena] tracks the clock but never tests it, [4pc] has no
 > 50-move logic. The alternative reading is 50 plies (12.5 rounds), which is
 > implausibly short for a 14×14 board. 200 is chosen because chess.com's move
 > numbering advances once per full round, so "50 moves" most naturally means 50 of
 > your own.
 >
 > **Cheapest experiment:** shuffle two kings in a live chess.com 4PC game and count.
-> Low priority — it changes nothing about play strength, only about when a long
+> Low priority -- it changes nothing about play strength, only about when a long
 > endgame is scored.
 
 ### 10.2 Threefold repetition
 
 **[C]** Exists, awards +10 to each active player [cc-terms].
 
-> **ASSUMPTION:** a position repeats when the full Zobrist key matches — piece
+> **ASSUMPTION:** a position repeats when the full Zobrist key matches -- piece
 > placement, side to move, all four castling-right pairs, all four en-passant entries,
 > **and the alive mask**. Points are deliberately excluded: points are monotonic and
 > including them would make repetition unreachable.
 >
-> No source defines repetition for 4PC. Including the alive mask is not optional — a
+> No source defines repetition for 4PC. Including the alive mask is not optional -- a
 > position with a seat eliminated is a different game, as the brief says.
 
 ### 10.3 Insufficient material
 
 **[C]** Exists, awards +10 to each active player [cc-terms].
 
-> **ASSUMPTION:** v0 detects only the trivially safe case — every remaining live seat
+> **ASSUMPTION:** v0 detects only the trivially safe case -- every remaining live seat
 > has king only, and no dead pieces remain that could be promoted or captured for
 > value. The chess two-player table (K+B, K+N, same-colour bishops) does **not**
 > transfer: three kings and a dead rook on the board is not a draw, because there is
@@ -704,7 +704,7 @@ advance by any seat — [fen4] calls the field "ply since last pawn move or capt
 
 ---
 
-## 11. FEN4 — the position format
+## 11. FEN4 -- the position format
 
 **Normative reference: [fen4].** Field order, delimiters and edge cases below are read
 from its parser and writer, not invented. Tetrarch matches it exactly, including the
@@ -727,7 +727,7 @@ order: castling rights come near the *front*, and the board comes **last**, not 
 | 4 | Castle queenside | `1,1,1,1` | Same constraints |
 | 5 | Points | `0,0,0,0` | 4 unsigned integers (`u16` in [fen4]) |
 | 6 | Halfmove clock | `0` | Single unsigned integer |
-| 7 | Extra (optional) | `{'key':value,…}` | Omitted entirely when empty — **not** written as `{}` |
+| 7 | Extra (optional) | `{'key':value,…}` | Omitted entirely when empty -- **not** written as `{}` |
 | 8 | Board | 14 `/`-separated ranks | See §11.2 |
 
 ### 11.2 Board section
@@ -738,15 +738,15 @@ order: castling rights come near the *front*, and the board comes **last**, not 
   supports fairy pieces.
 * Dead pieces prefix `d`: `dP` (origin unknown) or `drP`/`dbP`/`dyP`/`dgP`
   (origin retained).
-* `X` — capital — is a **wall** (permanently blocked square), used by custom boards.
-* Runs of empty squares are written as a decimal count `1`–`14`.
+* `X` -- capital -- is a **wall** (permanently blocked square), used by custom boards.
+* Runs of empty squares are written as a decimal count `1`-`14`.
 * **A 1-point queen is not representable.** FEN4 spells every queen `Q`, so the
   promoted/unpromoted distinction that FFA scoring depends on (§4.2, §8.1) does not
   survive a round trip. Tetrarch carries the bit internally and Zobrist-hashes it, and
   loses it on FEN4 output; chess.com must track it out of band too. Anything that
   needs FFA points across a FEN4 boundary has to carry them separately.
 * **The removed 3×3 corners are written as ordinary empty squares**, i.e. `3,…,3`
-  and `14` for the two fully empty ranks — *not* as walls. [fen4] `types.rs`:
+  and `14` for the two fully empty ranks -- *not* as walls. [fen4] `types.rs`:
   "the 3x3 corners of the 14x14 board are counted as empty squares".
 
 ### 11.3 Quirks that will bite
@@ -760,12 +760,12 @@ order: castling rights come near the *front*, and the board comes **last**, not 
    only as a wall. Tetrarch **reads** lowercase `x` as an empty corner square for
    interoperability with those two engines, and **writes** the [fen4]-canonical `3`
    / `14` runs. This asymmetry is deliberate and is asserted in `selftest.py`.
-3. **Canonical output contains newlines** — one after the metadata, one after each
+3. **Canonical output contains newlines** -- one after the metadata, one after each
    rank. [fen4]'s round-trip test asserts byte equality including them. Input is
    whitespace-tolerant (each comma-segment is `trim()`ed).
 4. Empty-run counts may span the corners (`bR,bP,10,gP,gR` crosses the middle) and a
    whole empty rank is just `14`.
-5. `dead[]` and dead pieces on the board are independent fields — [fen4]'s own test
+5. `dead[]` and dead pieces on the board are independent fields -- [fen4]'s own test
    fixture has `0,0,0,0` for `dead` while carrying `dK`/`dQ` pieces.
 
 ### 11.4 Extra options
@@ -780,7 +780,7 @@ Value types: `'string'`, bare number, `true`/`false`, and `(r,b,y,g)` tuples.
 where a boolean is expected and means `false`.
 
 Tetrarch v0 **uses** `enPassant` and `pawnsBaseRank`, **preserves** the rest across a
-round trip, and **rejects unknown tags** rather than silently dropping them — matching
+round trip, and **rejects unknown tags** rather than silently dropping them -- matching
 [fen4]'s `UnknownTag` error.
 
 ### 11.5 PGN4
@@ -792,7 +792,7 @@ all five setups in both modes:
 | Setup | `StartFen4` |
 |-------|-------------|
 | classic | `4PCo` |
-| modern | *(no tag — it is the live default)* |
+| modern | *(no tag -- it is the live default)* |
 | by | `4PCb` |
 | byg | `4PCn` |
 | rg | `4PCrg` |
@@ -829,7 +829,7 @@ position:
 | 7 | 1,735,784,286 |
 
 Depth 1 = 20 is a sanity anchor: Red has 8 pawns × 2 pushes + 2 knights × 2 moves.
-That holds for **all five setups** — knights start on e1 and j1 in every one of them,
+That holds for **all five setups** -- knights start on e1 and j1 in every one of them,
 and only the king and queen ever move between setups (§3.1). Any setup returning
 something other than 20 at depth 1 is broken before anything else is worth checking.
 
@@ -839,12 +839,12 @@ other three) against Tetrarch's own two independent generators.
 
 **These are a cross-check, not an oracle.** Three caveats, all established above:
 
-* Promotion rank cannot matter at these depths — a Red pawn needs 6 of its own moves
+* Promotion rank cannot matter at these depths -- a Red pawn needs 6 of its own moves
   to reach rank 8, i.e. ≥21 plies. FFA and Teams give identical counts to depth 7.
 * Castling cannot occur by depth 7, so [athena]'s castle-table defect (§6.4) does not
   contaminate them.
-* En passant **does** occur — first at depth 4 — and Tetrarch's two-flank rule (§5.4)
-  differs from [athena]'s single-flank make-move. If Tetrarch's depth 4–7 counts
+* En passant **does** occur -- first at depth 4 -- and Tetrarch's two-flank rule (§5.4)
+  differs from [athena]'s single-flank make-move. If Tetrarch's depth 4-7 counts
   differ from the table, the two-flank case is the **first** thing to check, and the
   divergence should be reproduced by hand on a specific position before either
   number is trusted.
@@ -876,19 +876,19 @@ Tetrarch's own perft numbers for both setups, both modes, to depth 5, are record
 
 | # | Item | Status | § |
 |---|------|--------|---|
-| ~~1~~ | ~~Which setup is chess.com's live default~~ | **CLOSED** — `modern`, "default since 2022" per [cc-lobby]. Tetrarch nonetheless defaults to `classic` by decision, and supports all five | 3.4, 3.5 |
+| ~~1~~ | ~~Which setup is chess.com's live default~~ | **CLOSED** -- `modern`, "default since 2022" per [cc-lobby]. Tetrarch nonetheless defaults to `classic` by decision, and supports all five | 3.4, 3.5 |
 | 2 | 50-move threshold in plies | **ASSUMPTION: 200** | 10.1 |
 | 3 | Repetition key definition | **ASSUMPTION: full Zobrist incl. alive mask, excl. points** | 10.2 |
 | 4 | Insufficient material in 4PC | **ASSUMPTION: bare-kings only** | 10.3 |
 | 5 | Two-flank en passant: which engine is right | Tetrarch derives from first principles; expect perft divergence | 5.4 |
-| ~~6~~ | ~~Named `StartFen4` codes~~ | **CLOSED** — read off chess.com's own exports for all five setups in both modes. `4PCo` = classic, `4PCb` = by, `4PCn` = byg, `4PCrg` = rg, and `modern` carries no tag at all. The code names the *position*, so it does not vary with the mode | 11.5 |
-| 7 | A PGN4 with no `StartFen4` at all | **ASSUMPTION: `modern` if a `RuleVariants` tag is present, else `classic`** — absence means "the default when this was written", which changed in 2022. chess.com writes `RuleVariants` on every current export; the pre-2022 files that omit `StartFen4` omit it too | 11.5 |
-| 8 | `PromoteTo=D` in FFA `RuleVariants` | Observed but not decoded. Consistent with §4.2's 1-point queen — no underpromotion in FFA — but what `D` names is unconfirmed | 4.2 |
+| ~~6~~ | ~~Named `StartFen4` codes~~ | **CLOSED** -- read off chess.com's own exports for all five setups in both modes. `4PCo` = classic, `4PCb` = by, `4PCn` = byg, `4PCrg` = rg, and `modern` carries no tag at all. The code names the *position*, so it does not vary with the mode | 11.5 |
+| 7 | A PGN4 with no `StartFen4` at all | **ASSUMPTION: `modern` if a `RuleVariants` tag is present, else `classic`** -- absence means "the default when this was written", which changed in 2022. chess.com writes `RuleVariants` on every current export; the pre-2022 files that omit `StartFen4` omit it too | 11.5 |
+| 8 | `PromoteTo=D` in FFA `RuleVariants` | Observed but not decoded. Consistent with §4.2's 1-point queen -- no underpromotion in FFA -- but what `D` names is unconfirmed | 4.2 |
 | 6 | Per-piece capture values rest on chess.com only | Two pages agree verbatim; Wikibook has no table | 8.1 |
 | 7 | Which FEN4 castling array is "kingside" for a king-left seat | **ASSUMPTION: short side.** Only affects chess.com interop | 6.3 |
 | 8 | En passant onto an *occupied* skipped square | **ASSUMPTION: one move, captures both**, plain capture suppressed | 5.5 |
 
-Items 2–4 are the ones that could silently corrupt results, and each can wait for the
+Items 2-4 are the ones that could silently corrupt results, and each can wait for the
 phase that touches it. Items 7 and 8 are both settled by a minute in a live game
 whenever you happen to be in one.
 
@@ -901,6 +901,6 @@ Rules that only surfaced once the board and both movegens existed. Each is asser
 |---------|---|
 | An en-passant capture can promote at the same time (Blue's c8 is Red's FFA promotion rank) | 5.6 |
 | The 1-point queen is not representable in FEN4 and is lost on round trip | 11.2 |
-| Castling geometry is derivable from the king's current square, so the Board never needs to know its setup — this is what makes all five setups free and sidesteps Athena's table defect | 6.1, 6.4 |
+| Castling geometry is derivable from the king's current square, so the Board never needs to know its setup -- this is what makes all five setups free and sidesteps Athena's table defect | 6.1, 6.4 |
 | Setups differ in perft from depth 2, including two setups that place a seat identically: `rg`'s Red queen on h1 pins Blue's b7 pawn once g2 clears, which `classic` does not | PERFT.md |
 | Only `classic` and `modern` are 180°-symmetric, so Teams seat bias is structural in `by`, `byg` and `rg` | 3.3 |

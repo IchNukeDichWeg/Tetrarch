@@ -1,12 +1,12 @@
 # Tetrarch
 
-A four-player chess engine for [chess.com 4PC](https://www.chess.com/4-player-chess) — 14×14, four seats, Teams and FFA.
+A four-player chess engine for [chess.com 4PC](https://www.chess.com/4-player-chess) -- 14×14, four seats, Teams and FFA.
 
 [![release](https://img.shields.io/github/v/release/IchNukeDichWeg/Tetrarch?label=release)](https://github.com/IchNukeDichWeg/Tetrarch/releases)
 [![license](https://img.shields.io/github/license/IchNukeDichWeg/Tetrarch)](LICENSE)
 
-Python owns the root — iterative deepening, time management, protocol, tooling.
-A C shared library owns the per-node loop — board, movegen, ordering, transposition
+Python owns the root -- iterative deepening, time management, protocol, tooling.
+A C shared library owns the per-node loop -- board, movegen, ordering, transposition
 table, pruning, quiescence, NNUE inference. A pure-Python reference engine is the
 source of truth, and `selftest.py` asserts the C core agrees with it bit for bit.
 
@@ -19,7 +19,7 @@ cd Tetrarch
 ```
 
 That is the whole of a fresh-machine setup: it installs a compiler and numpy/flask
-if they are missing, builds the C core, and then runs the full test ladder — a setup
+if they are missing, builds the C core, and then runs the full test ladder -- a setup
 that reports success and leaves a broken build costs a whole campaign to discover.
 
 No virtualenv. Everything is a plain `python3 something.py`.
@@ -30,7 +30,7 @@ python3 selftest.py            # 427 checks, ~13s
 python3 gui/app.py             # viewer + play, http://127.0.0.1:7442
 ```
 
-Two pages. `/` replays a PGN4 you paste — `gui/viewer.html` also opens straight
+Two pages. `/` replays a PGN4 you paste -- `gui/viewer.html` also opens straight
 off disk with no server at all. `/play` is an interactive board: set each of the
 four seats to Human or Engine and play. The engine plays Teams only; in
 free-for-all every seat has to be human, because the paranoid search is Phase 5.
@@ -52,23 +52,23 @@ Since v0 the search tree at classic depth 5 has gone from 228,628 nodes to 7,669
 and mean depth at a 20,000-node budget from 3.73 to 5.25.
 
 The largest gain is the one that was predicted to be negative. Chess intuition
-about a feature's value does not survive the move to four seats — see
+about a feature's value does not survive the move to four seats -- see
 [`docs/AB.md`](docs/AB.md).
 
-Rejections are recorded too — see [`docs/AB.md`](docs/AB.md). Two features were
+Rejections are recorded too -- see [`docs/AB.md`](docs/AB.md). Two features were
 closed without spending a single game because a cheap measurement showed their
 gate was structurally dead.
 
 ## The game
 
-chess.com offers five starting setups — `classic`, `modern`, `by`, `byg`, `rg` —
+chess.com offers five starting setups -- `classic`, `modern`, `by`, `byg`, `rg` --
 differing only in each seat's king/queen placement. All five are supported.
 **Tetrarch defaults to `classic`**, where the theory and the strong opposition are;
 `modern` has been chess.com's own default since 2022.
 
 [`docs/RULES.md`](docs/RULES.md) is the normative rules reference. Every rule carries
 its source; anything unconfirmed is an explicit `ASSUMPTION:` with the cheapest
-experiment that would settle it. Read it before touching engine code — four-player
+experiment that would settle it. Read it before touching engine code -- four-player
 en passant, per-seat castling and dead-seat scoring are all places where the obvious
 guess is wrong.
 
@@ -99,7 +99,7 @@ make dist       # source tarball
 `selftest.py` runs before every commit, including pure-Python ones. It pins perft,
 cross-checks both move generators, asserts the C core and the Python reference agree
 on eval and Zobrist keys bit for bit, and checks that every dormant toggle is really
-dormant — a toggle that silently flipped would make every later A/B a comparison
+dormant -- a toggle that silently flipped would make every later A/B a comparison
 against something nobody measured.
 
 Measuring a change:
@@ -108,7 +108,7 @@ Measuring a change:
 python3 match.py 500 --log screen.jsonl --opt-a LMP=true --nodes 20000 --workers 0
 ```
 
-The positional argument is **opening positions, not games** — each is played four
+The positional argument is **opening positions, not games** -- each is played four
 times as a full seat rotation, because seat identity is worth more Elo than most
 engine changes. Results are reported as Elo with its error margin plus the
 nine-bucket rotation distribution, never a bare Elo and never a pentanomial.
@@ -129,24 +129,28 @@ docs/               rules, results, perft, protocol, releasing
 
 ## Status
 
-**Phase 4 is open.** The engine still plays on a hand-written evaluation marked
-for deletion. Net v0 lost its A/B at −40.13 ± 7.01; net v1, trained on 9.19 M
-positions from a much stronger and no-longer-blind teacher, reached
-−2.26 ± 15.58 — parity with the hand eval, roughly +38 Elo of net quality.
+**Phase 4's gate is met.** Net v4 beats the hand eval by **+140.01 ± 16.97**
+and beats its own teacher, net v1, by **+93.95 ± 14.81**, both over 2,000 games
+at fixed nodes. That is the first net to beat the evaluation it was written to
+replace, and the first time generation N+1 beat generation N, which is the
+mechanism the whole NNUE phase rested on.
 
-Neither shipped, and both were labelled by the *hand eval* playing, which is
-about where a student trained on its teacher's own scores should land. The
-accumulator is now incremental (2.84× → 1.37× slower than the hand eval, which
-removes the tax that made any net unshippable), and `gen_data.py --net` lets a
-net label the next generation. That is the first real test of whether the loop
-compounds.
+It has not shipped yet. Both figures are screens rather than 10,000-game
+confirms, the net is 1.37× slower per node so a fixed-time result decides what
+actually plays, and `uci.py` still loads no net by default. The browser board
+defaults to net v4 today.
+
+Net v2 and the analysis published with it are void: its training data came from
+an engine whose NNUE accumulator was corrupted from the second move of every
+game. Same method on a sound engine gives +94 where v2 gave −225. Both the
+result and the retraction are in [`docs/AB.md`](docs/AB.md).
 
 Not yet built: FFA paranoid search, repetition detection, an opening book,
 multithreading, and int8 SIMD for the hidden layers.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT -- see [LICENSE](LICENSE).
 
 Prior art read before designing this, and worth reading: `arianahejazyan/Athena`,
 `obryanlouis/4pchess`, `TheThirdOne/fen4`.

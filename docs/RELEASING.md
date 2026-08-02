@@ -1,7 +1,7 @@
 # Releasing
 
 One release per **confirmed Elo gain**. Not per commit, not per dormant toggle,
-not per tooling change — a version number here means a measured improvement in
+not per tooling change -- a version number here means a measured improvement in
 playing strength that survived a 10,000-game confirm.
 
 Versions are plain incrementing integers: `v1`, `v2`, `v3`. `VERSION` in
@@ -46,7 +46,7 @@ because fixed nodes would report exactly zero. Mixing instruments inside one
 campaign invalidates it.
 
 **`Base` is the previous version**, not the version a feature was screened
-against. A confirm run against the current default is the point — gains are
+against. A confirm run against the current default is the point -- gains are
 not additive, and a number that drops between screen and confirm is usually
 the previous release having already banked some of it.
 

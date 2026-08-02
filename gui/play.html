@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Tetrarch — play</title>
+<title>Tetrarch -- play</title>
 <!--
   The interactive board. Unlike viewer.html this needs the server, and that is
   the point: every rule stays in Python. The page sends a move and receives a
@@ -99,7 +99,7 @@
 </style>
 
 <header>
-  <h1>Tetrarch — play</h1>
+  <h1>Tetrarch -- play</h1>
   <span class="note">click a piece, then its destination</span>
   <a href="/">← PGN4 viewer</a>
 </header>
@@ -132,7 +132,7 @@
       </div>
       <div id="seats"></div>
       <div id="seatnote" class="note" style="margin:-4px 0 10px"></div>
-      <label>Engine time — <span id="timeval">1.0 s</span>
+      <label>Engine time -- <span id="timeval">1.0 s</span>
         <input type="range" id="movetime" min="100" max="5000" step="100" value="1000">
       </label>
       <div class="row">
@@ -402,8 +402,8 @@ function renderSeats(){
     for (const s of SEATS) box.appendChild(seatRow(s));
     return;
   }
-  [["a", "Team 1 — Red & Yellow", ["R","Y"]],
-   ["b", "Team 2 — Blue & Green", ["B","G"]]].forEach(([cls, title, members]) => {
+  [["a", "Team 1 -- Red & Yellow", ["R","Y"]],
+   ["b", "Team 2 -- Blue & Green", ["B","G"]]].forEach(([cls, title, members]) => {
     const wrap = document.createElement("div");
     wrap.className = "team " + cls;
     const h = document.createElement("h3");
@@ -506,9 +506,9 @@ function describe(){
     ? ' <span class="note">(with ' + NAME[TEAM_MATE[state.turn]] + ")</span>" : "";
   if (state.status === "checkmate"){
     const winners = teamsOn()
-      ? "Team " + (TEAM[state.turn] === 0 ? "2 — Blue & Green" : "1 — Red & Yellow")
+      ? "Team " + (TEAM[state.turn] === 0 ? "2 -- Blue & Green" : "1 -- Red & Yellow")
       : "the others";
-    say('<span class="big">Checkmate — ' + who + " has no move.</span>"
+    say('<span class="big">Checkmate -- ' + who + " has no move.</span>"
         + '<div class="note">' + winners + " win.</div>");
     return true;
   }
@@ -516,7 +516,7 @@ function describe(){
     say('<span class="big">Stalemate.</span>');
     return true;
   }
-  const chk = state.status === "check" ? " — in check" : "";
+  const chk = state.status === "check" ? " -- in check" : "";
   const mode = control[state.turn] === "engine" ? "engine" : "you";
   say('<span class="big">' + who + " to move" + chk + "</span>" + side
       + '<div class="note">' + mode + "</div>");
@@ -567,7 +567,7 @@ function renderRun(){
   const idle = state && !running && control[state.turn] === "engine";
   b.disabled = !state;
   if (idle) say('<span class="big">' + NAME[state.turn] + " to move</span>"
-                + '<div class="note">engine — press Start</div>');
+                + '<div class="note">engine -- press Start</div>');
 }
 
 function setRunning(on){
@@ -686,7 +686,7 @@ document.getElementById("copy").onclick = async () => {
     el.textContent = "copied";
   } catch (e) {
     document.getElementById("pgn").select();
-    el.textContent = "selected — press Ctrl/Cmd-C";
+    el.textContent = "selected -- press Ctrl/Cmd-C";
   }
   setTimeout(() => { el.textContent = ""; }, 2500);
 };
@@ -712,7 +712,7 @@ function showNetNote(){
   const file = document.getElementById("net").value;
   const el = document.getElementById("netnote");
   if (!file || file === "none"){
-    el.innerHTML = "The hand eval — no tempo term, so a symmetric start "
+    el.innerHTML = "The hand eval -- no tempo term, so a symmetric start "
                  + "scores exactly 0.";
     return;
   }
@@ -797,7 +797,7 @@ document.getElementById("mode").onchange = () => {
   if (next !== "teams")
     say('<span class="warn">The engine plays Teams only. In free-for-all set '
         + 'every seat to Human.</span><div class="note">'
-        + "FFA needs a paranoid search — Phase 5, not built.</div>");
+        + "FFA needs a paranoid search -- Phase 5, not built.</div>");
   else say('<span class="note">press New game</span>');
 };
 

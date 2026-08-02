@@ -1,10 +1,10 @@
-# Tetrarch — perft record
+# Tetrarch -- perft record
 
 Phase 1 gate numbers. Section references (§n) are to `RULES.md`.
 
 **Perft counts are exact integer arithmetic and are not machine-dependent.**
 They are pinned unconditionally in `selftest.py` and must never be re-pinned to
-match a machine that "disagrees" — a disagreement is a bug, not a rounding
+match a machine that "disagrees" -- a disagreement is a bug, not a rounding
 difference. Only the *timings* below belong to a particular box. The
 float-sensitive node pins arrive with the search in Phase 3; those get a named
 reference machine and this warning applies to them for real.
@@ -30,7 +30,7 @@ All five setups (§3), Teams mode.
 | 4 | 158,402 | 152,050 | 155,226 | 155,210 | 155,226 |
 | 5 | 3,730,168 | 3,452,310 | 3,593,432 | 3,525,566 | 3,587,766 |
 
-Depth 5 wall time: 30–35 s per setup, single-threaded.
+Depth 5 wall time: 30-35 s per setup, single-threaded.
 
 ### FFA and Teams agree at these depths
 
@@ -43,7 +43,7 @@ difference can bite this shallow.
 
 ## External cross-check: Athena
 
-`modern` is the only setup with an outside oracle —
+`modern` is the only setup with an outside oracle --
 `arianahejazyan/Athena`, `tests/data/perft.txt` (§12).
 
 | depth | Athena | Tetrarch | |
@@ -67,9 +67,9 @@ across 1.7 billion nodes.
 
 §5.4 predicted Tetrarch would diverge from Athena once two of your own pawns
 attack the same skipped square. It did not appear at depth 6 or 7, and it never
-can: the case needs, for example, Blue to double-push b6–d6 while Red has pawns
-on **both** b5 and d5. Red's pawns start on files d–k, so putting one on file b
-costs two captures plus a push — six Red moves at minimum, which is ply 21 or
+can: the case needs, for example, Blue to double-push b6-d6 while Red has pawns
+on **both** b5 and d5. Red's pawns start on files d-k, so putting one on file b
+costs two captures plus a push -- six Red moves at minimum, which is ply 21 or
 later. Every other seat pairing is worse.
 
 So **no reachable perft can distinguish the two implementations here**, and
@@ -92,7 +92,7 @@ yet differ by exactly 4 at depth 2. The whole difference sits on Red's two `g2`
 moves, `g2g3` and `g2g4`, which give Blue 20 replies in `classic` and 18 in `rg`:
 
 * In `rg`, Red's **queen** is on h1. Once the g2 pawn steps off, the queen's
-  h1–a8 diagonal runs g2, f3, e4, d5, c6, b7 — stopping on Blue's b7 pawn, which
+  h1-a8 diagonal runs g2, f3, e4, d5, c6, b7 -- stopping on Blue's b7 pawn, which
   stands directly in front of Blue's king on a8. The b7 pawn is therefore
   **pinned**, and its two moves (`b7c7`, `b7d7`) become illegal.
 * In `classic`, Red's queen is on g1 instead, which is not on that diagonal, and
@@ -110,21 +110,21 @@ moves, `g2g3` and `g2g4`, which give Blue 20 replies in `classic` and 18 in `rg`
 geometry rebuilt from scratch, brute-force attack enumeration) are compared
 move-for-move, not just by leaf count.
 
-* Full perft(3) tree agreement for all five setups — in `selftest.py`, every run.
+* Full perft(3) tree agreement for all five setups -- in `selftest.py`, every run.
 * Random-position cross-check, both generators' complete legal move lists sorted
   and compared.
 
-Throughput on the reference machine: **183–283 positions/s** single-process,
+Throughput on the reference machine: **183-283 positions/s** single-process,
 **2,871 positions/s** sustained across all 10 cores over the full gate run. The
 slow generator is the bottleneck by design; speeding it up would defeat its
 purpose.
 
-(Short parallel runs report a lower rate — progress only advances as whole
+(Short parallel runs report a lower rate -- progress only advances as whole
 chunks finish, so the first few ticks under-count and the ETA overstates. 2,871
 is the sustained figure from the 10 M run, not an extrapolation.)
 
 Positions are drawn from two sources, because neither covers the rule surface
-alone: 35 % are playouts of 0–45 random legal moves from a random setup and mode
+alone: 35 % are playouts of 0-45 random legal moves from a random setup and mode
 (these reach castling and en-passant sequences), 65 % are scattered positions
 with seats deliberately placed at home, en-passant offers planted together with a
 pawn positioned to accept them, dead seats, and pieces on promotion ranks.
@@ -145,14 +145,14 @@ selftest.py --crosscheck 10000000 --workers 0
 ```
 
 10,000,000 positions, **0 disagreements**, 3,482.9 s (58 min) at 2,871 positions/s
-on the reference machine, seed 0. 243,138 positions (2.4 %) were terminal — no
-legal move for the side to move — which is the expected rate for scattered
+on the reference machine, seed 0. 243,138 positions (2.4 %) were terminal -- no
+legal move for the side to move -- which is the expected rate for scattered
 positions and confirms the sample reaches checkmate and stalemate shapes rather
 than only quiet middlegames.
 
 Coverage over the run: 983,351 en-passant captures, 1,992,104 promotions,
 1,371,517 castles, 2,257,281 positions with the side to move in check, 4,053,962
-with at least one seat eliminated. Every one of those is asserted non-zero — a
+with at least one seat eliminated. Every one of those is asserted non-zero -- a
 cross-check that never generated an en-passant capture would pass vacuously.
 
 Both Phase 1 gate conditions are therefore met: the two independently written
@@ -162,16 +162,16 @@ above for all five setups with `modern` matching Athena exactly.
 ## Phase 2 gate: PASSED
 
 The C core (`src/c/tetrarch.c`, reached through `tetrarch/core.py`) declares no
-chess constants of its own — every table is pushed in from `board.py` at
+chess constants of its own -- every table is pushed in from `board.py` at
 startup, and the struct layouts are asserted against the C `sizeof` at load
 time.
 
-* **Node-for-node with Python**: identical perft at every depth 1–5, for all
+* **Node-for-node with Python**: identical perft at every depth 1-5, for all
   five setups, in both modes. 50 comparisons, 0 differences.
 * **Depths 6 and 7 against Athena**: exact, as tabulated above.
 * **Zobrist keys agree bit-for-bit** between C and Python over random positions.
 * **`is_attacked` agrees** between C and Python over random positions and squares.
-* **Move lists agree** — the cross-check is now three-way (fast Python, slow
+* **Move lists agree** -- the cross-check is now three-way (fast Python, slow
   Python, C), so a C-only bug is caught by the same gate.
 
 ### Key and unmake integrity
@@ -203,4 +203,4 @@ Bench signature at depth 5 over the five frozen positions in `bench.py`:
 
 The node count is exact and machine-independent; the nps is the M2 Pro figure
 above. `bench.py --rounds 9` discards round 1 and reports the median with its
-spread — use that, not the single-round number, for any NPS claim under 1 %.
+spread -- use that, not the single-round number, for any NPS claim under 1 %.
