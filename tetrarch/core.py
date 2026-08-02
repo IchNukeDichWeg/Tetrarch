@@ -24,7 +24,11 @@ MAX_MOVES = 1024
 DEFAULT_TT_MB = 64
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-LIB_PATH = os.path.join(os.path.dirname(_HERE), "build", "libtetrarch.so")
+#: TETRARCH_LIB points the binding at a different build. The reason it exists
+#: is measurement: comparing two builds means alternating between them in one
+#: session, because anything else compares them under different machine load.
+LIB_PATH = os.environ.get("TETRARCH_LIB") or os.path.join(
+    os.path.dirname(_HERE), "build", "libtetrarch.so")
 
 
 class TtParams(ctypes.Structure):

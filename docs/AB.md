@@ -497,6 +497,46 @@ checkmate. selftest pins the never-invents property.
 Screened +36.62 ± 15.43 over 2,000 first -- the confirm landed almost exactly on
 the screen. Released as **v4**.
 
+### NNUE propagation in int8 SIMD -- +23.5% NPS, no A/B needed
+
+Not an Elo measurement, and deliberately so. The evaluation returns the same
+integer it always did, so the search takes the same path, visits the same nodes
+and picks the same moves. `SEARCH_PINS` in selftest.py pins those node counts
+and is unmoved. A change that cannot alter a decision does not need 2000 games
+to authorise it; it needs a proof that it alters nothing, and a stopwatch.
+
+The proof: `nn_crelu` clamps activations to [0,127] and the extras to
+[-127,127], so every input to layers 2-4 already fits in int8. The products are
+exact in int32 -- the widest partial sum is 263 x 127 x 127, three orders below
+overflow -- and integer addition is associative, so the order the SIMD lanes
+accumulate in cannot change the total. Bit-identical by construction rather
+than by measurement, though it was measured too: 400 positions across all five
+setups, zero mismatches, against both the vector build and `-DNN_SCALAR`.
+
+The stopwatch, M2 Pro, depth 7, three builds alternated in one session so that
+background load fell on all of them equally:
+
+| build | nps | |
+|---|---:|---|
+| original, int32 arrays | 796,941 | 1.000x |
+| int8 arrays, scalar dot | 884,978 | 1.110x |
+| int8 arrays, SDOT | 984,357 | **1.235x** |
+
+Worth reading that middle row before reaching for intrinsics elsewhere. Half
+the gain is just narrowing the arrays from int32 to int8, which lets the
+compiler vectorise the ordinary loop by itself. The hand-written SDOT adds
+1.113x on top of that, not the whole 1.235x.
+
+Per call the evaluation went from 547.6 ns to 157.4 ns, a 3.5x speedup, which
+moves it from the largest identified component of a node to one of the
+smallest. What that leaves behind is movegen and whatever is in the residual;
+see the caveat in bench.py before trusting the residual's size.
+
+**Measure builds by alternating them.** The first attempt compared a fresh
+build against a number taken twenty minutes earlier and made this look like
++20%; the machine's load average had gone from 3.81 to 8.24 in between.
+`TETRARCH_LIB` exists so that comparison can be interleaved instead.
+
 ### Repetition detection -- built, NOT a measured gain, default on
 
 `setoption name Repetitions`, default **on**. A position the search is walking

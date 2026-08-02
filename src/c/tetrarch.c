@@ -894,34 +894,94 @@ static void nn_extras(const TtBoard *b, int persp, int32_t *out)
     }
 }
 
+/* Dot product of `n` int8 pairs, `n` a multiple of 32.
+ *
+ * `a` must be non-negative. Every caller passes crelu output, which is [0,127],
+ * and the AVX2 path needs that: `maddubs` reads its first operand as unsigned.
+ * The signed extras are deliberately not routed through here.
+ *
+ * This is bit-identical to the scalar loop, not merely close. The products are
+ * exact in int32 and integer addition is associative, so the order the lanes
+ * accumulate in cannot change the total. That matters more than the speed: an
+ * evaluation that moved by a single centipawn would change which move is
+ * chosen and quietly invalidate every A/B in docs/AB.md. */
+/* -DNN_SCALAR forces the reference loop, so the vector paths can be shown
+ * bit-identical on any machine rather than only where they compile. */
+#if !defined(NN_SCALAR) && defined(__ARM_FEATURE_DOTPROD)
+#include <arm_neon.h>
+static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
+{
+    int32x4_t acc = vdupq_n_s32(0);
+    int i;
+    for (i = 0; i < n; i += 16)
+        acc = vdotq_s32(acc, vld1q_s8(a + i), vld1q_s8(b + i));
+    return vaddvq_s32(acc);
+}
+#elif !defined(NN_SCALAR) && defined(__AVX2__)
+#include <immintrin.h>
+static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
+{
+    /* maddubs sums two products into one int16 with saturation. The widest
+     * pair here is 127*127 + 127*127 = 32,258 against a 32,767 ceiling, so it
+     * cannot saturate -- but the margin is 1.6%, so it is a real constraint on
+     * the quantisation rather than a comfortable one. Raising NN_CRELU past
+     * 127 would break this path silently. */
+    __m256i acc = _mm256_setzero_si256();
+    const __m256i ones = _mm256_set1_epi16(1);
+    __m128i lo;
+    int i;
+    for (i = 0; i < n; i += 32) {
+        __m256i va = _mm256_loadu_si256((const __m256i *)(a + i));
+        __m256i vb = _mm256_loadu_si256((const __m256i *)(b + i));
+        acc = _mm256_add_epi32(
+            acc, _mm256_madd_epi16(_mm256_maddubs_epi16(va, vb), ones));
+    }
+    lo = _mm_add_epi32(_mm256_castsi256_si128(acc),
+                       _mm256_extracti128_si256(acc, 1));
+    lo = _mm_hadd_epi32(lo, lo);
+    lo = _mm_hadd_epi32(lo, lo);
+    return _mm_cvtsi128_si32(lo);
+}
+#else
+static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
+{
+    int32_t z = 0;
+    int i;
+    for (i = 0; i < n; i++) z += a[i] * b[i];
+    return z;
+}
+#endif
+
 static int32_t nnue_eval(const TtBoard *b)
 {
     const int32_t *acc;
-    int32_t x[NN_L1 + NN_EXTRA];
-    int32_t h1[NN_L2], h2[NN_L3];
+    int8_t x[NN_L1 + NN_EXTRA], h1[NN_L2], h2[NN_L3];
+    int32_t ex[NN_EXTRA];
     int32_t out;
     int j, k, persp = b->turn;
 
     if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
     acc = nn_acc[persp];
 
-    for (j = 0; j < NN_L1; j++) x[j] = nn_crelu(acc[j], NN_SHIFT1);
-    nn_extras(b, persp, x + NN_L1);
+    /* crelu bounds these to [0,127] and the extras to [-127,127], so the whole
+     * propagation is int8 by construction. */
+    for (j = 0; j < NN_L1; j++) x[j] = (int8_t)nn_crelu(acc[j], NN_SHIFT1);
+    nn_extras(b, persp, ex);
+    for (j = 0; j < NN_EXTRA; j++) x[NN_L1 + j] = (int8_t)ex[j];
 
     for (k = 0; k < NN_L2; k++) {
         const int8_t *row = nn_w2 + (size_t)k * (NN_L1 + NN_EXTRA);
-        int32_t z = nn_b2[k];
-        for (j = 0; j < NN_L1 + NN_EXTRA; j++) z += x[j] * row[j];
-        h1[k] = nn_crelu(z, NN_SHIFT2);
+        int32_t z = nn_b2[k] + nn_dot(x, row, NN_L1);
+        /* The extras run negative, so they stay off the vector path. Seven
+         * values against 256 is not worth a second code path. */
+        for (j = NN_L1; j < NN_L1 + NN_EXTRA; j++) z += x[j] * row[j];
+        h1[k] = (int8_t)nn_crelu(z, NN_SHIFT2);
     }
     for (k = 0; k < NN_L3; k++) {
         const int8_t *row = nn_w3 + (size_t)k * NN_L2;
-        int32_t z = nn_b3[k];
-        for (j = 0; j < NN_L2; j++) z += h1[j] * row[j];
-        h2[k] = nn_crelu(z, NN_SHIFT2);
+        h2[k] = (int8_t)nn_crelu(nn_b3[k] + nn_dot(h1, row, NN_L2), NN_SHIFT2);
     }
-    out = nn_b4;
-    for (j = 0; j < NN_L3; j++) out += h2[j] * nn_w4[j];
+    out = nn_b4 + nn_dot(h2, nn_w4, NN_L3);
     return out >> NN_SHIFT_OUT;
 }
 
