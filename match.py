@@ -328,15 +328,19 @@ def main():
         epilog="The progress bar is written to stderr unconditionally and is "
                "not gated on isatty(), so piping through tee keeps it. "
                "Use --quiet to silence it.")
-    ap.add_argument("positions", type=int,
+    ap.add_argument("positions", type=int, nargs="?",
                     help="number of OPENING POSITIONS; games = positions x 4")
-    ap.add_argument("--log", required=True, metavar="PATH",
+    ap.add_argument("--log", metavar="PATH",
                     help="per-game JSONL log; required, no default, so a smoke "
                          "test can never overwrite a real run")
     ap.add_argument("--engine-a", default="python3 uci.py")
     ap.add_argument("--engine-b", default="python3 uci.py",
                     help="engine command, or the literal word 'random'")
     ap.add_argument("--nodes", type=int)
+    ap.add_argument("--summarise", metavar="LOG",
+                    help="re-report a finished --log and exit; the summary is "
+                         "printed, not stored, and an overnight run scrolls "
+                         "away")
     ap.add_argument("--movetime", type=int, metavar="MS")
     ap.add_argument("--depth", type=int)
     ap.add_argument("--setup", default=DEFAULT_SETUP, choices=SETUPS)
@@ -359,6 +363,25 @@ def main():
                     help="also write every game as PGN4, for the viewer")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+
+    if args.summarise:
+        # Everything summarise() needs is in the log: it groups by opening and
+        # sums the rotation, and both fields are written per game.
+        games, by_opening = [], {}
+        with open(args.summarise) as fh:
+            for line in fh:
+                try:
+                    g = json.loads(line)
+                except ValueError:
+                    continue        # a run killed mid-write leaves one short
+                games.append(g)
+                if g.get("score") is not None:
+                    by_opening.setdefault(g["opening"], []).append(g["score"])
+        print(summarise(by_opening, games, 0.0))
+        return 0
+    # Required for a real run, checked here so --summarise needs neither.
+    if args.positions is None or not args.log:
+        ap.error("positions and --log are required")
 
     instruments = [x for x in (args.nodes, args.movetime, args.depth)
                    if x is not None]
