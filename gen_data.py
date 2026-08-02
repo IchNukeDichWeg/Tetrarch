@@ -44,7 +44,8 @@ import signal
 import sys
 import time
 
-from tetrarch.board import start_board, SETUPS, DEFAULT_SETUP, MODE_TEAMS, move_str
+from tetrarch.board import (
+    Board, start_board, SETUPS, DEFAULT_SETUP, MODE_TEAMS, move_str)
 from tetrarch import core
 from tetrarch import movegen as gen
 from tetrarch.search import Limits, search
@@ -58,15 +59,20 @@ RESIGN_PLIES = 8
 
 def play_one(job):
     """Self-play one game. Returns a dict, or None if the opening was dead."""
-    index, seed, setup, opening_plies, nodes, depth = job
+    index, seed, setup, opening_plies, nodes, depth, opening = job
     rng = random.Random(seed)
 
-    board = start_board(setup, MODE_TEAMS)
-    for _ in range(opening_plies):
-        legal = gen.gen_legal(board)
-        if not legal:
-            return None
-        board.make(rng.choice(legal))
+    if opening is not None:
+        # A book position, already walked and already checked for balance.
+        setup, fen4 = opening
+        board = Board.from_fen4(fen4, MODE_TEAMS)
+    else:
+        board = start_board(setup, MODE_TEAMS)
+        for _ in range(opening_plies):
+            legal = gen.gen_legal(board)
+            if not legal:
+                return None
+            board.make(rng.choice(legal))
     if not gen.gen_legal(board):
         return None
 
@@ -135,12 +141,19 @@ def setup_for(index, setup):
     return SETUPS[index % len(SETUPS)] if setup == "all" else setup
 
 
+#: Loaded once in main and read by the job generator. A module global rather
+#: than an argument because the generator is consumed inside a Pool, and
+#: shipping the whole book with every job would copy it per game.
+BOOK = None
+
+
 def jobs(start, count, args):
     """A generator, so Pool's thread-backed task handler feeds workers lazily
     rather than materialising millions of items in a queue."""
     for i in range(start, start + count):
         yield (i, args.seed * 1000003 + i, setup_for(i, args.setup),
-               args.opening_plies, args.nodes, args.depth)
+               args.opening_plies, args.nodes, args.depth,
+               BOOK[i % len(BOOK)] if BOOK else None)
 
 
 def resume_index(path):
@@ -195,6 +208,9 @@ def main():
     ap.add_argument("--setup", default=DEFAULT_SETUP,
                     choices=list(SETUPS) + ["all"],
                     help="one setup, or `all` to round-robin the five")
+    ap.add_argument("--book", metavar="PATH",
+                    help="opening positions from book.py instead of random "
+                         "plies; --setup and --opening-plies are then unused")
     ap.add_argument("--opening-plies", type=int, default=10)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--net", metavar="PATH",
@@ -224,9 +240,17 @@ def main():
     if args.net and not os.path.exists(args.net):
         ap.error("no such net: %s" % args.net)
 
+    global BOOK
+    if args.book:
+        import book as book_mod
+        BOOK = book_mod.load(args.book)
+
     nproc = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
     print("%d games (%d remaining) | %s teams | nodes %d depth %d | eval %s"
-          % (args.games, remaining, args.setup, args.nodes, args.depth,
+          % (args.games, remaining,
+             ("book:%s (%d)" % (os.path.basename(args.book), len(BOOK)))
+             if BOOK else args.setup,
+             args.nodes, args.depth,
              args.net if args.net else "hand (throwaway)"))
 
     started = time.time()

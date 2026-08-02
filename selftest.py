@@ -1306,6 +1306,68 @@ def test_repetition():
     check_all("the halfmove clock bounds the scan", bounded)
 
 
+def test_book():
+    section("opening book (book.py)")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+    import book as book_mod
+
+    # Built rather than mocked: the point of a book is that every position in
+    # it is playable and level, and only actually running the filter shows
+    # whether it is. Small and shallow so it stays a second, not a minute.
+    core.set_hash(16)
+    band, depth = 60, 4
+    jobs = [(i, 4242 + i, book_mod.setup_for(i, "all"), 8, depth, band)
+            for i in range(160)]
+    found = [c for c in (book_mod.candidate(j) for j in jobs) if c]
+    check("the filter keeps something", len(found) >= 10,
+          "%d of %d walks" % (len(found), len(jobs)))
+
+    over = [s for _st, _f, _k, s in found if abs(s) > band]
+    check("every position is inside the band", not over,
+          "worst %d" % (max(map(abs, over)) if over else 0))
+
+    # Walks may legitimately transpose, so distinctness is not the assertion.
+    # What has to hold is that the key identifies the position: two walks that
+    # reach the same board must share a key, or the dedup in main() keeps both
+    # and the book quietly over-weights whatever is easy to reach.
+    by_key = {}
+    collide = differ = 0
+    for _st, fen4, key, _s in found:
+        if key in by_key:
+            if by_key[key] == fen4:
+                collide += 1
+            else:
+                differ += 1
+        by_key[key] = fen4
+    check("equal positions share a key, unequal ones do not", differ == 0,
+          "%d walks, %d distinct, %d exact repeats" % (len(found), len(by_key), collide))
+
+    # Round-robin has to stay even, because a book that drifts towards one
+    # setup silently retrains the net on the setup it already knew.
+    spread = {}
+    for i in range(500):
+        s = book_mod.setup_for(i, "all")
+        spread[s] = spread.get(s, 0) + 1
+    check("`all` spreads evenly over the setups",
+          len(spread) == len(SETUPS) and max(spread.values()) - min(spread.values()) <= 1,
+          str(spread))
+    check("a single setup is left alone",
+          {book_mod.setup_for(i, "rg") for i in range(20)} == {"rg"})
+
+    # And the file round-trips, since both consumers read it back.
+    path = os.path.join(tempfile.gettempdir(), "tetrarch_book_selftest.txt")
+    with open(path, "w") as handle:
+        handle.write("# a comment\n\n")
+        for st, fen4, _k, _s in found[:5]:
+            handle.write("%s %s\n" % (st, fen4))
+    rows = book_mod.load(path)
+    check("the book file round-trips", len(rows) == 5
+          and all(len(r) == 2 for r in rows))
+    os.remove(path)
+
+
 def test_nnue():
     section("NNUE features and net format (Phase 4)")
     from tetrarch import nnue
@@ -2028,6 +2090,7 @@ def main():
     test_eval()
     test_search(workers)
     test_repetition()
+    test_book()
     test_nnue()
     test_pgn4_named_start()
     test_resume()

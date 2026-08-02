@@ -149,6 +149,11 @@ def get_engine(side, command, setup, mode, hash_mb=16, net=None, opts=()):
 
 # --- openings ---------------------------------------------------------------
 
+#: Set once in main. A module global so the job generator can read it without
+#: shipping a copy of the book to every worker.
+BOOK = None
+
+
 def make_opening(setup, mode, plies, seed):
     """A start position reached by `plies` random legal moves. Deterministic."""
     rng = random.Random(seed)
@@ -170,7 +175,11 @@ def play_game(job):
     (index, opening_seed, rotation, setup, mode, plies, cmd_a, cmd_b,
      go_string, seed, want_pgn4, net_a, net_b, hash_mb, opts_a, opts_b) = job
 
-    base = make_opening(setup, mode, plies, opening_seed)
+    if BOOK is not None:
+        _setup, fen4 = BOOK[opening_seed % len(BOOK)]
+        base = Board.from_fen4(fen4, mode)
+    else:
+        base = make_opening(setup, mode, plies, opening_seed)
     if base is None:
         return None
     board = rotate(base, rotation)
@@ -375,6 +384,11 @@ def main():
     ap.add_argument("--depth", type=int)
     ap.add_argument("--setup", default=DEFAULT_SETUP, choices=SETUPS)
     ap.add_argument("--opening-plies", type=int, default=8)
+    ap.add_argument("--book", metavar="PATH",
+                    help="opening positions from book.py rather than random "
+                         "plies. Both engines get the same position and the "
+                         "same rotation, so this only removes openings that "
+                         "were decided before either side moved.")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--workers", type=int, default=1,
                     help="0 means every core")
@@ -448,8 +462,15 @@ def main():
 
     nproc = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
     total = args.positions * ROTATIONS
+    global BOOK
+    if args.book:
+        import book as book_mod
+        BOOK = book_mod.load(args.book)
+
     print("setup %s teams | %s | %d openings x %d = %d games | %d workers"
-          % (args.setup, args.go_string, args.positions, ROTATIONS, total, nproc))
+          % (("book:%s (%d)" % (os.path.basename(args.book), len(BOOK)))
+             if BOOK else args.setup,
+             args.go_string, args.positions, ROTATIONS, total, nproc))
     def describe(cmd, net, opts):
         bits = ["net=%s" % (net or "none (hand eval)")]
         bits += ["%s=%s" % kv for kv in opts]
