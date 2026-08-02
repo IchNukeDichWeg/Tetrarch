@@ -34,8 +34,8 @@
   main { display:flex; gap:16px; padding:16px; align-items:flex-start; flex-wrap:wrap; }
   canvas { background:var(--panel); border:1px solid var(--line);
            border-radius:6px; display:block; }
-  .side { display:flex; flex-direction:column; gap:12px; min-width:320px;
-          flex:1; max-width:520px; }
+  .side { display:flex; flex-direction:column; gap:12px; min-width:300px;
+         flex:1 1 300px; max-width:380px; }
   .card { background:var(--panel); border:1px solid var(--line);
           border-radius:6px; padding:10px 12px; }
   .card h2 { font-size:11px; margin:0 0 8px; color:var(--dim);
@@ -65,6 +65,12 @@
   kbd { background:#2b303a; border:1px solid var(--line); border-radius:3px;
         padding:0 4px; font-size:11px; }
   header a { color:var(--dim); font-size:13px; margin-left:auto; }
+  /* Stacked, each slider on its own line under its readout. Side by side in
+     one row they wrapped and read as a single broken control. */
+  label.slider { display:block; margin:0 0 12px; }
+  label.slider b { color:var(--text); font-variant-numeric:tabular-nums; }
+  label.slider input[type=range] { display:block; width:100%; margin-top:5px;
+                                   accent-color:#e2c86a; }
 </style>
 </head>
 <body>
@@ -77,7 +83,7 @@
 
 <main>
   <div>
-    <canvas id="board" width="616" height="616"></canvas>
+    <canvas id="board" width="784" height="784"></canvas>
     <div class="row" style="margin-top:10px">
       <button id="first">|◀</button><button id="prev">◀</button>
       <button id="next">▶</button><button id="last">▶|</button>
@@ -100,19 +106,16 @@
     <div class="card"><h2>Seats</h2><table id="seats"></table></div>
     <div class="card" id="evalCard" style="display:none">
       <h2>Evaluation</h2>
-      <div class="row">
-        <button id="evalBtn">Evaluate</button>
-        <label class="muted">lines
-          <select id="evalLines">
-            <option>1</option><option>3</option><option>5</option>
-          </select></label>
-        <label class="muted">depth
-          <select id="evalDepth">
-            <option>4</option><option selected>6</option><option>8</option>
-          </select></label>
-      </div>
+      <label class="slider muted">lines <b id="linesVal">3</b>
+        <input type="range" id="evalLines" min="1" max="5" step="1" value="3"></label>
+      <label class="slider muted">depth <b id="depthVal">6</b>
+        <input type="range" id="evalDepth" min="2" max="10" step="1" value="6"></label>
+      <div class="row"><button id="evalBtn">Evaluate</button></div>
       <div id="evalOut" class="muted"></div>
     </div>
+  </div>
+
+  <div class="side">
     <div class="card"><h2>Moves</h2><div id="moves" class="muted">nothing loaded</div></div>
   </div>
 </main>
@@ -122,7 +125,7 @@
 const SEATS = ["R","B","Y","G"], NAME = {R:"Red",B:"Blue",Y:"Yellow",G:"Green"};
 const COLOUR = {r:"#d64f4f", b:"#4f86d6", y:"#d6b23f", g:"#46a85c", d:"#6d7382"};
 const GLYPH = {P:"♟",N:"♞",B:"♝",R:"♜",Q:"♛",K:"♚"};
-const N = 14, CELL = 44;
+const N = 14, CELL = 56;
 
 // --- board ---------------------------------------------------------------
 const playable = (f,r) => f>=0 && f<N && r>=0 && r<N &&
@@ -347,6 +350,10 @@ function snapshot(st, mv, token){
 
 // --- rendering -----------------------------------------------------------
 let frames = [], tokens = [], ply = 0, flipped = 0, mode = "teams";
+//: Candidate moves from the last Evaluate, drawn on the board. One colour per
+//: rank, strongest first, so the ranking is readable without the list.
+let pvLines = [];
+const PV_COLOUR = ["#e2c86a", "#6ac07a", "#5fb8d6", "#c98ad6", "#e2946a"];
 
 function view(f, r){
   let x = f, y = r;
@@ -366,7 +373,7 @@ function draw(){
     ctx.fillRect(x,y,CELL,CELL);
     const p = fr.grid[r][f];
     if (!p) continue;
-    ctx.font = "30px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = (CELL-18) + "px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
     const glyph = GLYPH[p.t] || "?";
     ctx.fillStyle = "rgba(0,0,0,.55)";
     ctx.fillText(glyph, x+CELL/2+1, y+CELL/2+2);
@@ -376,12 +383,43 @@ function draw(){
     ctx.globalAlpha = 1;
   }
   if (fr.move){
-    ctx.strokeStyle = "#e2c86a"; ctx.lineWidth = 2;
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.globalAlpha = .5;
     for (const sq of [fr.move.from, fr.move.to]){
       const [vf,vr] = view(sq[0], sq[1]);
       ctx.strokeRect(vf*CELL+1, (13-vr)*CELL+1, CELL-2, CELL-2);
     }
+    ctx.globalAlpha = 1;
   }
+  drawPv(ctx);
+}
+
+// Each candidate gets its own colour and an inset, so overlapping suggestions
+// stay distinguishable instead of painting over one another.
+function drawPv(ctx){
+  pvLines.forEach((ln, i) => {
+    const col = PV_COLOUR[i % PV_COLOUR.length], pad = 2 + i * 3;
+    ctx.strokeStyle = col;
+    for (const [sq, w] of [[ln.from, 1.5], [ln.to, 3]]){
+      if (!sq) continue;
+      const [vf,vr] = view(sq[0], sq[1]);
+      ctx.lineWidth = w;
+      ctx.strokeRect(vf*CELL+pad, (13-vr)*CELL+pad,
+                     CELL-2*pad, CELL-2*pad);
+    }
+    if (ln.to){
+      const [vf,vr] = view(ln.to[0], ln.to[1]);
+      ctx.fillStyle = col;
+      ctx.font = "bold 12px ui-monospace,monospace";
+      ctx.textAlign = "left"; ctx.textBaseline = "top";
+      ctx.fillText(String(i+1), vf*CELL+pad+2, (13-vr)*CELL+pad+1);
+    }
+  });
+}
+
+//: "h2h3" or "e13e14q" as the engine reports it, not the PGN4 token form.
+function splitEngineMove(mv){
+  const m = /^([a-n](?:1[0-4]|[1-9]))([a-n](?:1[0-4]|[1-9]))([qrbn])?$/.exec(mv);
+  return m ? [parseSquare(m[1]), parseSquare(m[2])] : null;
 }
 
 function renderSeats(){
@@ -414,6 +452,7 @@ function renderMoves(){
 }
 
 function goto(n){
+  pvLines = [];        // the suggestions belonged to the position we left
   if (!frames.length) return;
   ply = Math.max(0, Math.min(n, frames.length-1));
   document.getElementById("plyLabel").textContent =
@@ -460,6 +499,11 @@ document.getElementById("prev").onclick = () => goto(ply-1);
 document.getElementById("next").onclick = () => goto(ply+1);
 document.getElementById("last").onclick = () => goto(frames.length-1);
 document.getElementById("flip").onchange = e => { flipped = e.target.checked?1:0; draw(); };
+for (const [id, out] of [["evalLines","linesVal"], ["evalDepth","depthVal"]]){
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.oninput = () => { document.getElementById(out).textContent = el.value; };
+}
 function cpText(cp){
   if (Math.abs(cp) >= 29900)
     return (cp > 0 ? "#" : "-#") + Math.ceil((30000 - Math.abs(cp)) / 2);
@@ -484,11 +528,18 @@ document.getElementById("evalBtn").onclick = async () => {
   const seat = NAME[SEATS[frames[ply].turn]];
   const head = `${seat}'s team to move · depth ${d.depth} · `
              + `${d.nodes.toLocaleString()} nodes`;
-  const rows = (d.lines || [{move: d.best, score: d.score}]).map((l, i) =>
-    `<div><span class="num">${i + 1}.</span> <b>${cpText(l.score)}</b> `
+  const list = d.lines || [{move: d.best, score: d.score}];
+  pvLines = list.map(l => {
+    const s = splitEngineMove(l.move);
+    return s ? {from: s[0], to: s[1]} : {};
+  });
+  const rows = list.map((l, i) =>
+    `<div><span class="num" style="color:${PV_COLOUR[i % PV_COLOUR.length]}">`
+    + `${i + 1}.</span> <b>${cpText(l.score)}</b> `
     + `<span class="muted">${(l.pv && l.pv.length ? l.pv : [l.move]).join(" ")}`
     + `</span></div>`).join("");
   out.innerHTML = `<div class="muted">${head}</div>${rows}`;
+  draw();
 };
 document.getElementById("sample").onclick = () => {
   document.getElementById("pgn").value =
