@@ -71,6 +71,10 @@ class Engine:
         print("option name LMPMaxDepth type spin default 3 min 0 max 8")
         print("option name LMPBase type spin default 4 min 1 max 32")
         print("option name QSEvasions type check default true")
+        # Hand eval only; a loaded net ignores it. Default off until it has
+        # won an A/B, and it must pay for widening the lazy-eval margin
+        # (docs/AB.md) as well as for its own cost.
+        print("option name Mobility type check default false")
         # Analysis only. Above 1 the root loses its cutoffs so every line has
         # an exact score instead of a bound, which costs several times the
         # nodes -- see search_multi. 1 is the path every A/B was measured on.
@@ -115,6 +119,8 @@ class Engine:
             core.set_lmp(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "multipv":
             self.multipv = max(1, min(int(value), 64))
+        elif name == "mobility":
+            core.set_mobility(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "qsevasions":
             core.set_qs_evasions(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name in ("lmpmaxdepth", "lmpbase"):
