@@ -22,7 +22,7 @@ from .board import (
     SQUARES, QUEEN_DIRS, KNIGHT_DELTAS, DIAG, ORTHO, VALID, PC_COLOR, PC_TYPE,
     DEAD_UNKNOWN, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, PQUEEN, NTYPE,
 )
-from .movegen import is_attacked
+from .movegen import is_attacked, same_team
 
 #: The FFA capture values, x100 (§8.1). Bishop is 5 and not 3 -- the diagonals
 #: are long on a 14x14 board. A promoted queen is a 1-point queen (§4.2).
@@ -95,7 +95,6 @@ def piece_mobility(b, sq, piece):
 
 def mobility(b):
     """Mobility, from the side to move's team, in centipawns."""
-    me = b.turn & 1
     total = 0
     for sq in SQUARES:
         p = b.sq[sq]
@@ -105,7 +104,7 @@ def mobility(b):
         if color == DEAD_UNKNOWN or not b.alive[color]:
             continue
         m = piece_mobility(b, sq, p) * MOBILITY
-        total += m if (color & 1) == me else -m
+        total += m if same_team(b.mode, color, b.turn) else -m
     return total
 
 
@@ -115,8 +114,11 @@ def evaluate(b):
     In Teams the seat rotation alternates team every ply (team = seat & 1, and
     the turn advances by one), so this sign convention feeds plain negamax with
     no special casing (§2).
+
+    In FFA a seat is its own team, so the same expression reads "me against the
+    other three" -- which is the paranoid perspective the FFA search needs, and
+    the reason this asks `same_team` rather than testing seat parity itself.
     """
-    me = b.turn & 1
     total = 0
 
     for sq in SQUARES:
@@ -129,7 +131,7 @@ def evaluate(b):
         if color == DEAD_UNKNOWN or not b.alive[color]:
             continue
         value = PIECE_VALUE[PC_TYPE[p]]
-        total += value if (color & 1) == me else -value
+        total += value if same_team(b.mode, color, b.turn) else -value
 
     for color in range(4):
         if not b.alive[color]:
@@ -143,6 +145,6 @@ def evaluate(b):
             if VALID[t] and is_attacked(b, t, color):
                 danger += 1
         penalty = danger * KING_DANGER
-        total += -penalty if (color & 1) == me else penalty
+        total += -penalty if same_team(b.mode, color, b.turn) else penalty
 
     return total + (mobility(b) if USE_MOBILITY else 0)

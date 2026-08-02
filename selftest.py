@@ -876,18 +876,37 @@ def test_eval():
     check("bishop and rook are both worth 5 (§8.1)",
           eval_hand.PIECE_VALUE[BISHOP] == eval_hand.PIECE_VALUE[ROOK] == 500)
 
-    # The score is from the side to move's TEAM, and the team flips every ply,
-    # so advancing the turn by one seat must negate it exactly.
+    # In TEAMS the score is from the side to move's team and the team flips
+    # every ply, so advancing the turn by one seat must negate it exactly.
+    # That property is what lets the search be plain negamax, so it is pinned.
+    #
+    # It does NOT hold in FFA, and must not: there a seat is its own team, so
+    # the score reads "me against the other three" and the next seat's score is
+    # a different quantity, not the negative of this one. That is precisely why
+    # FFA cannot use negamax and needs a paranoid search. The check below used
+    # to run on both modes and passed only because the evaluation asked for
+    # seat parity in FFA too, which was wrong and invisible.
     rng = random.Random(23)
-    asym = 0
+    asym = ffa_seen = ffa_asym = 0
+    teams_seen = 0
     for _ in range(200):
         b = random_position(rng)
         flipped = b.copy()
         flipped.turn = (b.turn + 1) & 3
         flipped.recompute_key()
-        if eval_hand.evaluate(b) != -eval_hand.evaluate(flipped):
-            asym += 1
-    check("eval negates when the turn advances one seat", asym == 0,
+        negates = eval_hand.evaluate(b) == -eval_hand.evaluate(flipped)
+        if b.mode == MODE_TEAMS:
+            teams_seen += 1
+            if not negates:
+                asym += 1
+        else:
+            ffa_seen += 1
+            if not negates:
+                ffa_asym += 1
+    check("FFA scores each seat against the other three, so it does not negate",
+          ffa_asym > 0, "%d of %d FFA positions" % (ffa_asym, ffa_seen))
+    check("the sample covered both modes", teams_seen > 0 and ffa_seen > 0)
+    check("eval negates when the turn advances one seat, in Teams", asym == 0,
           "%d positions" % asym)
 
 

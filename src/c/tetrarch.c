@@ -1216,7 +1216,6 @@ static int32_t nnue_eval(const TtBoard *b)
 /* The cheap half: material only. */
 static int32_t hand_material(const TtBoard *b)
 {
-    int me = b->turn & 1;
     int32_t total = 0;
     int sq;
 
@@ -1231,7 +1230,8 @@ static int32_t hand_material(const TtBoard *b)
          * still on the board and still block; a material eval cannot see
          * that, and the throwaway is not the place to try. */
         if (pc == DEAD_UNKNOWN || !b->alive[pc]) continue;
-        total += ((pc & 1) == me ? 1 : -1) * P.piece_value[P.pc_type[p]];
+        total += (same_team(b->mode, pc, b->turn) ? 1 : -1)
+                 * P.piece_value[P.pc_type[p]];
     }
     return total;
 }
@@ -1241,7 +1241,6 @@ static int32_t hand_material(const TtBoard *b)
  * makes a lazy bail sound. */
 static int32_t hand_danger(const TtBoard *b)
 {
-    int me = b->turn & 1;
     int32_t total = 0;
     int c, i;
 
@@ -1254,7 +1253,8 @@ static int32_t hand_danger(const TtBoard *b)
             int t = (k + P.queen_dirs[i]) & 255;
             if (P.valid[t] && tt_is_attacked(b, t, c)) danger++;
         }
-        total += ((c & 1) == me ? -1 : 1) * danger * P.king_danger;
+        total += (same_team(b->mode, c, b->turn) ? -1 : 1)
+                 * danger * P.king_danger;
     }
     return total;
 }
@@ -1310,7 +1310,6 @@ static int32_t piece_mobility(const TtBoard *b, int sq, uint8_t piece)
 
 static int32_t hand_mobility(const TtBoard *b)
 {
-    int me = b->turn & 1;
     int32_t total = 0;
     int sq;
 
@@ -1324,7 +1323,7 @@ static int32_t hand_mobility(const TtBoard *b)
         colour = P.pc_color[p];
         if (colour == DEAD_UNKNOWN || !b->alive[colour]) continue;
         m = piece_mobility(b, sq, p) * P.mobility;
-        total += ((colour & 1) == me) ? m : -m;
+        total += same_team(b->mode, colour, b->turn) ? m : -m;
     }
     return total;
 }
