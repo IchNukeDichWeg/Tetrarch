@@ -159,7 +159,8 @@ the others are unmeasured.
 
 `setoption`-free constant in `eval_hand.py`, C toggle default **off**.
 
-chess.com's own evaluation, read out of its browser console, carries mobility
+The reference implementation's own evaluation, read out of its browser
+console, carries mobility
 as its largest positional term, larger than king safety. This had none:
 material and a king-danger count were the whole eval. Counted per piece and
 capped, pawns and kings excluded.

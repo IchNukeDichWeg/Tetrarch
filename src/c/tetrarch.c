@@ -967,7 +967,8 @@ static int32_t hand_danger(const TtBoard *b)
 
 /* --- mobility -------------------------------------------------------------
  *
- * Squares a piece could move to, ignoring pins and check. chess.com's own
+ * Squares a piece could move to, ignoring pins and check. The reference
+ * implementation's own
  * evaluation carries mobility as its largest positional term, larger than king
  * safety, and this had none.
  *

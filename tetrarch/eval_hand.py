@@ -37,7 +37,8 @@ PIECE_VALUE[PQUEEN] = 100
 
 KING_DANGER = 12
 
-#: Centipawns per square a piece can reach. chess.com's own evaluation carries
+#: Centipawns per square a piece can reach. The reference implementation's
+#: evaluation carries
 #: mobility as its largest positional term -- larger than king safety -- and
 #: this had none at all, which is the most obvious hole in it.
 #: Mirrors the C toggle. Default off, like every feature that has not yet won

@@ -231,8 +231,8 @@ def api_play_pgn():
     rather than formatting anything itself -- a second move formatter is the
     thing that drifts.
 
-    Tags follow chess.com's own export, including the named StartFen4 -- so
-    the result loads in chess.com's viewer rather than only in ours.
+    Tags follow the standard 4PC export, including the named StartFen4, so
+    the result loads in other 4PC viewers and not only in ours.
     """
     payload = request.get_json(silent=True) or {}
     setup = payload.get("setup", DEFAULT_SETUP)

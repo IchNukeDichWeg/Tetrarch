@@ -184,7 +184,7 @@ function startPosition(setup){
 }
 
 // --- PGN4 ----------------------------------------------------------------
-// See tetrarch/pgn4.py. Confirmed from chess.com's own exports for all five
+// See tetrarch/pgn4.py. Confirmed from real 4PC exports for all five
 // setups in both modes; `modern` carries no tag because it is the default.
 const NAMED_STARTS = {"4pco":"classic", "4pcb":"by", "4pcn":"byg", "4pcrg":"rg"};
 
@@ -208,7 +208,7 @@ function parsePgn4(text){
   const variant = (tags.Variant || "Teams").toLowerCase();
   let setup = "classic";
   setup = namedSetup(tags) || setup;
-  // chess.com writes a NAMED start into StartFen4 -- [StartFen4 "4PCo"] --
+  // A NAMED start goes into StartFen4 -- [StartFen4 "4PCo"] --
   // not always a position, and feeding that to the FEN4 reader throws. A FEN4
   // always has the '-' before its ranks and no name does, so that tells them
   // apart. Kept identical to tetrarch/pgn4.py, which is what
@@ -219,8 +219,8 @@ function parsePgn4(text){
   else if (named) start = startPosition(NAMED_STARTS[named.toLowerCase()] || setup);
   else if (tags.RuleVariants !== undefined && !namedSetup(tags))
     // No StartFen4 means "the default when this was written" -- classic
-    // before 2022, modern after. A RuleVariants tag is the tell: chess.com
-    // writes one on every modern export and the old tagless files have none.
+    // before 2022, modern after. A RuleVariants tag is the tell: every
+    // modern export carries one and the old tagless files have none.
     start = startPosition("modern");
   else start = startPosition(setup);
   const tokens = [];
@@ -494,7 +494,7 @@ document.getElementById("sample").onclick = () => {
   document.getElementById("pgn").value =
 `[Variant "Teams"]
 [Result "0-1"]
-[Site "www.chess.com/4-player-chess"]
+[Site "4-player-chess"]
 
 1. d2-d4 .. b8-c8 .. k13-k11 .. m8-l8
 2. d4-d5 .. b4-d4 .. k11-k10 .. Qn8-m8

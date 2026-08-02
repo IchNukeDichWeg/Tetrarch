@@ -1,10 +1,10 @@
 """PGN4 reading and writing.
 
-The format chess.com uses for four-player games. Section references (§n) are to
+The standard notation for four-player games. Section references (§n) are to
 docs/RULES.md; §11.5 has the summary and this file has the details.
 
     [Variant "Teams"]
-    [Site "www.chess.com/4-player-chess"]
+    [Site "4-player-chess"]
     [Result "0-1"]
 
     1. d2-d4 .. b8-c8 .. k13-k11 .. m8-l8
@@ -18,7 +18,7 @@ by from/to, which also validates it. A token that matches nothing is reported
 with the ply it failed at rather than silently skipped.
 
 Parsing is deliberately permissive, because the input is whatever a human
-pasted out of chess.com: unknown tags are kept, comments and clock annotations
+pasted out of a real game: unknown tags are kept, comments and clock annotations
 are dropped, and the elimination markers (`#` checkmate, `R` resign, `T`
 timeout, `S` stalemate) are recorded rather than treated as moves.
 """
@@ -48,7 +48,7 @@ TERMINATORS = {"#": "checkmate", "R": "resign", "T": "timeout",
                "S": "stalemate", "D": "draw"}
 
 
-#: Named starting positions chess.com writes into StartFen4 instead of a
+#: Named starting positions written into StartFen4 instead of a
 #: position. CONFIRMED by reading its own exports for all five setups in both
 #: modes (§3.6): the code names the POSITION, so it is the same in Teams and
 #: FFA, and `modern` carries no tag at all because it is the live default.
@@ -58,9 +58,9 @@ NAMED_STARTS = {
     "4pcn": "byg",
     "4pcrg": "rg",
 }
-#: The other direction, with chess.com's own casing -- the lookup above is
+#: The other direction, with the standard casing -- the lookup above is
 #: lowercased, but what we WRITE has to match its exports character for
-#: character. `modern` is absent on purpose: chess.com omits the tag for it,
+#: character. `modern` is absent on purpose: no tag is written for it,
 #: and matching that is what makes our PGN4 load there.
 START_NAMES = {
     "classic": "4PCo",
@@ -69,7 +69,7 @@ START_NAMES = {
     "rg": "4PCrg",
 }
 
-#: What chess.com puts in RuleVariants, verbatim from its exports. Teams names
+#: What goes in RuleVariants, verbatim from real exports. Teams names
 #: only en passant; FFA adds the dead-king rule and its promotion override.
 RULE_VARIANTS = {
     MODE_TEAMS: "EnPassant",
@@ -114,9 +114,9 @@ def parse(text):
 
     setup = _named_setup(tags) or DEFAULT_SETUP
 
-    # chess.com does not always put a position in StartFen4. Its own exports
+    # StartFen4 does not always hold a position. Real exports
     # carry a NAMED start -- [StartFen4 "4PCo"] -- and feeding that to the FEN4
-    # reader raises, which used to reject a real chess.com game outright.
+    # reader raises, which used to reject a real game outright.
     #
     # A FEN4 always contains the '-' separating its metadata from the ranks
     # (§11.1), and no named code does, so the two are told apart by that rather
@@ -135,7 +135,7 @@ def parse(text):
             # No StartFen4 at all is genuinely ambiguous: it means "whatever
             # the default was when this was written", and that was classic
             # before 2022 and modern after. A RuleVariants tag is the tell --
-            # chess.com writes one on every modern export, and the pre-2022
+            # one is written on every modern export, and the pre-2022
             # files that omit StartFen4 have no RuleVariants either.
             setup = "modern"
         start = start_board(setup, mode)
@@ -155,7 +155,7 @@ def parse(text):
             tokens.append(token)
             continue
         # Anything else is annotation noise; keep going rather than refuse a
-        # game because chess.com added a field we have not seen.
+        # game because a field we have not seen was added.
     return Game(tags, tokens, start, mode, setup)
 
 
@@ -300,10 +300,10 @@ def _at_turn(board, color):
 
 
 def start_code(start):
-    """The chess.com name for this position, "" for modern, or None.
+    """The standard name for this position, "" for modern, or None.
 
     None means "not a standard start", and the caller has to write a real
-    FEN4. Modern returns "" because chess.com writes no tag for it, and a
+    FEN4. Modern returns "" because no tag is written for it, and a
     reader that defaults to modern would be misled by an explicit one.
     """
     for setup in SETUPS:
@@ -315,9 +315,9 @@ def start_code(start):
 def write(start, moves, tags=None):
     """PGN4 text for a game given its starting position and move list.
 
-    A standard start is written the way chess.com writes it -- the named code,
+    A standard start is written the standard way -- the named code,
     or no tag at all for modern -- rather than as a FEN4 blob, so the result
-    loads in chess.com's own viewer. Anything else still gets a real FEN4.
+    loads in other 4PC viewers. Anything else still gets a real FEN4.
     """
     given = dict(tags or {})
     if "StartFen4" not in given:
@@ -329,7 +329,7 @@ def write(start, moves, tags=None):
     given.setdefault("Variant", "Teams" if start.mode == MODE_TEAMS else "FFA")
     given.setdefault("RuleVariants", RULE_VARIANTS[start.mode])
     given.setdefault("Site", "Tetrarch")
-    # chess.com's own order, so a diff against one of its exports is short.
+    # the standard order, so a diff against a real export is short.
     order = ["StartFen4", "Variant", "RuleVariants", "CurrentMove",
              "TimeControl", "Site"]
     tags = {k: given[k] for k in order if k in given}

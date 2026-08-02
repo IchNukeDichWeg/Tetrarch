@@ -460,7 +460,7 @@ function renderEvalBar(){
   fill.style.height = Math.max(0, Math.min(100, pct)) + "%";
 
   const text = fmtScore(cp);
-  // The number sits on whichever end is winning, as it does on chess.com.
+  // The number sits on whichever end is winning, as eval bars usually do.
   top.textContent = cp < 0 ? text : "";
   bot.textContent = cp >= 0 ? text : "";
 }

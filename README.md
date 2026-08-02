@@ -1,6 +1,7 @@
 # Tetrarch
 
-A four-player chess engine for [chess.com 4PC](https://www.chess.com/4-player-chess) -- 14×14, four seats, Teams and FFA.
+A four-player chess engine built to play the strongest 4PC it can -- 14x14,
+four seats, Teams and FFA.
 
 [![release](https://img.shields.io/github/v/release/IchNukeDichWeg/Tetrarch?label=release)](https://github.com/IchNukeDichWeg/Tetrarch/releases)
 [![license](https://img.shields.io/github/license/IchNukeDichWeg/Tetrarch)](LICENSE)
@@ -61,10 +62,10 @@ gate was structurally dead.
 
 ## The game
 
-chess.com offers five starting setups -- `classic`, `modern`, `by`, `byg`, `rg` --
+4PC has five starting setups -- `classic`, `modern`, `by`, `byg`, `rg` --
 differing only in each seat's king/queen placement. All five are supported.
 **Tetrarch defaults to `classic`**, where the theory and the strong opposition are;
-`modern` has been chess.com's own default since 2022.
+`modern` has been the live default since 2022.
 
 [`docs/RULES.md`](docs/RULES.md) is the normative rules reference. Every rule carries
 its source; anything unconfirmed is an explicit `ASSUMPTION:` with the cheapest

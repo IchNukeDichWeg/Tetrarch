@@ -106,7 +106,7 @@ def active_features(board, persp):
     board and they block, and the alive flags in the extra inputs tell the net
     they cannot move (§9.1). Pieces whose origin was never recorded --  FEN4's
     bare `d` prefix -- have no colour to make relative and are skipped; they
-    only occur when importing a chess.com FFA game, which Phase 5 will have to
+    only occur when importing an FFA game, which Phase 5 will have to
     settle properly.
     """
     out = []

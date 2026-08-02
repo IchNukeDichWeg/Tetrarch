@@ -190,7 +190,7 @@ def test_geometry():
 
 # --- 2. starting positions --------------------------------------------------
 
-#: The §3.3 table, transcribed from the chess.com lobby.
+#: The §3.3 table, transcribed from the live lobby.
 EXPECTED_KINGS = {
     "classic": ("h1", "a8", "g14", "n7"),
     "modern": ("h1", "a7", "g14", "n8"),
@@ -223,8 +223,8 @@ def test_setups():
         queens.append((setup, tuple(found) == EXPECTED_QUEENS[setup]))
         counts.append((setup, sum(1 for sq in SQUARES if b.sq[sq]) == 64))
         opens.append((setup, len(both_legal(b)) == 20))
-    check_all("king squares match the chess.com lobby", kings)
-    check_all("queen squares match the chess.com lobby", queens)
+    check_all("king squares match the live lobby", kings)
+    check_all("queen squares match the live lobby", queens)
     check_all("64 pieces on 160 squares", counts)
     check_all("every setup opens with 20 moves", opens)
 
@@ -1307,12 +1307,12 @@ def test_nnue():
     os.remove(path)
 
 
-#: The example from the Wikibooks notation page -- real chess.com output, and
+#: The example from the Wikibooks notation page -- real game output, and
 #: the era when `classic` was the default. `Qa7-b8` and `Qn8-m8` only resolve
 #: on classic, which is an independent check of §3.
 WIKIBOOK_PGN4 = """[Variant "Teams"]
 [Result "0-1"]
-[Site "www.chess.com/4-player-chess"]
+[Site "4-player-chess"]
 
 1. d2-d4 .. b8-c8 .. k13-k11 .. m8-l8
 2. d4-d5 .. b4-d4 .. k11-k10 .. Qn8-m8
@@ -1346,9 +1346,9 @@ def test_resume():
 
 
 def test_pgn4_named_start():
-    section("PGN4 named starts (chess.com compatibility)")
-    # chess.com writes a NAME into StartFen4, not a position, and handing that
-    # to the FEN4 reader raised -- Tetrarch rejected genuine chess.com games.
+    section("PGN4 named starts (import compatibility)")
+    # A NAME goes into StartFen4, not a position, and handing that
+    # to the FEN4 reader raised -- Tetrarch rejected genuine exported games.
     # The table below is read off its own exports for all five setups in both
     # modes; the code names the POSITION, so it does not vary with the mode.
     codes = {"4PCo": "classic", "4PCb": "by", "4PCn": "byg", "4PCrg": "rg"}
@@ -1362,7 +1362,7 @@ def test_pgn4_named_start():
             rows.append((code, got == start_board(setup)))
         except Exception as exc:                                # noqa: BLE001
             rows.append(("%s (%s)" % (code, exc), False))
-    check_all("chess.com's start codes resolve", rows)
+    check_all("the standard start codes resolve", rows)
 
     # modern is the one setup it writes no tag for, being the live default.
     modern = ('[Variant "Teams"]\n[RuleVariants "EnPassant"]\n'
@@ -1382,7 +1382,7 @@ def test_pgn4_named_start():
                      % fen).start.to_fen4()
           == start_board("modern").to_fen4())
 
-    # And what we write is what chess.com writes, so it loads there: every
+    # And what we write matches a real export, so it loads elsewhere: every
     # setup and mode has to survive a round trip through our own reader.
     trips = []
     for mode in (MODE_TEAMS, MODE_FFA):
@@ -1392,7 +1392,7 @@ def test_pgn4_named_start():
             trips.append(("%s/%s" % (setup, "teams" if mode else "ffa"),
                           back.start == board))
     check_all("every setup round trips as a named start", trips)
-    check("classic is written as chess.com writes it",
+    check("classic is written the standard way",
           '[StartFen4 "4PCo"]' in pgn4.write(start_board("classic"), []))
     check("modern is written with no StartFen4 at all",
           "StartFen4" not in pgn4.write(start_board("modern"), []))
@@ -1512,7 +1512,7 @@ def test_pgn4():
     check("Variant Teams maps to the Teams mode", game.mode == MODE_TEAMS)
     check("12 move tokens", len(game.tokens) == 12, str(len(game.tokens)))
     frames, terminations = pgn4.replay(game)
-    check("real chess.com movetext replays", len(frames) == 13,
+    check("real movetext replays", len(frames) == 13,
           str(len(frames)))
     check("and it only resolves on classic", game.setup == "classic")
     check("no terminations in an unfinished game", terminations == [])
