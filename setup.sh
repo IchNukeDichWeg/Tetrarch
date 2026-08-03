@@ -27,6 +27,17 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 BUILD="$ROOT/build"
 
 CFLAGS_COMMON="-O3 -shared -fPIC -std=c11 -Wall -Wextra"
+# Windows (MSYS2/mingw-w64) builds a DLL, not a .so, and -fPIC is meaningless
+# there -- everything is position-independent, and gcc warns about being told so.
+# The rest of the flags carry over unchanged: the one POSIX call in tetrarch.c
+# (clock_gettime) is provided by mingw-w64, and MinGW auto-exports every symbol
+# when nothing is marked __declspec(dllexport), so ctypes finds them all.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        CFLAGS_COMMON="-O3 -shared -std=c11 -Wall -Wextra"
+        LIB_PREFIX=""; LIB_EXT=".dll" ;;
+    *)  LIB_PREFIX="lib"; LIB_EXT=".so" ;;
+esac
 MIN_PYTHON="3.10"
 PYTHON_DEPS="numpy flask"
 
@@ -198,8 +209,8 @@ built=0
 for src in "$ROOT"/src/c/*.c; do
     [ -e "$src" ] || break          # glob did not match: no C sources yet
     name=$(basename "$src" .c)
-    out="$BUILD/lib$name.so"
-    say "cc        $name.c -> build/lib$name.so"
+    out="$BUILD/$LIB_PREFIX$name$LIB_EXT"
+    say "cc        $name.c -> build/$LIB_PREFIX$name$LIB_EXT"
     # shellcheck disable=SC2086
     "$CC" $CFLAGS_COMMON $ARCHFLAG "$src" -o "$out" -lm
     built=$((built + 1))

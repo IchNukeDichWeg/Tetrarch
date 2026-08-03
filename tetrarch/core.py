@@ -14,6 +14,7 @@ The library is located relative to this file, never from a hardcoded path.
 
 import ctypes
 import os
+import sys
 
 from . import board as B
 from . import eval_hand
@@ -27,8 +28,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 #: TETRARCH_LIB points the binding at a different build. The reason it exists
 #: is measurement: comparing two builds means alternating between them in one
 #: session, because anything else compares them under different machine load.
+#: Windows builds a DLL and carries no `lib` prefix; everywhere else keeps the .so
+#: this has always loaded. Nothing else about the binding changes -- the C is
+#: identical and MinGW exports all 58 symbols without any annotation.
+_LIBNAME = "tetrarch.dll" if sys.platform == "win32" else "libtetrarch.so"
 LIB_PATH = os.environ.get("TETRARCH_LIB") or os.path.join(
-    os.path.dirname(_HERE), "build", "libtetrarch.so")
+    os.path.dirname(_HERE), "build", _LIBNAME)
 
 
 class TtParams(ctypes.Structure):
