@@ -110,6 +110,16 @@ def ep_offers(b, me):
         victim = board[victim_sq]
         if not victim or PC_TYPE[victim] != PAWN:
             continue
+        # The pawn there has to be the offer's owner's own. An offer only dies
+        # when its owner moves again or when it is taken, so a normal capture
+        # of the double-pushed pawn leaves the offer standing with someone
+        # else's pawn on the square -- and without this the generator offers an
+        # "en passant" onto a pawn that never double pushed and that the
+        # capturing pawn does not attack. The owner cannot move while its own
+        # offer is live, so an owner-coloured pawn there is uniquely the pushed
+        # one (§5).
+        if PC_COLOR[victim] != owner:
+            continue
         if not b.is_enemy(victim, me):
             continue
         occupant = board[target]

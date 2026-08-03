@@ -81,9 +81,14 @@ def search(board, limits, info=None, repetitions=()):
     game already passed through, so the search can see a repetition it is
     walking into (§10.2); the root's own key is not among them.
     """
-    assert board.mode == MODE_TEAMS, "FFA search arrives in Phase 5 (§ brief)"
-    assert all(board.alive), \
-        "Teams ends when a seat is mated, so no seat is dead during search (§7)"
+    # Not asserts: python3 -O strips them, and this is the gate that stops a
+    # negamax search running on an FFA position, where the score does not
+    # negate ply to ply and the answer is silently meaningless (§2).
+    if board.mode != MODE_TEAMS:
+        raise ValueError("FFA search arrives in Phase 5 (§ brief)")
+    if not all(board.alive):
+        raise ValueError("Teams ends when a seat is mated, so no seat is dead "
+                         "during search (§7)")
 
     started = time.perf_counter()
     budget = limits.budget_ms()
@@ -145,7 +150,11 @@ def search_multi(board, limits, lines=1, info=None, repetitions=()):
 
     Returns a list of `Result`, best first.
     """
-    assert board.mode == MODE_TEAMS, "FFA search arrives in Phase 5 (§ brief)"
+    if board.mode != MODE_TEAMS:
+        raise ValueError("FFA search arrives in Phase 5 (§ brief)")
+    if not all(board.alive):
+        raise ValueError("Teams ends when a seat is mated, so no seat is dead "
+                         "during search (§7)")
 
     legal = gen.gen_legal(board)
     if not legal:

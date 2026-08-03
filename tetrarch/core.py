@@ -269,6 +269,8 @@ def load(path=None):
         lib.tt_get_history.restype = ctypes.c_int
         lib.tt_set_rep_history.argtypes = [ctypes.POINTER(ctypes.c_uint64),
                                            ctypes.c_int]
+        lib.tt_clear.argtypes = []
+        lib.tt_unload_net.argtypes = []
         lib.tt_set_rep_detect.argtypes = [ctypes.c_int]
         lib.tt_set_see_order.argtypes = [ctypes.c_int]
         lib.tt_get_see_order.restype = ctypes.c_int

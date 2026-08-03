@@ -255,9 +255,13 @@ class Engine:
                 limits.movetime = value
             elif token == "infinite":
                 limits.depth = limits.max_depth
-            elif len(token) > 4 and token[0].upper() in SEAT_NAMES:
+            elif len(token) > 3 and token[0].upper() in SEAT_NAMES:
                 # rtime/btime/ytime/gtime and rinc/binc/yinc/ginc: one clock
                 # per seat, because there is no white and black (PROTOCOL.md).
+                # The bound is 3, not 4: "rinc" is exactly four characters, so
+                # a > 4 test let only the *time tokens through and the "inc"
+                # arm below was dead -- budget_ms lost its whole increment term
+                # while PROTOCOL.md documented the tokens as accepted.
                 which = SEAT_NAMES.index(token[0].upper())
                 if which == seat and value is not None:
                     if token[1:] == "time":

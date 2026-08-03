@@ -530,6 +530,55 @@ def test_en_passant():
           str([(move_str(m), mv_promo(m)) for m in ep_moves]))
 
 
+def _ep_phantom_board(victim_colour):
+    """Blue offers en passant on c6 with the pawn on d6; Red, an enemy of
+    Blue, is the one trying to take it."""
+    target, victim = sq_from_name("c6"), sq_from_name("d6")
+    b = Board()
+    b.mode = MODE_TEAMS
+    for c in range(4):
+        b.alive[c] = True
+    for name, (col, typ) in {"h1": (RED, KING), "a8": (BLUE, KING),
+                             "g14": (YELLOW, KING), "n7": (GREEN, KING)}.items():
+        sq = sq_from_name(name)
+        b.sq[sq] = make_piece(col, typ)
+        b.kings[col] = sq
+    b.sq[victim] = make_piece(victim_colour, PAWN)
+    b.ep[BLUE] = (target, victim)
+    b.sq[(target - PAWN_TAKES[RED][1]) & 255] = make_piece(RED, PAWN)
+    b.turn = RED
+    b.recompute_key()
+    return b
+
+
+def test_ep_phantom_victim():
+    section("en passant: the victim must be the offer's own pawn (5)")
+    # An offer dies only when its owner moves again or when it is taken, so a
+    # normal capture of the double-pushed pawn leaves the offer standing with
+    # somebody else's pawn on that square. Validating only "an enemy pawn is
+    # there" then offers an en passant onto a pawn that never double pushed and
+    # that the capturing pawn does not attack -- a plainly illegal move, and
+    # one all three generators produced.
+    def eps(board):
+        out = {}
+        for name, gen in (("fast", fast), ("slow", slow)):
+            out[name] = sorted(move_str(m) for m in gen.gen_pseudo(board)
+                               if mv_flag(m) == F_EP)
+        if HAVE_C:
+            out["C"] = sorted(move_str(m) for m in core.gen_pseudo(board)
+                              if mv_flag(m) == F_EP)
+        return out
+
+    genuine = eps(_ep_phantom_board(BLUE))
+    check_all("a real offer is still accepted",
+              [(k, v == ["d5c6"]) for k, v in genuine.items()])
+    for impostor, label in ((GREEN, "an enemy pawn that never pushed"),
+                            (YELLOW, "a teammate's pawn on the square")):
+        got = eps(_ep_phantom_board(impostor))
+        check_all("refused: %s" % label,
+                  [(k, v == []) for k, v in got.items()])
+
+
 def test_multi_check():
     section("check from several players at once (§7)")
     b = position({"h4": (RED, KING), "a8": (BLUE, KING), "g14": (YELLOW, KING),
@@ -1405,6 +1454,22 @@ def test_see():
     check("a teammate's defender counts", see(mate, "g5g9") == -300,
           str(see(mate, "g5g9")))
 
+    # An en-passant capture onto an occupied skipped square takes BOTH the
+    # occupant and the passing pawn (§5.5), and tt_make removes both. Pricing
+    # only the pawn under-rates it by a whole piece, and SEEPrune -- default on,
+    # pruning on the sign -- would discard a capture that wins material.
+    ep = pos({"d6": (BLUE, PAWN), "c6": (GREEN, KNIGHT),
+              "d5": (RED, PAWN)})
+    ep.ep[BLUE] = (sq_from_name("c6"), sq_from_name("d6"))
+    ep.recompute_key()
+    moves = [m for m in fast.gen_pseudo(ep) if mv_flag(m) == F_EP]
+    check("the double capture is generated at all", len(moves) == 1)
+    if moves:
+        check("SEE prices both pieces, not just the pawn",
+              core.see(ep, moves[0]) == eval_hand.PIECE_VALUE[PAWN]
+                                        + eval_hand.PIECE_VALUE[KNIGHT],
+              str(core.see(ep, moves[0])))
+
     # FFA has no alternating swap-off, and returning a plausible number there
     # would be worse than refusing.
     ffa = pos({"g5": (RED, ROOK), "g9": (BLUE, PAWN)})
@@ -2190,6 +2255,7 @@ def main():
     test_make_unmake()
     test_pawn_directions()
     test_en_passant()
+    test_ep_phantom_victim()
     test_multi_check()
     test_dead_seats()
     test_castling()

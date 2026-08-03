@@ -193,7 +193,23 @@ This is the opposite of what the VOID net v2 post-mortem predicted, which is
 the third of its conclusions to be overturned by a measurement. Lambda stays
 0.7 and needs no further arms.
 
-### Mobility in the hand eval -- REJECTED at both instruments
+### VOID: the mobility rejection measured a margin, not a term
+
+The rejection below stands as a record of what was run, but it did not measure
+mobility. With LazyEval on -- the default since v3 -- every stand-pat the search
+sees goes through `tt_eval_bounded`, whose full path returned
+`material + hand_danger(b)`. `hand_mobility` was only ever added by `hand_eval`,
+reachable solely from the MAX_DEPTH cap. So turning Mobility on changed exactly
+one thing in the searched tree: `lazy_margin` widened from 384 to 1,344, making
+the confirmed +42.88 lazy bail fire less often, while the term contributed
+nothing.
+
+Both arms of that campaign therefore measured a widened lazy margin. The term
+now runs (`tt_eval_bounded` adds it when the toggle is on, verified: the tree
+is byte-identical with Mobility off and moves with it on), so mobility has
+never actually been screened and would need a fresh campaign to reject.
+
+### Mobility in the hand eval -- REJECTED at both instruments (VOID, see above)
 
 | | Elo | games |
 |---|---|---|

@@ -279,6 +279,15 @@ static int ep_offers(const TtBoard *b, int me, int *targets, int *victims)
         victim_sq = b->ep_victim[owner];
         victim = b->sq[victim_sq];
         if (!victim || P.pc_type[victim] != PAWN) continue;
+        /* The pawn on the victim square has to be the owner's own. An offer
+         * only dies when its owner moves again or when the offer is taken, so
+         * a normal capture of the double-pushed pawn leaves the offer standing
+         * with someone else's pawn on that square -- and without this test the
+         * generator will happily "capture en passant" a pawn that never double
+         * pushed and that the capturing pawn does not attack. The owner cannot
+         * move while its own offer is live, so an owner-coloured pawn there
+         * identifies the pushed pawn uniquely. */
+        if (P.pc_color[victim] != owner) continue;
         if (!is_enemy(b, victim, me)) continue;
         occupant = b->sq[target];
         if (occupant && !is_enemy(b, occupant, me)) continue;
@@ -832,8 +841,17 @@ int32_t tt_see(const TtBoard *b, uint32_t m)
     if (b->mode == MODE_FFA) return 0;          /* see the note above */
     memset(gone, 0, sizeof(gone));
 
-    if (MV_FLAG(m) == F_EP) gain[0] = P.piece_value[PAWN];
-    else gain[0] = b->sq[to] ? P.piece_value[P.pc_type[b->sq[to]]] : 0;
+    if (MV_FLAG(m) == F_EP) {
+        /* An en-passant capture onto an OCCUPIED skipped square takes both the
+         * occupant and the passing pawn (§5.5), and tt_make removes both. SEE
+         * crediting only the pawn under-prices the move by a whole piece, and
+         * SEEPrune -- which is default on and prunes on the sign -- would then
+         * discard a capture that wins material outright. */
+        gain[0] = P.piece_value[PAWN]
+                  + (b->sq[to] ? P.piece_value[P.pc_type[b->sq[to]]] : 0);
+    } else {
+        gain[0] = b->sq[to] ? P.piece_value[P.pc_type[b->sq[to]]] : 0;
+    }
 
     attacker_val = P.piece_value[P.pc_type[b->sq[frm]]];
     gone[frm] = 1;
@@ -1523,7 +1541,14 @@ static inline int32_t tt_eval_bounded(const TtBoard *b, int32_t alpha,
     margin = lazy_margin();
     if (material - margin >= beta) return material;
     if (material + margin <= alpha) return material;
-    return material + hand_danger(b);
+    /* Mobility belongs here, not only in hand_eval. With LazyEval on -- the
+     * default since v3 -- every stand-pat the search sees comes through this
+     * function, and hand_eval is reachable only from the MAX_DEPTH cap. So
+     * turning Mobility on used to change exactly one thing: lazy_margin widened
+     * from 384 to 1,344, bailing less often, while the term itself never ran.
+     * The A/B that rejected mobility measured that widening. */
+    return material + hand_danger(b)
+           + (use_mobility ? hand_mobility(b) : 0);
 }
 
 /* --- transposition table ------------------------------------------------ */
