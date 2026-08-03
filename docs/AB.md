@@ -643,6 +643,48 @@ The version worth trying is neither: keep MVV-LVA and use SEE only to sort
 losing captures behind the quiets. That is a third thing this toggle does not
 do.
 
+### Net v7 -- REJECTED, and it clears the node budget of suspicion
+
+Generation 7: 125,000 games at 7,500 nodes with net v5 teaching, openings drawn
+from a 150,000-position balanced book instead of a random walk. 10 epochs at
+lambda 0.7, epoch 5 selected. 99.9% of the games are distinct.
+
+**Fixed nodes, 20,000, classic, 20,000 games: -25.86 +/- 4.57.**
+
+This was built as a diagnostic and it worked as one. Generation 6 changed the
+teacher and the node budget together and could not be attributed. This one went
+back to 7,500 nodes and changed only the openings, and landed within noise of
+generation 6:
+
+| generation | teacher | nodes | openings | result |
+|---|---|---:|---|---|
+| v4 | v1 | 5,000 | random | **+135.19** |
+| v5 | v4 | 7,500 | random | **+10.50** |
+| v6 | v5 | 18,000 | random | **-30.29** |
+| v7 | v5 | 7,500 | book | **-25.86** |
+
+So the 18,000-node labels were not the cause, and the balanced book did not
+rescue it. What v6 and v7 share, and v5 does not, is **net v5 as the teacher**.
+Two generations reached the same result by different routes -- different node
+budgets, different openings, one with SEEPrune on and one without -- which
+points at the one thing held constant.
+
+The book is not indicted by this. It fixed a real problem (openings that were
+decided before either engine moved) and cost nothing: 9,069,344 positions
+against generation 5's 8,737,466 from the same game count. It simply is not
+what was wrong.
+
+The cheap next test is to teach from **net v4** rather than v5. If that also
+loses, something in the pipeline changed between generation 5 and 6 and the
+teacher is innocent; if it wins, v5 is a bad teacher despite being the stronger
+net, and the loop can continue from v4. Generation now takes 29 minutes rather
+than hours, so this costs about 90 minutes end to end.
+
+Worth stating plainly either way: three consecutive generations have lost, and
+one afternoon of search work is +63.37 and +23.09. Self-play in this shape has
+stopped paying, and the honest reading is that the loop was already exhausted
+at v4 -- v5's +10.50 being the last flicker rather than a continuation.
+
 ### Net v6 -- REJECTED, and the loop has reversed
 
 Generation 6: 125,000 self-play games at **18,000** nodes with net v5
