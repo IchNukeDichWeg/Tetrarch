@@ -33,6 +33,38 @@ NAME = "Tetrarch"
 #: path.
 DEFAULT_NET = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "nets", "net-v5.nnue")
+#: A bundle names one net per setup. The nets on hand are trained on different
+#: setups and the difference is large where it exists -- net-v5 is 23.68 Elo
+#: better on classic and 22.15 worse on modern (docs/AB.md) -- so which net
+#: should play is a function of the setup, until one net wins everywhere.
+DEFAULT_BUNDLE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "nets", "bundle.txt")
+
+
+def load_bundle(path):
+    """Read `setup netfile` lines into {setup: absolute path}.
+
+    A named net that is not on disk is dropped with a warning rather than
+    failing the load: a clone missing one net should still play the setups it
+    does have, and the alternative is an engine that will not start.
+    """
+    out = {}
+    here = os.path.dirname(os.path.abspath(path))
+    with open(path) as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            setup, name = line.split(None, 1)
+            full = os.path.join(here, name.strip())
+            if setup not in SETUPS:
+                print("info string bundle names unknown setup %r" % setup)
+            elif not os.path.exists(full):
+                print("info string bundle names a missing net for %s: %s"
+                      % (setup, name.strip()))
+            else:
+                out[setup] = full
+    return out
 #: Integer release number. Incremented once per CONFIRMED Elo gain, never
 #: for a dormant toggle or a tooling change. See docs/RELEASING.md.
 VERSION = "7"
@@ -52,6 +84,7 @@ class Engine:
         self.multipv = 1
         self.board = start_board(self.setup, self.mode)
         self.history = []
+        self.bundle = {}
         self._load_default_net()
 
     def _load_default_net(self):
@@ -60,14 +93,31 @@ class Engine:
         A missing file is not fatal: the hand eval still plays, and a clone
         without the net should start rather than refuse to.
         """
-        if not os.path.exists(DEFAULT_NET):
+        if os.path.exists(DEFAULT_BUNDLE):
+            try:
+                self.bundle = load_bundle(DEFAULT_BUNDLE)
+            except Exception as exc:                            # noqa: BLE001
+                print("info string could not read the net bundle: %s" % exc)
+        self._use_net_for_setup()
+
+    def _use_net_for_setup(self):
+        """Load whichever net this setup calls for, if it is not already in.
+
+        Reloading clears the transposition table, so this only acts when the
+        file actually changes -- a `setoption name Setup` that does not change
+        which net plays must not throw the table away.
+        """
+        want = self.bundle.get(self.setup) if self.bundle else None
+        if want is None:
+            want = DEFAULT_NET if os.path.exists(DEFAULT_NET) else None
+        if want is None or want == self.net:
             return
         try:
             from tetrarch import nnue
-            core.load_net(nnue.Net.load(DEFAULT_NET))
-            self.net = DEFAULT_NET
+            core.load_net(nnue.Net.load(want))
+            self.net = want
         except Exception as exc:                                # noqa: BLE001
-            print("info string could not load the default net: %s" % exc)
+            print("info string could not load %s: %s" % (want, exc))
 
     # -- protocol ---------------------------------------------------------
 
@@ -134,6 +184,7 @@ class Engine:
                 self.setup = value.lower()
                 self.board = start_board(self.setup, self.mode)
                 self.history = []
+                self._use_net_for_setup()
         elif name == "mode":
             if value.lower() in MODE_NAMES:
                 self.mode = MODE_NAMES.index(value.lower())
@@ -185,9 +236,25 @@ class Engine:
             if value.strip().lower() in ("", "<none>", "none"):
                 core.unload_net()
                 self.net = None
+                self.bundle = {}
                 print("info string net unloaded; using the throwaway hand eval")
                 return
+            # A .txt value is a bundle -- one net per setup -- rather than a
+            # single net. Which one plays then follows the setup, and switching
+            # setups switches nets.
+            if value.strip().endswith(".txt"):
+                try:
+                    self.bundle = load_bundle(value.strip())
+                    self.net = None
+                    self._use_net_for_setup()
+                    print("info string net bundle loaded: %d setups"
+                          % len(self.bundle))
+                except Exception as exc:                    # noqa: BLE001
+                    print("info string could not read bundle %s: %s"
+                          % (value, exc))
+                return
             try:
+                self.bundle = {}
                 from tetrarch import nnue
                 core.load_net(nnue.Net.load(value.strip()))
                 self.net = value.strip()
@@ -217,6 +284,7 @@ class Engine:
         elif args[0] in SETUPS:
             self.setup = args[0]
             self.board = start_board(self.setup, self.mode)
+            self._use_net_for_setup()
         else:
             print("info string unrecognised position %r" % args[0])
             return

@@ -1307,6 +1307,64 @@ def _sparse_teams(rng):
     return b
 
 
+def test_net_bundle():
+    section("per-setup net bundle")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+    import uci as uci_mod
+
+    # The shipped manifest has to name only real setups, and every net it
+    # names has to exist -- a typo here silently sends a setup to the fallback
+    # net, which is exactly the mistake the bundle exists to prevent.
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "nets", "bundle.txt")
+    check("nets/bundle.txt is present", os.path.exists(path))
+    if not os.path.exists(path):
+        return
+    named, missing = {}, []
+    with open(path) as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            setup, name = line.split(None, 1)
+            named[setup] = name.strip()
+            full = os.path.join(os.path.dirname(path), name.strip())
+            if not os.path.exists(full):
+                missing.append(name.strip())
+    check("it covers every setup", set(named) == set(SETUPS),
+          str(sorted(named)))
+    check("every net it names is on disk", not missing,
+          "missing: %s" % sorted(set(missing)) if missing else "")
+
+    # And the dispatch itself: selecting a setup must select its net, and a
+    # setup the bundle does not name must fall back rather than fail.
+    scratch = os.path.join(tempfile.gettempdir(), "tetrarch_bundle_test.txt")
+    nets_dir = os.path.dirname(path)
+    # Absolute, because load_bundle resolves a relative name against the
+    # manifest's own directory and this manifest lives in the temp dir.
+    with open(scratch, "w") as handle:
+        handle.write("classic %s\nmodern %s\n"
+                     % (os.path.join(nets_dir, "net-v5.nnue"),
+                        os.path.join(nets_dir, "net-v4.nnue")))
+    engine = uci_mod.Engine()
+    engine.bundle = uci_mod.load_bundle(scratch)
+    engine.net = None
+    picked = {}
+    for setup in ("classic", "modern", "rg"):
+        engine.setup = setup
+        engine._use_net_for_setup()
+        picked[setup] = os.path.basename(engine.net or "none")
+    os.remove(scratch)
+    check("the net follows the setup",
+          picked["classic"] == "net-v5.nnue"
+          and picked["modern"] == "net-v4.nnue", str(picked))
+    check("a setup the bundle omits falls back",
+          picked["rg"] == os.path.basename(uci_mod.DEFAULT_NET), picked["rg"])
+    core.unload_net()
+
+
 def test_net_versions():
     section("net format versions")
     if not HAVE_C:
@@ -2319,6 +2377,7 @@ def main():
     test_rotation()
     test_eval()
     test_search(workers)
+    test_net_bundle()
     test_net_versions()
     test_repetition()
     test_see()
