@@ -1946,7 +1946,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     uint32_t *moves;
     int32_t *scores;
     TtUndo u;
-    int n, i, me = b->turn, in_chk = 0, legal = 0;
+    int n, i, me = b->turn, in_chk = 0, legal = 0, caps = 0, picked = 0;
     int32_t stand;
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
@@ -1973,11 +1973,26 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     king0 = b->kings[me];
     npins = compute_pins(b, me, king0, pins);
 
+    /* Once the last capture has been picked, everything left is a quiet that
+     * the loop would pick and immediately skip -- and pick_move is a selection
+     * scan, so each of those costs O(n-i) comparisons to reach a `continue`.
+     * Counting the captures up front lets the loop stop there. It cannot
+     * change which moves are searched, in what order, or with what result: the
+     * array, the scores and the selection are all untouched, and the tail
+     * being dropped is exactly the moves that were already being discarded. */
+    caps = 0;
+    if (!in_chk) {
+        for (i = 0; i < n; i++)
+            if (is_capture(b, moves[i])) caps++;
+    }
+
     for (i = 0; i < n; i++) {
         int king, skip;
+        if (!in_chk && picked == caps) break;
         pick_move(moves, scores, n, i);
         /* In check every legal move is a candidate; otherwise captures only. */
         if (!in_chk && !is_capture(b, moves[i])) continue;
+        picked++;
         /* A capture that loses material once the exchange settles is not a
          * line worth a subtree. Promotions are exempt: SEE prices the pieces
          * traded and not the piece gained, so it under-rates them. */
