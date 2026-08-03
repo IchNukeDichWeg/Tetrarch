@@ -623,6 +623,35 @@ A first attempt to fix it by vectorising the accumulator's widening add was
 and the cost was never arithmetic. It was memory traffic, and the fix had to be
 doing less of it rather than doing it faster.
 
+### N-01, stopping the quiescence loop early -- +10.48 +/- 4.57 at fixed time
+
+Quiescence searches captures only when not in check, but the loop ran to the
+end of the generated list, and `pick_move` is a selection scan -- so every
+iteration past the last capture cost O(n-i) comparisons to reach a `continue`.
+Counting the captures first lets it stop there.
+
+Node-identical, and checked as such on both architectures rather than argued:
+85 rows compared between builds on the M2 (five setups at depths 1-7 plus 50
+random midgames at depth 6) with nodes, score and best move equal on every one,
+and the campaign box independently reporting 625,609 nodes from both builds.
+
+| | |
+|---|---|
+| NPS, M2 Pro | 1,767,972 -> 1,896,929 (**1.073x**) |
+| NPS, campaign box | 669,190 -> 698,367 (**1.044x**) |
+| Elo, fixed time, movetime 200, 20,000 games | **+10.48 +/- 4.57** |
+
+**The exchange rate, now measured twice.** 1.044x buying +10.48 implies about
++169 Elo per doubling of search speed; the lazy accumulator's 1.45x buying
++63.37 implied about +115. Both far above the +50 to +70 a two-player engine
+expects, which is what a harder branching factor should do -- an extra ply is
+worth more here. Treat the rate as somewhere in 115-170 rather than either
+number alone, and note that a 4% speedup is worth 10 Elo, which is more than
+generation 5 bought for hours of many-core time.
+
+A speedup that cannot change a move still earns its A/B, because the question
+was never whether it is correct -- it is what speed is worth.
+
 ### SEE pruning in quiescence -- CONFIRMED at both instruments, default on
 
 `setoption name SEEPrune`, default **on**. A capture that loses material once
