@@ -282,6 +282,7 @@ def load(path=None):
         lib.tt_legality_disagreements.argtypes = [ctypes.POINTER(TtBoard)]
         lib.tt_search_makes.restype = ctypes.c_uint64
         lib.tt_search_evals.restype = ctypes.c_uint64
+        lib.tt_search_gens.restype = ctypes.c_uint64
         lib.tt_bench_eval.restype = ctypes.c_double
         lib.tt_bench_eval.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
         lib.tt_bench_gen.restype = ctypes.c_double
@@ -619,6 +620,13 @@ def search_evals():
     this is essentially the quiescence leaves.
     """
     return int(load().tt_search_evals())
+
+
+def search_gens():
+    """Move generations by the last tt_search. Below one per node: a quiescence
+    node standing pat above beta returns before generating, and so does an
+    alpha-beta node taking a transposition cutoff."""
+    return int(load().tt_search_gens())
 
 
 def bench_component(b, what, iters):

@@ -50,6 +50,7 @@ Two things about reading the output, both learned expensively:
 """
 
 import argparse
+import os
 import platform
 import statistics
 import subprocess
@@ -124,6 +125,70 @@ def search_round(depth):
     return nodes, time.perf_counter() - started, per_position
 
 
+def sample_profile(depth):
+    """Self-time per C function, from the platform sampling profiler.
+
+    This is the method the project trusts, and until now it had no tooling
+    behind it -- which is how `--profile` came to report the evaluation at 26.7%
+    of a node when sampling said 3.1%. Timing a component in isolation keeps its
+    tables warm; a real search does not. Sampling measures the search that
+    actually runs.
+
+    macOS uses `sample`, Linux `perf record`. Only the macOS path has been run
+    here.
+    """
+    import re
+    import shutil
+    import signal
+    import subprocess
+
+    spin = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "bench.py")
+    child = subprocess.Popen([sys.executable, spin, "--depth", str(depth),
+                              "--rounds", "99", "--quiet"],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    time.sleep(2.0)                      # let it get past start-up
+    try:
+        if shutil.which("sample"):
+            out = subprocess.run(["sample", str(child.pid), "8", "-mayDie"],
+                                 capture_output=True, text=True).stdout
+            rows = {}
+            for line in out.split("Binary Images")[0].splitlines():
+                m = re.match(r"\s*(\d+)\s+(\S+)\s+\(in libtetrarch", line)
+                if m and int(m.group(1)):
+                    rows[m.group(2)] = rows.get(m.group(2), 0) + int(m.group(1))
+        elif shutil.which("perf"):
+            subprocess.run(["perf", "record", "-q", "-g", "-p", str(child.pid),
+                            "--", "sleep", "8"], capture_output=True)
+            out = subprocess.run(["perf", "report", "--stdio", "--no-children",
+                                  "-q"], capture_output=True, text=True).stdout
+            rows = {}
+            for line in out.splitlines():
+                m = re.match(r"\s*([\d.]+)%\s+\S+\s+\S*libtetrarch\S*\s+\[\.\]\s+(\S+)",
+                             line)
+                if m:
+                    rows[m.group(2)] = rows.get(m.group(2), 0.0) + float(m.group(1))
+        else:
+            print("no sampling profiler found (need `sample` or `perf`)",
+                  file=sys.stderr)
+            return 1
+    finally:
+        child.send_signal(signal.SIGKILL)
+        child.wait()
+
+    if not rows:
+        print("the profiler returned no samples inside libtetrarch",
+              file=sys.stderr)
+        return 1
+    total = sum(rows.values())
+    print("machine: %s" % machine())
+    print("self time inside the C core, sampled from a running search:")
+    for name, n in sorted(rows.items(), key=lambda kv: -kv[1]):
+        print("  %-18s %6.1f%%" % (name, 100.0 * n / total))
+    return 0
+
+
 def profile(depth, iters):
     """Per-call cost of each component, weighted by how often a node calls it.
 
@@ -133,7 +198,7 @@ def profile(depth, iters):
     to use directly. Makes are counted for real, because that rate is the one
     that is not obvious.
     """
-    nodes = makes = evals = 0
+    nodes = makes = evals = gens = 0
     secs = 0.0
     for _, mode, fen in POSITIONS:
         b = Board.from_fen4(fen, mode)
@@ -144,8 +209,9 @@ def profile(depth, iters):
         nodes += r.nodes
         makes += core.search_makes()
         evals += core.search_evals()
+        gens += core.search_gens()
     ns_node = secs / nodes * 1e9
-    per_node = {"gen_pseudo": 1.0, "make+unmake": makes / nodes,
+    per_node = {"gen_pseudo": gens / nodes, "make+unmake": makes / nodes,
                 "evaluate": evals / nodes, "gen_legal": 0.0}
 
     rows = []
@@ -181,6 +247,9 @@ def main():
                     help="bench movegen only, the Phase 2 signature")
     ap.add_argument("--profile", action="store_true",
                     help="per-component cost against the search's ns/node")
+    ap.add_argument("--sample", action="store_true",
+                    help="run the bench under the platform sampling profiler "
+                         "and print the self-time table")
     ap.add_argument("--iters", type=int, default=200000,
                     help="calls per component under --profile")
     # The engine plays with a net, so benching without one measures a path it
@@ -213,6 +282,9 @@ def main():
 
     print("machine: %s" % machine())
     print("net:     %s" % ("loaded" if core.net_loaded() else "none (hand eval)"))
+
+    if args.sample:
+        return sample_profile(args.depth)
 
     if args.profile:
         depth = args.depth

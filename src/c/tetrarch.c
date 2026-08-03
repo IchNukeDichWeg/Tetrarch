@@ -298,8 +298,13 @@ static int ep_offers(const TtBoard *b, int me, int *targets, int *victims)
     return n;
 }
 
+/* Counted for the profile, like makes: the rate is not one per node and
+ * assuming it was made the tool contradict its own output. */
+static uint64_t search_gens;
+
 int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
 {
+    search_gens++;
     int me = b->turn, n = 0, sq, i, j;
     int promo_coord = P.promo_coord[b->mode];
     int nchoice = P.n_promo_choices[b->mode];
@@ -1817,6 +1822,7 @@ static int use_history = 0;
 
 uint64_t tt_search_makes(void) { return search_makes; }
 uint64_t tt_search_evals(void) { return search_evals; }
+uint64_t tt_search_gens(void) { return search_gens; }
 void tt_set_rep_detect(int on) { use_repetitions = on ? 1 : 0; }
 int tt_get_rep_detect(void) { return use_repetitions; }
 void tt_set_history(int on) { use_history = on ? 1 : 0; }
@@ -2264,6 +2270,7 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     search_nodes = 0;
     search_makes = 0;
     search_evals = 0;
+    search_gens = 0;
     search_limit = node_limit ? node_limit : (uint64_t)-1;
     search_aborted = 0;
     if (!lmr_built) lmr_build();
