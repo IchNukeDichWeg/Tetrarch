@@ -10,6 +10,13 @@ __pycache__/
 # already in docs/AB.md. Kept on disk, out of the tree.
 *.log
 
+# runs/ holds what a campaign produced: runs/games (self-play), runs/ab (match
+# logs), runs/logs (stdout). All of it is matched by the rules below and stays
+# untracked -- a single games file is over GitHub's 100 MB limit, and large
+# blobs stay in git history permanently even after deletion. The nets those
+# runs produced ARE tracked, under nets/*.nnue, because an A/B number is only
+# reproducible if the net that produced it is in the tree.
+
 # Generated data: training positions, nets, match logs, campaign state.
 # Every tool writes to a path given on the CLI; these are the conventional
 # scratch locations, never a default.
