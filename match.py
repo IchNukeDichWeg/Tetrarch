@@ -163,26 +163,35 @@ def per_setup(games, book):
     -- match.py records each game's opening seed and the book records each
     position's setup -- so this needs no extra games, only the log.
     """
+    # Grouped by OPENING, not by game, and then summed over the rotation --
+    # exactly what summarise() does for the headline. The four seat-rotation
+    # games of one opening share a start position and cancel seat identity, so
+    # they are strongly correlated; treating them as four independent samples
+    # understates the interval by up to a factor of two. Incomplete rotations
+    # are dropped for the same reason the headline drops them: a partial
+    # rotation is seat bias, not a result.
     buckets = {}
     for g in games:
         if g.get("score") is None:
             continue
         setup = book[g["opening"] % len(book)][0]
-        buckets.setdefault(setup, []).append(g["score"])
+        buckets.setdefault(setup, {}).setdefault(g["opening"], []).append(
+            g["score"])
 
-    out = ["", "  setup      games     rate       Elo"]
+    out = ["", "  setup     openings    rate       Elo"]
     for setup in SETUPS:
-        scores = buckets.get(setup)
-        if not scores:
+        by_opening = buckets.get(setup)
+        if not by_opening:
             continue
-        rate = sum(scores) / len(scores)
-        # Same interval match.py quotes elsewhere: 95% on the mean per-game
-        # score. Per setup it is wider than the headline by construction,
-        # there being a fifth of the games behind it.
-        var = sum((s - rate) ** 2 for s in scores) / max(len(scores) - 1, 1)
-        err = 1.96 * math.sqrt(var / len(scores))
+        sums = [sum(v) for v in by_opening.values() if len(v) == ROTATIONS]
+        if not sums:
+            continue
+        rate = sum(sums) / (ROTATIONS * len(sums))
+        mean = sum(sums) / len(sums)
+        var = sum((s - mean) ** 2 for s in sums) / max(len(sums) - 1, 1)
+        err = 1.96 * math.sqrt(var / len(sums)) / ROTATIONS
         out.append("  %-9s %6d   %.4f   %+7.2f +/- %.2f"
-                   % (setup, len(scores), rate, elo(rate),
+                   % (setup, len(sums), rate, elo(rate),
                       (elo(min(rate + err, 0.9999))
                        - elo(max(rate - err, 0.0001))) / 2))
     return "\n".join(out)

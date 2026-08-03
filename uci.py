@@ -140,7 +140,11 @@ class Engine:
                 self.board = start_board(self.setup, self.mode)
                 self.history = []
         elif name == "hash":
-            self.hash_mb = max(1, int(value))
+            # Clamped to the range `uci` declares. Without the upper bound a
+            # value past what can be allocated reached core.set_hash and raised,
+            # which the dispatch guard now catches but which should not happen:
+            # a declared max that is never enforced is not a max.
+            self.hash_mb = max(1, min(int(value), 4096))
             core.set_hash(self.hash_mb)
         elif name == "killers":
             core.set_killers(value.strip().lower() in ("true", "1", "on", "yes"))
@@ -314,7 +318,12 @@ class Engine:
 
     def cmd_bench(self, _args):
         import bench
-        nodes, secs, _ = bench.one_round(5)
+        # search_round, not one_round: the latter is perft, which cannot see
+        # the evaluation at all and returns the same number whether or not a
+        # net is loaded. Printing it in the search bench's exact shape made the
+        # two look comparable when they measure different things.
+        nodes, secs, _ = bench.search_round(7)
+        print("net %s" % ("loaded" if core.net_loaded() else "none (hand eval)"))
         print("%d nodes %d nps" % (nodes, int(nodes / secs)))
 
     def cmd_perft(self, args):
@@ -390,7 +399,17 @@ def main():
         if handler is None:
             print("info string unknown command %r" % cmd)
             continue
-        handler(args)
+        # A malformed line must not end the game. `setoption name Hash value
+        # abc` raised ValueError straight out of the dispatch and the process
+        # exited; a bad FEN4, an unknown setup name and `perft x` all shared
+        # that fate. A GUI sending one stray token would lose the engine
+        # mid-game, and the operator would see a dead process rather than a
+        # complaint about the line.
+        try:
+            handler(args)
+        except Exception as exc:                                # noqa: BLE001
+            print("info string error handling %r: %s: %s"
+                  % (cmd, type(exc).__name__, exc))
         sys.stdout.flush()
     return 0
 

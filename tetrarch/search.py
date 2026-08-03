@@ -230,7 +230,22 @@ def search_multi(board, limits, lines=1, info=None, repetitions=()):
             break
 
     if not out:                          # never finished depth 2
-        best = search(board, limits)
+        # Reached whenever depth 2 does not complete, and ALWAYS at `go depth 1`
+        # with MultiPV > 1, where the loop above starts at 2 and never runs.
+        # It has to carry what the caller gave: without `repetitions` this is
+        # the one root in the tree that cannot see a draw it is walking into,
+        # and without a budget adjustment a `go nodes N` that already spent
+        # most of N in the loop starts a fresh N-node search.
+        spent = Limits(depth=limits.depth, nodes=limits.nodes,
+                       movetime=limits.movetime, clock=limits.clock,
+                       inc=limits.inc)
+        if limits.nodes:
+            spent.nodes = max(1, limits.nodes - nodes)
+        # The two callbacks are not the same shape: search_multi's `info` takes
+        # the ranked list, search's takes one Result. Wrapping keeps the
+        # fallback's output in the MultiPV form the caller is expecting.
+        one = (lambda r: info([r])) if info else None
+        best = search(board, spent, one, repetitions)
         out = [best] if best.best else []
     return out
 
