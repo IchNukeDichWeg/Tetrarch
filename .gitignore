@@ -45,3 +45,7 @@ test_engine2
 
 # Generated opening books: rebuildable from book.py, and large.
 book*.txt
+
+# Scratch notes and review documents: drafts about the engine, not part
+# of it. Anything with `improvement` in the name stays out of the tree.
+*improvement*
