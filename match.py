@@ -154,6 +154,40 @@ def get_engine(side, command, setup, mode, hash_mb=16, net=None, opts=()):
 BOOK = None
 
 
+def per_setup(games, book):
+    """Split a book run into one result per setup.
+
+    A book spanning the five setups makes the headline Elo an average over
+    them, which hides the thing worth knowing: a net trained on one setup and
+    a net trained on all five do not differ evenly. The mapping back is exact
+    -- match.py records each game's opening seed and the book records each
+    position's setup -- so this needs no extra games, only the log.
+    """
+    buckets = {}
+    for g in games:
+        if g.get("score") is None:
+            continue
+        setup = book[g["opening"] % len(book)][0]
+        buckets.setdefault(setup, []).append(g["score"])
+
+    out = ["", "  setup      games     rate       Elo"]
+    for setup in SETUPS:
+        scores = buckets.get(setup)
+        if not scores:
+            continue
+        rate = sum(scores) / len(scores)
+        # Same interval match.py quotes elsewhere: 95% on the mean per-game
+        # score. Per setup it is wider than the headline by construction,
+        # there being a fifth of the games behind it.
+        var = sum((s - rate) ** 2 for s in scores) / max(len(scores) - 1, 1)
+        err = 1.96 * math.sqrt(var / len(scores))
+        out.append("  %-9s %6d   %.4f   %+7.2f +/- %.2f"
+                   % (setup, len(scores), rate, elo(rate),
+                      (elo(min(rate + err, 0.9999))
+                       - elo(max(rate - err, 0.0001))) / 2))
+    return "\n".join(out)
+
+
 def make_opening(setup, mode, plies, seed):
     """A start position reached by `plies` random legal moves. Deterministic."""
     rng = random.Random(seed)
@@ -422,6 +456,9 @@ def main():
                 if g.get("score") is not None:
                     by_opening.setdefault(g["opening"], []).append(g["score"])
         print(summarise(by_opening, games, 0.0))
+        if args.book:
+            import book as book_mod
+            print(per_setup(games, book_mod.load(args.book)))
         return 0
     # Required for a real run, checked here so --summarise needs neither.
     if args.positions is None or not args.log:
