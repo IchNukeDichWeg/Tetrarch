@@ -132,6 +132,7 @@ def main():
     seen = set()
     kept = []
     tried = 0
+    interrupted = False
     started = time.time()
     # Walks are cheap and most are rejected, so ask for far more than needed
     # and stop when the target is reached rather than guessing a yield rate.
@@ -140,30 +141,43 @@ def main():
     with open(args.out, "w") as handle:
         handle.write("# %d plies, depth %d, band +/-%d, setup %s, seed %d\n"
                      % (args.plies, args.depth, args.band, args.setup, args.seed))
-        with multiprocessing.Pool(nproc, initializer=_worker_init,
-                                  initargs=(args.net,)) as pool:
-            for found in pool.imap_unordered(candidate, jobs(batch, args), 16):
-                tried += 1
-                if found is not None:
-                    setup, fen4, key, _score = found
-                    if key not in seen:
-                        seen.add(key)
-                        kept.append(fen4)
-                        handle.write("%s %s\n" % (setup, fen4))
-                if not args.quiet and tried % 500 == 0:
-                    print("  %d/%d kept, %d walked" % (len(kept), args.positions, tried),
-                          flush=True)
-                if len(kept) >= args.positions:
-                    pool.terminate()
-                    break
+        # Workers ignore SIGINT (see _worker_init), so Ctrl-C arrives here and
+        # nowhere else. Positions are written as they are found, so an
+        # interrupted run leaves a shorter book rather than a broken one.
+        try:
+            with multiprocessing.Pool(nproc, initializer=_worker_init,
+                                      initargs=(args.net,)) as pool:
+                for found in pool.imap_unordered(candidate, jobs(batch, args), 16):
+                    tried += 1
+                    if found is not None:
+                        setup, fen4, key, _score = found
+                        if key not in seen:
+                            seen.add(key)
+                            kept.append(fen4)
+                            handle.write("%s %s\n" % (setup, fen4))
+                    if not args.quiet and tried % 500 == 0:
+                        print("  %d/%d kept, %d walked"
+                              % (len(kept), args.positions, tried), flush=True)
+                    if len(kept) >= args.positions:
+                        pool.terminate()
+                        break
+        except KeyboardInterrupt:
+            interrupted = True
+            print("\ninterrupted", flush=True)
 
     secs = time.time() - started
     print("%d positions from %d walks (%.1f%% kept) in %.1fs"
           % (len(kept), tried, 100.0 * len(kept) / max(tried, 1), secs))
     print("out: %s" % os.path.abspath(args.out))
     if len(kept) < args.positions:
-        print("SHORT of %d: widen --band or raise the walk budget"
-              % args.positions, file=sys.stderr)
+        # Non-zero even when the stop was deliberate, so `book.py && gen_data`
+        # cannot walk on into a run with a book smaller than it asked for --
+        # which would silently repeat openings and duplicate games.
+        print("SHORT of %d (%s): the file is complete and usable, rerun or "
+              "widen --band for more"
+              % (args.positions, "interrupted" if interrupted
+                 else "widen --band or raise the walk budget"),
+              file=sys.stderr)
         return 1
     return 0
 
