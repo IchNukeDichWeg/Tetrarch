@@ -643,6 +643,42 @@ The version worth trying is neither: keep MVV-LVA and use SEE only to sort
 losing captures behind the quiets. That is a third thing this toggle does not
 do.
 
+### Net v8 -- REJECTED, and it settles the teacher question
+
+Generation 8: identical to generation 7 except the teacher, net **v4** instead
+of v5. Same book, same 7,500 nodes, same lambda, 9,037,175 positions against
+generation 7's 9,069,344.
+
+| | vs net v5, 20,000 games |
+|---|---|
+| classic only | **-60.05 +/- 4.66** |
+| across the book's five setups | **-32.30 +/- 4.72** |
+
+Two things come out of it.
+
+**v4 is much the worse teacher.** On the matched instrument v7 is -0.82 and v8
+is -32.30. A 10.5 Elo gap between the two teachers produced a 31 Elo gap
+between their students. Teaching from v5 stands; there is nothing to recover by
+reaching back.
+
+**The instrument correction reproduces.** v7 moved +25.04 going from classic to
+the book, v8 moved +27.75. Two independent nets, near-identical shift, which is
+what a real measurement artefact looks like rather than a lucky single result.
+
+### RETRACTION: the node budget was not cleared
+
+The generation 7 entry claimed the 18,000-node labels were exonerated, because
+generation 7 at 7,500 nodes had landed near generation 6's -30.29. That rested
+on generation 7 scoring -25.86, which was the mis-measured number.
+
+On its own distribution generation 7 is **-0.82**. So generations 6 and 7 are
+about 30 Elo apart, not level, and the two things separating them are the node
+budget and the openings. The 18,000-node labels are a live suspect again.
+
+A clean test exists and is cheap now that generation takes 29 minutes: the same
+book at 18,000 nodes, teacher v5, screened on the book. One variable against
+generation 7.
+
 ### The instrument has to match the training distribution
 
 Net v7 measured **-25.86 +/- 4.57** on classic and **-0.82 +/- 4.67** across the
