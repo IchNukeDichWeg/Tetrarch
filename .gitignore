@@ -6,6 +6,10 @@ __pycache__/
 *.so
 *.dylib
 
+# Run logs: mostly progress-bar redraws, and the result they describe is
+# already in docs/AB.md. Kept on disk, out of the tree.
+*.log
+
 # Generated data: training positions, nets, match logs, campaign state.
 # Every tool writes to a path given on the CLI; these are the conventional
 # scratch locations, never a default.
