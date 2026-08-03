@@ -887,6 +887,7 @@ Tetrarch's own perft numbers for both setups, both modes, to depth 5, are record
 |---|------|--------|---|
 | ~~1~~ | ~~Which setup is chess.com's live default~~ | **CLOSED** -- `modern`, "default since 2022" per [cc-lobby]. Tetrarch nonetheless defaults to `classic` by decision, and supports all five | 3.4, 3.5 |
 | 2 | 50-move threshold in plies | **ASSUMPTION: 200** | 10.1 |
+| 9 | Can a live, in-check king be captured by an intermediate mover before its own turn? | **OPEN -- and the engine is incoherent either way.** See below | 7, 9.2 |
 | 3 | Repetition key definition | **ASSUMPTION: full Zobrist incl. alive mask, excl. points** | 10.2 |
 | 4 | Insufficient material in 4PC | **ASSUMPTION: bare-kings only** | 10.3 |
 | 5 | Two-flank en passant: which engine is right | Tetrarch derives from first principles; expect perft divergence | 5.4 |
