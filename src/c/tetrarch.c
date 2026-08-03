@@ -1740,12 +1740,20 @@ static inline int is_capture(const TtBoard *b, uint32_t m)
  * docs/AB.md. The toggle stays so it can be turned off for a future A/B.
  */
 #define KILLERS_PER_PLY 2
-/* Both default OFF: each changes which moves are searched, so each owes a
- * fixed-nodes A/B before it becomes the default, like every other feature
- * here. They are separate toggles because they are separate claims -- better
- * ordering and a smaller quiescence tree can win or lose independently. */
+/* Separate toggles because they were separate claims, and only one survived.
+ *
+ * SEEPrune is CONFIRMED and default on: +16.32 +/- 4.58 at fixed nodes and
+ * +23.09 +/- 4.56 at fixed time, 20,000 games each. Winning by MORE on the
+ * clock is the interesting part -- pruning a losing capture removes a subtree,
+ * so the search is both better shaped and cheaper, and SEE's own per-capture
+ * cost is more than repaid.
+ *
+ * SEEOrder stays off and unmeasured. It searched 0.7% MORE nodes in the first
+ * look, which is enough to leave it alone: MVV-LVA leads with the most
+ * valuable victim, a good cutoff bias even when the capture is unsound, and
+ * sorting by the settled value throws that away. */
 static int use_see_order = 0;
-static int use_see_prune = 0;
+static int use_see_prune = 1;
 
 void tt_set_see_order(int on) { use_see_order = on ? 1 : 0; }
 int tt_get_see_order(void) { return use_see_order; }

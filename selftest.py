@@ -918,12 +918,17 @@ def test_eval():
 #: Killers, LMR, LMP, then quiescence evasions. A confirmed feature changes
 #: the tree, so the pins move
 #: with it -- the point is to re-measure, never to relax them.
+#: Re-pinned when SEEPrune became the default. Depths 1-3 are unmoved, since
+#: quiescence barely runs that shallow; from depth 4 the tree is three to four
+#: times smaller, which is the feature working and is worth 16.32 Elo at fixed
+#: nodes (docs/AB.md). A change here is either a deliberate default flip or a
+#: bug, and never a wash.
 SEARCH_PINS = {
-    "classic": [40, 84, 311, 3614, 7669],
-    "modern": [40, 86, 322, 3016, 5057],
-    "by": [40, 86, 322, 3043, 8747],
-    "byg": [40, 86, 322, 2829, 8232],
-    "rg": [40, 80, 342, 4597, 14169],
+    "classic": [40, 84, 311, 971, 5982],
+    "modern": [40, 86, 322, 775, 6527],
+    "by": [40, 86, 322, 1217, 4789],
+    "byg": [40, 86, 322, 1217, 5371],
+    "rg": [40, 80, 342, 1088, 5155],
 }
 
 
@@ -981,19 +986,20 @@ def test_search(workers=1):
           core.qs_evasions_enabled())
     check("repetition detection default on", core.rep_detect_enabled())
     check("SEE ordering default off (dormant)", not core.see_order_enabled())
-    check("SEE pruning default off (dormant)", not core.see_prune_enabled())
+    check("SEE pruning default on (confirmed)", core.see_prune_enabled())
 
     # A dormant toggle that does nothing when switched on is worse than no
     # toggle: the A/B would measure two identical engines and report a null.
     moved = []
-    for name, setter in (("SEEOrder", core.set_see_order),
-                         ("SEEPrune", core.set_see_prune)):
+    for name, setter, default in (("SEEOrder", core.set_see_order, False),
+                                  ("SEEPrune", core.set_see_prune, True)):
+        setter(default)
         core.clear_hash()
         before = core.search(start_board("classic"), 6).nodes
-        setter(True)
+        setter(not default)
         core.clear_hash()
         after = core.search(start_board("classic"), 6).nodes
-        setter(False)
+        setter(default)
         moved.append((name, before != after))
     check_all("each SEE toggle changes the search when enabled", moved)
 

@@ -105,7 +105,7 @@ class Engine:
         # the exchange settles; ordering by it and pruning on it are separate
         # claims and separate toggles.
         print("option name SEEOrder type check default false")
-        print("option name SEEPrune type check default false")
+        print("option name SEEPrune type check default true")
         # Hand eval only; a loaded net ignores it. Default off until it has
         # won an A/B, and it must pay for widening the lazy-eval margin
         # (docs/AB.md) as well as for its own cost.

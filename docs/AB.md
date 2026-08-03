@@ -607,6 +607,42 @@ A first attempt to fix it by vectorising the accumulator's widening add was
 and the cost was never arithmetic. It was memory traffic, and the fix had to be
 doing less of it rather than doing it faster.
 
+### SEE pruning in quiescence -- CONFIRMED at both instruments, default on
+
+`setoption name SEEPrune`, default **on**. A capture that loses material once
+the exchange settles is skipped rather than given a subtree. Promotions are
+exempt: SEE prices the pieces traded and not the piece gained, so it under-rates
+them.
+
+| | Elo | games |
+|---|---|---|
+| fixed nodes, 20,000 | **+16.32 +/- 4.58** | 20,000 |
+| fixed time, movetime 200 | **+23.09 +/- 4.56** | 20,000 |
+
+Same net both sides, so the toggle is the only difference.
+
+**Winning by more on the clock is the result worth reading twice.** A feature
+that costs time usually shows a smaller number at fixed time than at fixed
+nodes -- net v4 lost about 58 Elo that way. This one gains. Pruning a losing
+capture removes a whole subtree, so the search is cheaper as well as better
+shaped, and SEE's own per-capture cost is more than repaid. The pinned trees
+in selftest.py are three to four times smaller from depth 4 on.
+
+Worth setting against the generational loop: net v5, a whole generation of
+self-play, is +10.50 at fixed nodes. This toggle is +16.32.
+
+### SEE in move ordering -- NOT screened, and probably will not be
+
+`setoption name SEEOrder`, default **off**. Ordering captures by their settled
+value instead of MVV-LVA searched **0.7% more nodes** in the first look, which
+was enough to stop before spending an A/B on it. MVV-LVA leads with the most
+valuable victim, which is a good cutoff bias even when the capture turns out to
+be unsound; sorting by what the exchange actually yields throws that away.
+
+The version worth trying is neither: keep MVV-LVA and use SEE only to sort
+losing captures behind the quiets. That is a third thing this toggle does not
+do.
+
 ### Net v6 -- REJECTED, and the loop has reversed
 
 Generation 6: 125,000 self-play games at **18,000** nodes with net v5
