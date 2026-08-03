@@ -1307,6 +1307,61 @@ def _sparse_teams(rng):
     return b
 
 
+def test_net_versions():
+    section("net format versions")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+    from tetrarch import nnue as N
+
+    check("the trainer writes version %d" % N.VERSION,
+          N.VERSION == 2 and 1 in N.SUPPORTED_VERSIONS)
+
+    # Every net in docs/AB.md is version 1 and must keep evaluating as it did:
+    # its Elo was measured with the old extras handling, and relabelling it
+    # would silently change the number those results refer to.
+    olds = []
+    for name in ("net-v0", "net-v1", "net-v2", "net-v4", "net-v5"):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "nets", name + ".nnue")
+        if os.path.exists(path):
+            olds.append((name, N.Net.load(path).version == 1))
+    check_all("the shipped nets load as version 1", olds)
+
+    # The two mirrors have to agree on a version 2 net as well, since the whole
+    # defect was Python and C agreeing with each other while both disagreed
+    # with the trainer.
+    net = N.Net.load(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "nets", "net-v5.nnue"))
+    v2 = N.Net(net.w1, net.b1, net.w2, net.b2, net.w3, net.b3, net.w4, net.b4,
+               version=2)
+    rng = random.Random(31)
+    for label, candidate in (("version 1", net), ("version 2", v2)):
+        core.load_net(candidate)
+        bad = 0
+        for _ in range(40):
+            b = start_board(rng.choice(SETUPS))
+            for _ in range(rng.randrange(0, 20)):
+                moves = fast.gen_legal(b)
+                if not moves:
+                    break
+                b.make(rng.choice(moves))
+            if candidate.evaluate(b) != core.evaluate(b):
+                bad += 1
+        check("Python and C agree on a %s net" % label, bad == 0,
+              "%d mismatches" % bad)
+
+    # And the two versions must actually differ, or the fix does nothing.
+    core.load_net(net)
+    b = start_board("classic")
+    one = core.evaluate(b)
+    core.load_net(v2)
+    two = core.evaluate(b)
+    check("version 2 changes the evaluation", one != two,
+          "%d vs %d" % (one, two))
+    core.unload_net()
+
+
 def test_repetition():
     section("repetition (10.2)")
     if not HAVE_C:
@@ -2264,6 +2319,7 @@ def main():
     test_rotation()
     test_eval()
     test_search(workers)
+    test_net_versions()
     test_repetition()
     test_see()
     test_book()

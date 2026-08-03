@@ -180,6 +180,24 @@ def load_cache(path):
         return out
 
 
+def extras_for_training(raw):
+    """The cache stores the RAW extras; this is what the float model is fed.
+
+    Every input reaches the quantised net at 127x its float value, because the
+    accumulator half is crelu'd to [0,127] where this model clips to [0,1]. The
+    points differences arrive raw in [-127,127], so on that footing they were
+    127x too loud in training, while the alive flags were 127x too quiet at
+    inference. Dividing the differences here puts both halves on the same
+    footing as h0; tetrarch/nnue.py scales them back on the way out, and the
+    two are versioned together as net format 2.
+
+    Derived rather than cached, so a cache built before this stays usable.
+    """
+    out = raw.astype(np.float32).copy()
+    out[:, 4:] /= float(nnue.EXTRA_CLAMP)
+    return out
+
+
 # --- the float model --------------------------------------------------------
 
 class Model:
@@ -453,7 +471,7 @@ def evaluate_loss(model, data, index, batch, blend):
     for start in range(0, len(index), batch):
         sel = index[start:start + batch]
         out, _ = model.forward(data["features"][sel],
-                               data["extras"][sel].astype(np.float32))
+                               extras_for_training(data["extras"][sel]))
         want = targets_for(data["cp"][sel], data["result"][sel], blend)
         pred = _sigmoid(out * 127.0 / SCALE_CP)
         total += float(((pred - want) ** 2).sum())
@@ -538,7 +556,7 @@ def main():
         for start in range(0, len(train_index), args.batch):
             sel = train_index[start:start + args.batch]
             features = data["features"][sel]
-            extras = data["extras"][sel].astype(np.float32)
+            extras = extras_for_training(data["extras"][sel])
             out, cache = model.forward(features, extras)
             want = targets_for(data["cp"][sel], data["result"][sel], args.blend)
             pred = _sigmoid(out * 127.0 / SCALE_CP)

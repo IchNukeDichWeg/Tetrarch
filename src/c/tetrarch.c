@@ -1037,6 +1037,8 @@ int tt_divide(TtBoard *b, int depth, uint32_t *moves, uint64_t *nodes)
 #define NN_EXTRA_CLAMP 127
 
 typedef struct {
+    int32_t version;          /* 1 keeps the old extras, 2 puts them on the
+                               * same 127x footing as the accumulator half */
     const int16_t *w1;
     const int32_t *b1;
     const int8_t *w2;
@@ -1056,6 +1058,7 @@ static int32_t nn_b3[NN_L3];
 static int8_t nn_w4[NN_L3];
 static int32_t nn_b4;
 static int nn_loaded = 0;
+static int nn_version = 1;
 
 /* The maintained accumulator, one per perspective, plus the board key it
  * belongs to. The key is the validity token: anything that reaches a board
@@ -1229,6 +1232,7 @@ int tt_load_net(const TtNetView *v)
     memcpy(nn_w4, v->w4, sizeof(nn_w4));
     nn_b4 = v->b4[0];
     nn_loaded = 1;
+    nn_version = v->version ? v->version : 1;
     nn_acc_ok = 0;                 /* different weights: rebuild on next eval */
     nn_pend_n[0] = nn_pend_n[1] = nn_pend_n[2] = nn_pend_n[3] = 0;
     return 1;
@@ -1254,8 +1258,14 @@ static inline int32_t nn_crelu(int32_t x, int shift)
 /* The seven values that bypass the accumulator, rotated to `persp`. */
 static void nn_extras(const TtBoard *b, int persp, int32_t *out)
 {
-    int k;
-    for (k = 0; k < 4; k++) out[k] = b->alive[(persp + k) & 3] ? 1 : 0;
+    /* Every other input reaches the quantised net at 127x its float value --
+     * the accumulator half is crelu'd to [0,127] where the trainer clips to
+     * [0,1]. An alive flag of 1 was 127x too quiet against that, so version 2
+     * sends 127. The points differences already arrive on the right footing:
+     * the trainer divides them by 127, so their raw [-127,127] IS the scaled
+     * value, and scaling again would overflow the int8 input. */
+    int k, alive = nn_version >= 2 ? NN_EXTRA_CLAMP : 1;
+    for (k = 0; k < 4; k++) out[k] = b->alive[(persp + k) & 3] ? alive : 0;
     for (k = 1; k < 4; k++) {
         int32_t diff = (int32_t)b->points[persp]
                      - (int32_t)b->points[(persp + k) & 3];

@@ -71,7 +71,10 @@ SHIFT_OUT = 6
 CRELU_MAX = 127
 
 MAGIC = b"TTNN"
-VERSION = 1
+VERSION = 2
+#: Formats this build can load. Version 1 nets keep the behaviour they were
+#: trained and measured with; only a version 2 net gets the corrected extras.
+SUPPORTED_VERSIONS = (1, 2)
 
 #: PQUEEN folds onto QUEEN; every other type is itself.
 FEATURE_TYPE = [PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, QUEEN]
@@ -129,7 +132,12 @@ EXTRA_CLAMP = 127
 
 
 def extra_inputs(board, persp):
-    """The seven values that bypass the accumulator, rotated to `persp`."""
+    """The seven raw values that bypass the accumulator, rotated to `persp`.
+
+    Four alive flags in {0,1} and three points differences in [-127,127]. This
+    is the RAW form; what the trainer and what inference each feed is derived
+    from it below, and the two must agree.
+    """
     out = [1 if board.alive[(persp + k) & 3] else 0 for k in range(4)]
     mine = board.points[persp]
     for k in range(1, 4):
@@ -138,12 +146,43 @@ def extra_inputs(board, persp):
     return out
 
 
+# The quantised net feeds every input at 127x the float model's value: the
+# accumulator half is crelu'd to [0,127] where the float model clips to [0,1].
+# The extras were exempt from that in version 1, and in opposite directions --
+# an alive flag stayed 1 where it should have been 127, so it arrived 127x too
+# quiet, while a points difference stayed at its raw [-127,127] where the float
+# model had it on a [0,1] footing, so it trained 127x too loud. Both halves
+# were consistent between the Python and C mirrors, which is exactly why the
+# bit-exactness gate never saw it: they agreed with each other and neither
+# agreed with the model that produced the weights.
+#
+# Version 2 puts both on the same footing as everything else. The pair of
+# functions below is the single definition of that footing; version 1 is kept
+# verbatim so every net measured in docs/AB.md still evaluates as it did.
+
+def extras_float(board, persp, version=VERSION):
+    """What the TRAINER feeds. Everything on a [-1,1] footing, like h0."""
+    raw = extra_inputs(board, persp)
+    if version == 1:
+        return [float(v) for v in raw]
+    return [float(v) for v in raw[:4]] + [v / float(EXTRA_CLAMP) for v in raw[4:]]
+
+
+def extras_quantised(board, persp, version=VERSION):
+    """What INFERENCE feeds. Exactly 127x extras_float, and int8-safe."""
+    raw = extra_inputs(board, persp)
+    if version == 1:
+        return list(raw)
+    return [v * EXTRA_CLAMP for v in raw[:4]] + list(raw[4:])
+
+
 class Net:
     """A quantised net. Layout matches what the C core memory-maps."""
 
-    __slots__ = ("w1", "b1", "w2", "b2", "w3", "b3", "w4", "b4")
+    __slots__ = ("w1", "b1", "w2", "b2", "w3", "b3", "w4", "b4", "version")
 
-    def __init__(self, w1, b1, w2, b2, w3, b3, w4, b4):
+    def __init__(self, w1, b1, w2, b2, w3, b3, w4, b4, version=VERSION):
+        self.version = version
         self.w1, self.b1 = w1, b1
         self.w2, self.b2 = w2, b2
         self.w3, self.b3 = w3, b3
@@ -172,7 +211,10 @@ class Net:
     # -- file format ------------------------------------------------------
 
     def save(self, path):
-        header = struct.pack("<4s10I", MAGIC, VERSION, NFEATURES, L1, NEXTRA,
+        # self.version, not VERSION: re-saving a net that was loaded must not
+        # relabel it, or a version 1 net acquires version 2 semantics without
+        # its weights ever having been trained for them.
+        header = struct.pack("<4s10I", MAGIC, self.version, NFEATURES, L1, NEXTRA,
                              L2, L3, SHIFT1, SHIFT2, SHIFT_OUT, 0)
         with open(path, "wb") as fh:
             fh.write(header)
@@ -190,8 +232,9 @@ class Net:
             struct.unpack_from("<4s10I", raw, 0)
         if magic != MAGIC:
             raise ValueError("%s is not a Tetrarch net" % path)
-        if version != VERSION:
-            raise ValueError("net version %d, expected %d" % (version, VERSION))
+        if version not in SUPPORTED_VERSIONS:
+            raise ValueError("net version %d, supported %s"
+                             % (version, SUPPORTED_VERSIONS))
         if (nfeat, l1, nextra, l2, l3) != (NFEATURES, L1, NEXTRA, L2, L3):
             raise ValueError("net geometry %s does not match this build"
                              % ((nfeat, l1, nextra, l2, l3),))
@@ -212,7 +255,8 @@ class Net:
         return cls(take((NFEATURES, L1), np.int16), take((L1,), np.int32),
                    take((L2, L1 + NEXTRA), np.int8), take((L2,), np.int32),
                    take((L3, L2), np.int8), take((L3,), np.int32),
-                   take((L3,), np.int8), take((1,), np.int32))
+                   take((L3,), np.int8), take((1,), np.int32),
+                   version=version)
 
     # -- inference --------------------------------------------------------
 
@@ -231,8 +275,8 @@ class Net:
             persp = board.turn
         acc = self.accumulator(board, persp)
         h0 = _crelu(acc >> SHIFT1)
-        x = np.concatenate([h0, np.array(extra_inputs(board, persp),
-                                         dtype=np.int64)])
+        x = np.concatenate([h0, np.array(
+            extras_quantised(board, persp, self.version), dtype=np.int64)])
         h1 = _crelu((self.w2.astype(np.int64) @ x
                      + self.b2.astype(np.int64)) >> SHIFT2)
         h2 = _crelu((self.w3.astype(np.int64) @ h1

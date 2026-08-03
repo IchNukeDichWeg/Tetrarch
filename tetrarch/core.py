@@ -74,6 +74,7 @@ class TtNetView(ctypes.Structure):
     """Pointers to a net's arrays. The C side memcpys immediately, so the
     numpy arrays only have to outlive the call."""
     _fields_ = [
+        ("version", ctypes.c_int32),
         ("w1", ctypes.POINTER(ctypes.c_int16)),
         ("b1", ctypes.POINTER(ctypes.c_int32)),
         ("w2", ctypes.POINTER(ctypes.c_int8)),
@@ -372,7 +373,8 @@ def load_net(net):
               np.ascontiguousarray(net.b4, dtype=np.int32)]
     types = [ctypes.c_int16, ctypes.c_int32, ctypes.c_int8, ctypes.c_int32,
              ctypes.c_int8, ctypes.c_int32, ctypes.c_int8, ctypes.c_int32]
-    view = TtNetView(*[a.ctypes.data_as(ctypes.POINTER(t))
+    view = TtNetView(getattr(net, "version", 1),
+                     *[a.ctypes.data_as(ctypes.POINTER(t))
                        for a, t in zip(arrays, types)])
     if not lib.tt_load_net(ctypes.byref(view)):
         raise CoreUnavailable("could not allocate the net")
