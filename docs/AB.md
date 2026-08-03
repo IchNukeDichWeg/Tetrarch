@@ -643,6 +643,46 @@ The version worth trying is neither: keep MVV-LVA and use SEE only to sort
 losing captures behind the quiets. That is a third thing this toggle does not
 do.
 
+### Where net v7's difference actually lives
+
+The whole-book -0.82 is an average over five setups and hides the result. Split
+by setup, from the same 20,000 games:
+
+| setup | v7 vs v5 | |
+|---|---|---|
+| classic | **-23.68 +/- 10.21** | v5, and clears its interval |
+| **modern** | **+22.15 +/- 10.81** | **v7, and clears its interval** |
+| by | -3.17 +/- 10.63 | level |
+| byg | +5.76 +/- 10.72 | level |
+| rg | -2.56 +/- 10.71 | level |
+
+Two setups separate, three do not. The earlier guess that v7 gained about +5
+evenly across the four non-classic setups was arithmetic, not measurement, and
+it was wrong: the gain is +22 on one setup and nothing on three.
+
+**The setup v7 wins is `modern`, which is what chess.com runs.** It has been the
+live default since 2022 (§3.5). So on the only variant most games are actually
+played in, the net this file rejected twice is 22 Elo ahead of the one the
+engine ships with, and the net the engine ships with is ahead only on `classic`,
+which is the default here by an old decision and is played by nearly nobody.
+
+That is a question about the goal rather than the measurement. If Tetrarch is
+meant to play the game people play, v7 is already the better net and has been
+since it was trained. If the target is the number this file has always quoted,
+v5 stays. The two answers point in opposite directions and no further A/B
+resolves it, because they disagree about what to measure rather than about what
+the measurement says.
+
+A per-setup bundle is the third answer and the data supports it: v5 on classic,
+v7 on modern, either elsewhere. That is worth about 24 Elo on classic against
+shipping v7 alone and about 22 on modern against shipping v5 alone, and
+uci.py already knows the setup before it needs an evaluation.
+
+Before building that, the cheaper experiment is more data. v7 saw 25,000 games
+per setup against v5's 125,000 on classic. A 250,000-game generation across the
+five gives each 50,000 and may beat v5 everywhere at once, which is a better
+outcome than shipping two nets and a selector. Generation takes 29 minutes.
+
 ### Net v8 -- REJECTED, and it settles the teacher question
 
 Generation 8: identical to generation 7 except the teacher, net **v4** instead
