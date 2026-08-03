@@ -158,7 +158,24 @@ The generational gain is not a fixed-nodes artefact: it survives a clock
 almost undiminished. That is what justifies spending server hours on
 generation 5 with net v4 teaching.
 
-### Lambda -- CLOSED at 0.7
+### Lambda -- CLOSED at 0.7, and now closed from both sides
+
+The original closure tested only arms BELOW 0.7 and called it settled. That was
+not a closure, it was a default nobody had probed upward: every measurement
+pointed the same way, which is exactly the shape that hides an optimum further
+along. An 0.85 arm was later run on generation 6's data and lost -40.52 +/-
+4.66 against v5, where the same data at 0.7 lost -30.29 +/- 4.65. Worse on
+both sides, so 0.7 stands, now on evidence rather than on the absence of it.
+
+The reasoning that motivated the 0.85 arm was wrong and worth writing down:
+generation 6's labels come from an 18,000-node search rather than 7,500, so
+the evaluation half of the target should be more trustworthy and deserve more
+weight. It does not, or that is not what limits the blend.
+
+One trap in reading those runs: losses at different lambda are not comparable.
+0.85 reached a held-out loss of 0.01857 against 0.7's 0.02621 and played 10
+Elo worse. Lambda changes the target itself, and sigmoid(eval) is easier to fit
+than a game result, so a higher lambda buys a lower number mechanically.
 
 Three arms trained from one cache, played head to head against 0.7:
 
@@ -598,6 +615,11 @@ teaching, 8 epochs at lambda 0.7, epoch 6 selected on held-out loss.
 **Fixed nodes, 20,000, classic, 20,000 games: -30.29 +/- 4.65.**
 
 Six times the error bar the wrong way. Net v5 stays the engine's evaluation.
+
+Retrained from the same cache at lambda 0.85 to test whether the blend rather
+than the data was at fault: **-40.52 +/- 4.66**, worse still. Two blends, both
+losing, so this is the data and not a training hyperparameter. Those 125,000
+games do not produce a better net at any setting tried.
 
 The point of this generation was to raise label quality rather than teacher
 strength: every previous one used 5,000 to 7,500 nodes per move, and this
