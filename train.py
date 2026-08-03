@@ -60,8 +60,8 @@ def _cache_chunk(job):
     subtlety -- the pool preserves block order, so the cache is identical
     whatever --cache-workers is set to."""
     lines, augment = job
-    feats, extras, cps, results = [], [], [], []
-    for line in lines:
+    feats, extras, cps, results, games = [], [], [], [], []
+    for game_id, line in enumerate(lines):
         record = json.loads(line)
         board = Board.from_fen4(record["fen4"], MODE_TEAMS)
         result = record["result"]               # team 0's score
@@ -79,6 +79,7 @@ def _cache_chunk(job):
                 flip = (persp & 1) == 1
                 cps.append(-cp if flip else cp)
                 results.append(1.0 - result if flip else result)
+                games.append(game_id)
             move = next((m for m in gen.gen_legal(board)
                          if move_str(m) == token), None)
             if move is None:
@@ -87,7 +88,9 @@ def _cache_chunk(job):
     return (np.asarray(feats, dtype=np.int16).reshape(-1, MAX_FEATURES),
             np.asarray(extras, dtype=np.int16).reshape(-1, nnue.NEXTRA),
             np.asarray(cps, dtype=np.float32),
-            np.asarray(results, dtype=np.float32))
+            np.asarray(results, dtype=np.float32),
+            np.asarray(games, dtype=np.int32),
+            len(lines))
 
 
 #: Games per work unit, capped so every worker gets several blocks -- a fixed
@@ -139,11 +142,18 @@ def build_cache(data_path, cache_path, limit=None, augment=False, quiet=False,
                       % (min(done, games), games,
                          sum(len(p[2]) for p in parts), rate), flush=True)
 
+    # Game ids are numbered within a chunk, so shift each block past the last.
+    game_ids, base = [], 0
+    for part in parts:
+        game_ids.append(part[4] + base)
+        base += part[5]
+
     arrays = {
         "features": np.concatenate([p[0] for p in parts]),
         "extras": np.concatenate([p[1] for p in parts]),
         "cp": np.concatenate([p[2] for p in parts]),
         "result": np.concatenate([p[3] for p in parts]),
+        "game": np.concatenate(game_ids),
     }
     os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
     np.savez(cache_path, **arrays)
@@ -154,7 +164,20 @@ def build_cache(data_path, cache_path, limit=None, augment=False, quiet=False,
 
 def load_cache(path):
     with np.load(path) as data:
-        return {k: data[k] for k in ("features", "extras", "cp", "result")}
+        out = {k: data[k] for k in ("features", "extras", "cp", "result")}
+        # Caches written before the split was fixed carry no game ids. Refusing
+        # is the right answer: silently falling back to a per-position split
+        # would reproduce the leak the ids exist to close, and the only sign
+        # would be a validation number that quietly means something else.
+        if "game" not in data:
+            raise SystemExit(
+                "%s predates the per-game validation split and has no game "
+                "ids.\nDelete it and let this rebuild -- a per-position split "
+                "puts a game's own\nneighbouring plies on both sides of the "
+                "line, so the held-out number is\nmeasuring memory rather "
+                "than generalisation." % path)
+        out["game"] = data["game"]
+        return out
 
 
 # --- the float model --------------------------------------------------------
@@ -486,10 +509,22 @@ def main():
     print("%d positions, %d features wide, batch %d, lambda %.2f"
           % (n, MAX_FEATURES, args.batch, args.blend))
 
+    # Split by GAME, not by position. A game's plies are near-duplicates of
+    # each other -- one move apart, nearly the same board, nearly the same
+    # label -- so a per-position split leaves about seventy relatives of every
+    # validation position sitting in the training set. The number that came out
+    # of that measured how well the net had memorised games it had largely
+    # already seen, which is why it has never tracked Elo, and every "best
+    # epoch" in docs/AB.md was chosen on it.
     rng = np.random.default_rng(args.seed)
-    order = rng.permutation(n)
-    cut = int(n * args.val)
-    val_index, train_index = order[:cut], order[cut:]
+    game = data["game"]
+    ids = np.unique(game)
+    held = rng.permutation(ids)[:max(1, int(len(ids) * args.val))]
+    is_val = np.isin(game, held)
+    val_index = np.nonzero(is_val)[0]
+    train_index = np.nonzero(~is_val)[0]
+    print("holding out %d of %d games (%d of %d positions)"
+          % (len(held), len(ids), len(val_index), n))
 
     model = Model(args.seed)
     opt = Adam(model, lr=args.lr)
