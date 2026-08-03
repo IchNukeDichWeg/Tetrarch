@@ -936,16 +936,35 @@ SEARCH_PINS = {
 #: two orders of magnitude -- an unpruned quiescence over an open board with
 #: queens is enormous -- so this is deliberately modest; the check is a
 #: theorem, and 90 comparisons establish it as well as 400 would.
-MINIMAX_POSITIONS = 30
+#: Raised from 30 when SEEPrune showed the gate could be blind. A toggle
+#: wrongly left out of INEXACT_TOGGLES disagrees with the oracle on about 2% of
+#: comparisons (measured: 7 of 360), so 77 comparisons caught it four times in
+#: five and 30 positions was a coin-flip away from silence. This costs a few
+#: seconds and buys a gate that actually fires.
+MINIMAX_POSITIONS = 90
+
+
+#: Every toggle that makes the search return something other than the exact
+#: minimax value. The oracle compares against unpruned minimax, so all of them
+#: have to be off for the comparison to mean anything -- and the list has to be
+#: declared in one place, because the failure mode when a new one is added is
+#: silent. SEEPrune was default-on for a day before anyone checked, and the
+#: comparison it invalidated kept passing: 7 of 360 positions disagree with the
+#: oracle when it is on, and selftest sampled around them by skipping depth 3
+#: on the busier positions.
+INEXACT_TOGGLES = (
+    ("lmr", core.set_lmr, core.lmr_enabled),
+    ("lmp", core.set_lmp, core.lmp_enabled),
+    ("see prune", core.set_see_prune, core.see_prune_enabled),
+)
 
 
 def _minimax_job(index):
     """One seeded sparse position, compared at depths 1-3. Seeded by index so
     a worker can rebuild it without shipping a Board across the pipe."""
-    # The oracle is plain minimax, so every inexact feature has to be off:
-    # LMR reduces and LMP drops outright, and neither claims to agree with it.
-    core.set_lmr(False)
-    core.set_lmp(False)
+    restore = [(setter, getter()) for _n, setter, getter in INEXACT_TOGGLES]
+    for _n, setter, _g in INEXACT_TOGGLES:
+        setter(False)
     rng = random.Random(3000 + index)
     b = _sparse_teams(rng)
     legal = fast.gen_legal(b)
@@ -961,8 +980,8 @@ def _minimax_job(index):
         if core.search(b, depth).score != search.reference_score(b.copy(), depth):
             bad += 1
         tested += 1
-    core.set_lmr(True)
-    core.set_lmp(True)
+    for setter, was in restore:
+        setter(was)
     return (tested, bad)
 
 

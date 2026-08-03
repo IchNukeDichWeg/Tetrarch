@@ -1840,7 +1840,14 @@ static void score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
              * question and a separate experiment. */
             s = (1 << 16) + (use_see_order ? tt_see(b, m) : vv * 16 - av);
         } else {
-            if (use_killers && ply < MAX_DEPTH) {
+            /* ply >= 0 is not redundant: quiescence passes -1 deliberately,
+             * so that it consults no killer slot, and the upper bound alone
+             * lets -1 through to killers[-1][0..1] -- eight bytes before the
+             * array, read for every quiet move at every qsearch node. It is
+             * harmless only by accident of the current link layout, and
+             * SEARCH_PINS depends on qsearch ordering, so the pinned counts
+             * were resting on out-of-bounds memory staying zero. */
+            if (use_killers && ply >= 0 && ply < MAX_DEPTH) {
                 if (m == killers[ply][0]) s = KILLER_BASE + 1;
                 else if (m == killers[ply][1]) s = KILLER_BASE;
             }
