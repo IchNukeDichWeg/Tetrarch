@@ -902,6 +902,35 @@ Items 2-4 are the ones that could silently corrupt results, and each can wait fo
 phase that touches it. Items 7 and 8 are both settled by a minute in a live game
 whenever you happen to be in one.
 
+### Open item 9: capturing a live king
+
+No source settles this. §7 records only that checkmate eliminates a seat and that
+Teams is won by checkmate; §8.1's king-capture +20 covers the §9.2 zombie king
+only. Whether an intermediate mover may take a king that is already in check,
+before the victim gets its turn to escape, is not written down in anything read
+for this document.
+
+What the engine does today is wrong under either reading, which is why this is
+recorded rather than quietly patched:
+
+* The capture IS generated. `is_enemy` treats a king like any other piece, and
+  the legality filter protects only the mover's own king.
+* It is priced at **zero**. `PIECE_VALUE[KING]` is 0, so the search values
+  taking a hanging enemy king at nothing and prefers a pawn.
+* Afterwards the seat is **kingless but alive**: `tt_make` sets `kings[c] = -1`
+  and never clears `alive[c]`, no `zob_alive` toggle fires, and nothing treats
+  the position as terminal. `tt_in_check` returns 0 when `k < 0`, so that seat
+  can never be checkmated for the rest of the game.
+
+If the capture is legal it should return a mate-magnitude win at once, in both
+`alphabeta` and `qsearch`. If it is illegal the generator should not offer it.
+Both are small changes; choosing between them is the whole difficulty.
+
+**Cheapest settling experiment:** in a live chess.com game, engineer a position
+where one seat is in check and an intermediate seat can capture that king, and
+see whether the move is offered and what the server does with it. Record the
+answer here as an ASSUMPTION per this file's convention, then implement.
+
 ## 15. Findings added during implementation
 
 Rules that only surfaced once the board and both movegens existed. Each is asserted in
