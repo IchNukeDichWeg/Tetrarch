@@ -52,7 +52,7 @@ rotation, against a null self-test of −2.64 ± 6.24 on the same harness.
 | [v2](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v2) | late move reductions | +35.07 ± 6.51 | fixed nodes |
 | [v1](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v1) | killer moves | +50.42 ± 6.41 | fixed nodes |
 
-Since v0 the search tree at classic depth 5 has gone from 228,628 nodes to 7,669,
+Since v0 the search tree at classic depth 5 has gone from 228,628 nodes to 5,982,
 and mean depth at a 20,000-node budget from 3.73 to 5.25.
 
 The largest gain is the one that was predicted to be negative. Chess intuition

@@ -285,7 +285,7 @@ result comes out close.
 
 Not yet played a game.
 
-### Incremental NNUE accumulator### Incremental NNUE accumulator -- infrastructure, no version number
+### Incremental NNUE accumulator -- infrastructure, no version number
 
 Not an A/B: with no net loaded not a line of it runs, so the default build is
 untouched and every pin is unchanged.

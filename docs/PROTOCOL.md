@@ -79,8 +79,11 @@ info depth <d> score mate <n> ...
 seat rotation alternates team every ply, so this is a well-defined two-player
 score (§2). `mate n` counts the mating team's own moves.
 
-The `pv` is currently one move deep. A real principal variation arrives with
-the search work in Phase 7.
+The `pv` is the whole variation, walked out of the transposition table by
+`core.pv`. With `MultiPV > 1` each line carries a `multipv` rank, best first,
+and every line has an exact score rather than a bound -- the root gives up its
+cutoffs to make that true, which costs several times the nodes. Mate scores are
+counted in TEAM moves, not plies, since a team moves once per two seats.
 
 ## Not implemented yet
 

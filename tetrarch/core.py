@@ -586,7 +586,8 @@ def see_order_enabled():
 
 
 def set_see_prune(on):
-    """Skip losing captures in quiescence. Default off."""
+    """Skip losing captures in quiescence. Default ON: CONFIRMED at +16.32
+    +/- 4.58 fixed nodes and +23.09 +/- 4.56 fixed time (docs/AB.md)."""
     load().tt_set_see_prune(1 if on else 0)
 
 
