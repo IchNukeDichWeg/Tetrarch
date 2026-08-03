@@ -643,15 +643,44 @@ The version worth trying is neither: keep MVV-LVA and use SEE only to sort
 losing captures behind the quiets. That is a third thing this toggle does not
 do.
 
-### Net v7 -- REJECTED, and it clears the node budget of suspicion
+### The instrument has to match the training distribution
+
+Net v7 measured **-25.86 +/- 4.57** on classic and **-0.82 +/- 4.67** across the
+book's five setups. Same two nets, same node budget, same 20,000 games. Only the
+positions they were asked to play changed, and the answer moved 25 Elo.
+
+That is the whole gap between "rejected" and "level", and it was created here,
+not discovered: v7 was the first net trained across all five setups, and it was
+screened on classic alone because classic was what every earlier number used.
+Holding the instrument fixed for comparability is right until the training
+distribution moves, at which point the fixed instrument is measuring a fifth of
+what the net learned.
+
+The arithmetic locates the difference. Classic is a fifth of the book, so for
+v5 to be +25.86 on classic and +0.82 over the whole book, v7 must be roughly
+**+5 on each of the other four setups**. It traded 26 Elo of classic depth for
+about 5 apiece across four setups it had never seen. Across the whole game,
+a wash.
+
+**No net before v7 has ever been measured on anything but classic.** v0 through
+v6 were all trained on classic alone and screened on classic alone, so nothing
+in this file before this entry says how any of them play `modern` -- which is
+chess.com's live default and has been since 2022.
+
+### Net v7 -- REJECTED on classic, LEVEL across the five setups
 
 Generation 7: 125,000 games at 7,500 nodes with net v5 teaching, openings drawn
 from a 150,000-position balanced book instead of a random walk. 10 epochs at
 lambda 0.7, epoch 5 selected. 99.9% of the games are distinct.
 
-**Fixed nodes, 20,000, classic, 20,000 games: -25.86 +/- 4.57.**
+**Fixed nodes, 20,000 games each: -25.86 +/- 4.57 on classic, -0.82 +/- 4.67
+across the book's five setups.**
 
-This was built as a diagnostic and it worked as one. Generation 6 changed the
+The first number was reported here as a rejection and that was wrong -- see the
+entry above. v7 is not weaker than v5, it is spread differently: a fifth of its
+training data is classic, against v5's whole.
+
+It was also built as a diagnostic, and it worked as one. Generation 6 changed the
 teacher and the node budget together and could not be attributed. This one went
 back to 7,500 nodes and changed only the openings, and landed within noise of
 generation 6:
