@@ -18,20 +18,10 @@
 # since 2022, so shipping v5 everywhere costs 22 Elo on the variant nearly all
 # games are played in.
 #
-# TO ACTIVATE THE SPLIT: promote net v7 out of a training run and point the
-# four non-classic setups at it --
-#
-#     cp nets/v7/net-best.nnue nets/net-v7.nnue
-#     git add nets/net-v7.nnue
-#     # then change the four lines below from net-v5.nnue to net-v7.nnue
-#
-# Until then this is deliberately a no-op: every setup gets the net the engine
-# already shipped, so the dispatch is exercised without changing what plays.
-#
-# And this whole file is a stopgap. One net that beats v5 on classic AND v7 on
+# This whole file is a stopgap. One net that beats v5 on classic AND v7 on
 # modern is the right answer; that is a training problem, not a dispatch one.
 classic net-v5.nnue
-modern  net-v5.nnue
-by      net-v5.nnue
-byg     net-v5.nnue
-rg      net-v5.nnue
+modern  net-v7.nnue
+by      net-v7.nnue
+byg     net-v7.nnue
+rg      net-v7.nnue
