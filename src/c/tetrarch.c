@@ -1368,7 +1368,7 @@ static int32_t nnue_eval(const TtBoard *b)
 }
 
 /* The cheap half: material only. */
-static int32_t hand_material(const TtBoard *b)
+static int32_t hand_material_for(const TtBoard *b, int persp)
 {
     int32_t total = 0;
     int sq;
@@ -1384,7 +1384,7 @@ static int32_t hand_material(const TtBoard *b)
          * still on the board and still block; a material eval cannot see
          * that, and the throwaway is not the place to try. */
         if (pc == DEAD_UNKNOWN || !b->alive[pc]) continue;
-        total += (same_team(b->mode, pc, b->turn) ? 1 : -1)
+        total += (same_team(b->mode, pc, persp) ? 1 : -1)
                  * P.piece_value[P.pc_type[p]];
     }
     return total;
@@ -1393,7 +1393,7 @@ static int32_t hand_material(const TtBoard *b)
 /* The expensive half: 32 tt_is_attacked calls, which measured as 54% of all
  * search time. Bounded by 4 seats x 8 squares x king_danger, which is what
  * makes a lazy bail sound. */
-static int32_t hand_danger(const TtBoard *b)
+static int32_t hand_danger_for(const TtBoard *b, int persp)
 {
     int32_t total = 0;
     int c, i;
@@ -1407,7 +1407,7 @@ static int32_t hand_danger(const TtBoard *b)
             int t = (k + P.queen_dirs[i]) & 255;
             if (P.valid[t] && tt_is_attacked(b, t, c)) danger++;
         }
-        total += (same_team(b->mode, c, b->turn) ? -1 : 1)
+        total += (same_team(b->mode, c, persp) ? -1 : 1)
                  * danger * P.king_danger;
     }
     return total;
@@ -1462,7 +1462,7 @@ static int32_t piece_mobility(const TtBoard *b, int sq, uint8_t piece)
     return count;
 }
 
-static int32_t hand_mobility(const TtBoard *b)
+static int32_t hand_mobility_for(const TtBoard *b, int persp)
 {
     int32_t total = 0;
     int sq;
@@ -1477,7 +1477,7 @@ static int32_t hand_mobility(const TtBoard *b)
         colour = P.pc_color[p];
         if (colour == DEAD_UNKNOWN || !b->alive[colour]) continue;
         m = piece_mobility(b, sq, p) * P.mobility;
-        total += same_team(b->mode, colour, b->turn) ? m : -m;
+        total += same_team(b->mode, colour, persp) ? m : -m;
     }
     return total;
 }
@@ -1487,6 +1487,33 @@ static int use_mobility = 0;
 
 void tt_set_mobility(int on) { use_mobility = on ? 1 : 0; }
 int tt_get_mobility(void) { return use_mobility; }
+
+/* The perspective is a parameter because a paranoid FFA search scores every
+ * node in the ROOT player's terms, not the mover's. In Teams the two are the
+ * same thing -- the team to move -- so these wrappers keep every existing
+ * caller and every pinned number exactly as they were. */
+static int32_t hand_material(const TtBoard *b)
+{
+    return hand_material_for(b, b->turn);
+}
+
+static int32_t hand_danger(const TtBoard *b)
+{
+    return hand_danger_for(b, b->turn);
+}
+
+static int32_t hand_mobility(const TtBoard *b)
+{
+    return hand_mobility_for(b, b->turn);
+}
+
+/* The whole hand evaluation from one seat's point of view. FFA only: in Teams
+ * hand_eval already means this with persp = b->turn. */
+static int32_t hand_eval_for(const TtBoard *b, int persp)
+{
+    return hand_material_for(b, persp) + hand_danger_for(b, persp)
+           + (use_mobility ? hand_mobility_for(b, persp) : 0);
+}
 
 static int32_t hand_eval(const TtBoard *b)
 {
