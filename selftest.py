@@ -2025,8 +2025,8 @@ def test_book():
     # whether it is. Small and shallow so it stays a second, not a minute.
     core.set_hash(16)
     band, depth = 60, 4
-    jobs = [(i, 4242 + i, book_mod.setup_for(i, "all"), 8, depth, band)
-            for i in range(160)]
+    jobs = [(i, 4242 + i, book_mod.setup_for(i, "all"), 8, depth, band,
+             MODE_TEAMS) for i in range(160)]
     found = [c for c in (book_mod.candidate(j) for j in jobs) if c]
     check("the filter keeps something", len(found) >= 10,
           "%d of %d walks" % (len(found), len(jobs)))
@@ -2062,6 +2062,48 @@ def test_book():
           str(spread))
     check("a single setup is left alone",
           {book_mod.setup_for(i, "rg") for i in range(20)} == {"rg"})
+
+    # FFA filters something else entirely. A paranoid score sits near -8600 at
+    # the start, so a Teams band would reject every position ever generated;
+    # what is bounded is the SPREAD between the four seats, each searched as
+    # though it were to move.
+    ffa_band = 250
+    jobs = [(i, 777 + i, "classic", 8, 3, ffa_band, MODE_FFA)
+            for i in range(20)]
+    ffa_found = [c for c in (book_mod.candidate(j) for j in jobs) if c]
+    check("the FFA filter keeps something", len(ffa_found) >= 3,
+          "%d of %d walks" % (len(ffa_found), len(jobs)))
+    check("every FFA position is inside the spread band",
+          all(0 <= s <= ffa_band for _st, _f, _k, s in ffa_found),
+          "%r" % [s for _st, _f, _k, s in ffa_found])
+    check("an FFA book position has every seat still in the game",
+          all(all(Board.from_fen4(f, MODE_FFA).alive)
+              for _st, f, _k, _s in ffa_found))
+
+    # A Teams band applied to FFA would keep nothing, which is the failure the
+    # per-mode default exists to prevent -- and the reason the two bands are
+    # not one number.
+    jobs = [(i, 777 + i, "classic", 8, 3, band, MODE_FFA) for i in range(8)]
+    strict = [c for c in (book_mod.candidate(j) for j in jobs) if c]
+    check("the per-mode band default is not cosmetic",
+          book_mod.DEFAULT_BAND["ffa"] != book_mod.DEFAULT_BAND["teams"]
+          and len(strict) < len(ffa_found),
+          "%d kept at the Teams band" % len(strict))
+
+    # The mode is written into the book and read back, so a book cannot be
+    # fed to the wrong kind of run. Absent, it means Teams: books built before
+    # FFA existed still mean what they meant.
+    scratch = os.path.join(tempfile.gettempdir(), "tetrarch_book_mode.txt")
+    for written, expect in (("# mode ffa\n", "ffa"),
+                            ("# mode teams\n", "teams"),
+                            ("", "teams"),
+                            ("# 8 plies, depth 6\n", "teams")):
+        with open(scratch, "w") as fh:
+            fh.write(written + "classic R-0,0,0,0-1,1,1,1-1,1,1,1-0,0,0,0-0-x\n")
+        check("a book header of %r reads as %s"
+              % (written.strip() or "nothing", expect),
+              book_mod.mode_of(scratch) == expect, book_mod.mode_of(scratch))
+    os.remove(scratch)
 
     # And the file round-trips, since both consumers read it back.
     path = os.path.join(tempfile.gettempdir(), "tetrarch_book_selftest.txt")

@@ -287,6 +287,14 @@ def main():
     global BOOK
     if args.book:
         import book as book_mod
+        # A book screens openings for its own mode -- balance means something
+        # different in each -- so using the wrong one silently measures the
+        # wrong thing rather than failing.
+        book_mode = book_mod.mode_of(args.book)
+        if book_mode != args.mode:
+            print("%s is a %s book; this is a %s run"
+                  % (args.book, book_mode, args.mode), file=sys.stderr)
+            return 1
         BOOK = book_mod.load(args.book)
 
     nproc = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
