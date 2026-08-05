@@ -1523,6 +1523,29 @@ def test_ffa_elimination():
           game.placement(b)[0] == RED,
           "placement %r" % [SEAT_NAMES[s] for s in game.placement(b)])
 
+    # A lone survivor with no move ends the game rather than being eliminated
+    # into an empty board. Any FEN4 can hand this position over, and asking
+    # about legal moves first raised StopIteration on it.
+    b = Board(MODE_FFA)
+    b.sq[sq_from_name("a1")] = make_piece(RED, KING)
+    b.sq[sq_from_name("c2")] = make_piece(BLUE, QUEEN)
+    b.sq[sq_from_name("d1")] = make_piece(BLUE, QUEEN)
+    b.alive = [True, False, False, False]
+    b.turn = RED
+    b.find_kings()
+    b.recompute_key()
+    check("the position really does leave the survivor stuck",
+          not fast.gen_legal(b))
+    ended = game.resolve(b)
+    check("a lone survivor with no move is the winner, not a crash",
+          ended is not None and ended["seat"] == RED and b.alive[RED],
+          "%r" % (ended,))
+    b.alive = [False] * 4
+    b.recompute_key()
+    ended = game.resolve(b)
+    check("an empty alive mask reports no winner rather than raising",
+          ended is not None and ended["seat"] is None, "%r" % (ended,))
+
     # A draw pays every live seat +10 (8.2); Teams draws pay nothing.
     b = start_board("classic", MODE_FFA)
     b.alive[GREEN] = False
@@ -1570,13 +1593,33 @@ def _sparse_ffa(rng):
     return b
 
 
+def _probe_net():
+    """Any shipped net; the comparison does not care which, only that the
+    quantised path is the one being evaluated."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    names = sorted(n for n in os.listdir(os.path.join(here, "nets"))
+                   if n.endswith(".nnue"))
+    return os.path.join(here, "nets", names[-1])
+
+
 def _paranoid_job(index):
     """One seeded sparse FFA position against the unpruned paranoid oracle.
 
     No toggle has to be switched off first: the FFA path shares none of the
     Teams heuristics -- no TT, no killers, no LMR, no LMP, no SEE pruning, no
     quiescence -- so the comparison is exact by construction.
+
+    Half the sample runs with a net loaded. That half is the only thing that
+    exercises the incremental accumulator being READ from a perspective that
+    is not the seat to move, which is new in FFA and cannot happen in Teams:
+    the oracle evaluates fresh copies, so a stale accumulator shows up here as
+    a disagreement and nowhere else.
     """
+    from tetrarch import nnue
+    if index % 2:
+        core.load_net(nnue.Net.load(_probe_net()))
+    else:
+        core.unload_net()
     rng = random.Random(9000 + index)
     b = _sparse_ffa(rng)
     if not fast.gen_legal(b):
@@ -1684,6 +1727,7 @@ def test_ffa_search(workers=1):
         check("search.py still refuses a dead seat in Teams", True)
 
     results = pool_map(_paranoid_job, list(range(FFA_POSITIONS)), workers)
+    core.unload_net()
     tested = sum(r[0] for r in results)
     bad = sum(r[1] for r in results)
     elim = sum(r[2] for r in results)
@@ -1768,6 +1812,28 @@ def test_net_bundle():
     check("an unbundled FFA setup plays the hand eval, not a Teams net",
           engine.net is None and not core.net_loaded(),
           "net %r, loaded %r" % (engine.net, core.net_loaded()))
+
+    # An explicit Net outranks the bundle. match.py names a net per side and
+    # prints it in the banner; a Setup or Mode that silently swapped it would
+    # make every A/B report the wrong engine -- which has happened once here
+    # already, from the other direction.
+    engine.mode = MODE_TEAMS
+    engine.cmd_setoption(["name", "Net", "value",
+                          os.path.join(nets_dir, "net-v5.nnue")])
+    engine.bundle = uci_mod.load_bundle(scratch)
+    engine.setup = "modern"
+    engine._use_net_for_setup()
+    check("an explicit Net survives a later Setup",
+          os.path.basename(engine.net or "none") == "net-v5.nnue",
+          os.path.basename(engine.net or "none"))
+    engine.mode = MODE_FFA
+    engine._use_net_for_setup()
+    check("an explicit Net survives a later Mode",
+          os.path.basename(engine.net or "none") == "net-v5.nnue",
+          os.path.basename(engine.net or "none"))
+    engine.net_explicit = False
+    engine.net = None
+    engine.mode = MODE_TEAMS
 
     # Switching back must restore the Teams net rather than leave FFA's
     # decision in place for the rest of the session.
@@ -2587,6 +2653,51 @@ def test_ffa_data():
             os.remove(path)
 
 
+def test_pgn4_ffa_elimination():
+    section("PGN4 across an FFA elimination")
+
+    # A game that loses a seat, written and read back. Before this, write()
+    # emitted no terminator and kept advancing four seats a round, so every
+    # token after the first elimination was resolved from the wrong turn --
+    # the file was wrong, not merely unreadable.
+    rng = random.Random(11)
+    b = pgn4.start_board("classic", MODE_FFA)
+    start = b.copy()
+    played = []
+    while all(b.alive) and len(played) < 600:
+        m = rng.choice(fast.gen_legal(b))
+        played.append(m)
+        b.make(m)
+        game.resolve(b)
+    check("the sample game loses a seat", not all(b.alive),
+          "%d plies" % len(played))
+    for _ in range(9):                       # and keeps playing past it
+        legal = fast.gen_legal(b)
+        if not legal:
+            break
+        m = rng.choice(legal)
+        played.append(m)
+        b.make(m)
+        game.resolve(b)
+
+    text = pgn4.write(start, played, {"Event": "selftest"})
+    check("write emits a terminator token for the elimination",
+          any(tok in ("#", "S") for tok in text.split()), text[-200:])
+
+    frames, terms = pgn4.replay(pgn4.parse(text))
+    check("replay records the elimination", len(terms) == 1
+          and terms[0]["reason"] in ("checkmate", "stalemate"), "%r" % (terms,))
+    check("the game round-trips exactly, points included",
+          frames[-1]["fen4"] == b.to_fen4().replace("\n", ""),
+          "replayed %s\nplayed   %s"
+          % (frames[-1]["fen4"], b.to_fen4().replace("\n", "")))
+
+    # A bare "#" is the checkmate terminator, and rstrip("+#") leaves nothing
+    # of it. Both replayers read it as a move and refused the file.
+    check("a bare # is read as a terminator, not a move",
+          pgn4.resolve(start.copy(), "#") is None)
+
+
 def test_match_ffa():
     section("match.py FFA pairing and scoring")
     import match
@@ -2684,18 +2795,26 @@ def test_js_replay():
     # elimination are real rules -- and a second implementation of a rule
     # drifts unless something compares them.
     rng = random.Random(21)
+    # One FFA game among the Teams ones. Both replayers eliminate a seat on a
+    # terminator token, and until this case existed neither side's elimination
+    # path was ever compared against the other's -- both had the same bug, a
+    # bare "#" stripping to nothing and being read as a move.
+    plans = [(setup, MODE_TEAMS, 60) for setup in SETUPS]
+    plans.append(("classic", MODE_FFA, 460))
     cases = []
-    for setup in SETUPS:
-        b = start_board(setup)
+    for setup, mode, plies in plans:
+        b = start_board(setup, mode)
         moves = []
-        for _ in range(60):
+        for _ in range(plies):
             legal = fast.gen_legal(b)
             if not legal:
                 break
             m = rng.choice(legal)
             moves.append(m)
             b.make(m)
-        text = pgn4.write(start_board(setup), moves, {"Result": "*"})
+            if mode == MODE_FFA:
+                game.resolve(b)
+        text = pgn4.write(start_board(setup, mode), moves, {"Result": "*"})
         frames, _ = pgn4.replay(pgn4.parse(text))
 
         def key(frame):
@@ -3107,6 +3226,7 @@ def main():
     test_resume()
     test_match_rotation()
     test_uci_ffa_replay()
+    test_pgn4_ffa_elimination()
     test_match_ffa()
     test_ffa_data()
     test_pgn4()

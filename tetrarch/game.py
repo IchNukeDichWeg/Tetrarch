@@ -21,6 +21,26 @@ from . import movegen as gen
 DRAW_POINTS = 10
 
 
+def eliminate_stuck(board):
+    """FFA only: if the seat to move cannot move, take it out and say why.
+
+    Returns "checkmate", "stalemate", or None when nothing happened. This is
+    the single place §7's rule is applied -- resolve() loops on it, and
+    pgn4.write consumes it to emit the terminator token a reader needs to
+    follow the same path.
+
+    Never eliminates the last seat standing: with one seat left the game is
+    already over, whether or not that seat has a move.
+    """
+    if board.mode == MODE_TEAMS or sum(board.alive) <= 1:
+        return None
+    if gen.gen_legal(board):
+        return None
+    checked = gen.in_check(board, board.turn)
+    board.eliminate(board.turn)
+    return "checkmate" if checked else "stalemate"
+
+
 def resolve(board):
     """Play out every forced elimination and report whether the game is over.
 
@@ -28,27 +48,31 @@ def resolve(board):
     None while play continues, else a dict with `over` (a short reason),
     `seat`, and `text`.
 
-    Terminates: each pass either finds a legal move and returns, or removes a
-    seat, and the alive mask only shrinks.
+    Terminates: each pass either returns, or removes a seat, and the alive mask
+    only shrinks.
     """
     while True:
+        # Asked BEFORE the legal-move test, not after eliminating. With one
+        # seat left the game is over however that seat is placed -- and a
+        # position holding a lone survivor with no moves reaches here from any
+        # FEN4, so the old order raised StopIteration on a legal position.
+        if board.mode != MODE_TEAMS and sum(board.alive) <= 1:
+            winner = next((s for s in range(4) if board.alive[s]), None)
+            return {"over": "last seat standing", "seat": winner,
+                    "text": "nobody left" if winner is None
+                            else "%s wins on %d points"
+                                 % (SEAT_NAMES[winner], board.points[winner])}
+
         if gen.gen_legal(board):
             return None
 
-        seat = board.turn
-        checked = gen.in_check(board, seat)
-
         if board.mode == MODE_TEAMS:
-            over = "checkmate" if checked else "stalemate"
-            return {"over": over, "seat": seat,
-                    "text": "%s %s" % (over, SEAT_NAMES[seat])}
+            over = "checkmate" if gen.in_check(board, board.turn) \
+                else "stalemate"
+            return {"over": over, "seat": board.turn,
+                    "text": "%s %s" % (over, SEAT_NAMES[board.turn])}
 
-        board.eliminate(seat)
-        if sum(board.alive) <= 1:
-            winner = next(s for s in range(4) if board.alive[s])
-            return {"over": "last seat standing", "seat": winner,
-                    "text": "%s wins on %d points"
-                            % (SEAT_NAMES[winner], board.points[winner])}
+        eliminate_stuck(board)
 
 
 def award_draw(board):
