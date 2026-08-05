@@ -43,7 +43,15 @@ DEFAULT_BUNDLE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def load_bundle(path):
-    """Read `setup netfile` lines into {setup: absolute path}.
+    """Read `mode setup netfile` lines into {(mode, setup): absolute path}.
+
+    Teams and FFA are different games, not two dials on one: the eval sees a
+    points race in one and never in the other, so a net trained on one has no
+    signal for the other. The dispatch key is therefore the pair, not the
+    setup alone.
+
+    A two-field line is read as Teams, so a bundle written before FFA existed
+    still loads and still means what it meant.
 
     A named net that is not on disk is dropped with a warning rather than
     failing the load: a clone missing one net should still play the setups it
@@ -56,15 +64,24 @@ def load_bundle(path):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            setup, name = line.split(None, 1)
-            full = os.path.join(here, name.strip())
-            if setup not in SETUPS:
+            fields = line.split()
+            if len(fields) == 2:
+                mode, setup, name = "teams", fields[0], fields[1]
+            elif len(fields) == 3:
+                mode, setup, name = fields
+            else:
+                print("info string bundle line not understood: %r" % line)
+                continue
+            full = os.path.join(here, name)
+            if mode not in MODE_NAMES:
+                print("info string bundle names unknown mode %r" % mode)
+            elif setup not in SETUPS:
                 print("info string bundle names unknown setup %r" % setup)
             elif not os.path.exists(full):
-                print("info string bundle names a missing net for %s: %s"
-                      % (setup, name.strip()))
+                print("info string bundle names a missing net for %s %s: %s"
+                      % (mode, setup, name))
             else:
-                out[setup] = full
+                out[(MODE_NAMES.index(mode), setup)] = full
     return out
 #: Integer release number. Incremented once per CONFIRMED Elo gain, never
 #: for a dormant toggle or a tooling change. See docs/RELEASING.md.
@@ -102,16 +119,29 @@ class Engine:
         self._use_net_for_setup()
 
     def _use_net_for_setup(self):
-        """Load whichever net this setup calls for, if it is not already in.
+        """Load whichever net this mode and setup call for, if not already in.
 
         Reloading clears the transposition table, so this only acts when the
         file actually changes -- a `setoption name Setup` that does not change
         which net plays must not throw the table away.
         """
-        want = self.bundle.get(self.setup) if self.bundle else None
-        if want is None:
+        want = self.bundle.get((self.mode, self.setup)) if self.bundle else None
+        if want is None and self.mode == MODE_TEAMS:
             want = DEFAULT_NET if os.path.exists(DEFAULT_NET) else None
-        if want is None or want == self.net:
+        if want == self.net:
+            return
+        if want is None:
+            # No silent fallback to a Teams net in FFA. Every net shipped was
+            # trained where the points inputs are always zero and one mate
+            # ends the game; net-v5 screened at -124.50 +/- 49.31 against the
+            # hand eval in FFA over 32 games. That is a kill filter reading
+            # rather than a measurement, but the mechanism is understood and
+            # the direction is not in doubt. Said out loud rather than
+            # defaulted quietly, so it is obvious the moment a net is bundled.
+            core.unload_net()
+            self.net = None
+            print("info string no net bundled for %s %s -- playing the hand "
+                  "eval" % (MODE_NAMES[self.mode], self.setup))
             return
         try:
             from tetrarch import nnue
@@ -191,6 +221,10 @@ class Engine:
                 self.mode = MODE_NAMES.index(value.lower())
                 self.board = start_board(self.setup, self.mode)
                 self.history = []
+                # The net follows the mode as well as the setup: FFA and Teams
+                # are different games and a net trained on one has no signal
+                # for the other.
+                self._use_net_for_setup()
         elif name == "hash":
             # Clamped to the range `uci` declares. Without the upper bound a
             # value past what can be allocated reached core.set_hash and raised,

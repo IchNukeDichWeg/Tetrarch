@@ -1,7 +1,9 @@
-# Which net plays which setup. One `setup netfile` per line; netfile is
-# relative to this directory. Every setup must appear and every net named must
-# exist -- selftest.py checks both, because a typo here silently sends a setup
-# to the fallback net, which is the mistake this file exists to prevent.
+# Which net plays which mode and setup. One `mode setup netfile` per line;
+# netfile is relative to this directory. Every Teams setup must appear and
+# every net named must exist -- selftest.py checks both, because a typo here
+# silently sends a setup to the fallback net, which is the mistake this file
+# exists to prevent. A two-field line is read as Teams, so a bundle written
+# before FFA existed still means what it meant.
 #
 # WHY THIS EXISTS. The nets differ by what they were trained on and it matters
 # more than expected. net-v5 saw 125,000 classic games and nothing else;
@@ -20,8 +22,18 @@
 #
 # This whole file is a stopgap. One net that beats v5 on classic AND v7 on
 # modern is the right answer; that is a training problem, not a dispatch one.
-classic net-v5.nnue
-modern  net-v7.nnue
-by      net-v7.nnue
-byg     net-v7.nnue
-rg      net-v7.nnue
+teams classic net-v5.nnue
+teams modern  net-v7.nnue
+teams by      net-v7.nnue
+teams byg     net-v7.nnue
+teams rg      net-v7.nnue
+
+# FFA has NO net yet, deliberately. Every net shipped was trained on Teams
+# self-play, where the points inputs are always zero and the game is decided
+# by one checkmate rather than by a four-way race; measured, a 40-point lead
+# moves net-v5 by 4cp. A screen of net-v5 against the hand eval in FFA scored
+# -124.50 +/- 49.31 over 32 games -- a kill filter reading, not a measurement,
+# but pointing the same way. With no line here the engine plays FFA on the hand
+# eval and says so on an info string -- it does NOT fall back to the default
+# net, because the default net is a Teams net and that is the exact mistake.
+# Add `ffa <setup> <net>` lines when there is one.

@@ -1715,13 +1715,19 @@ def test_net_bundle():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            setup, name = line.split(None, 1)
-            named[setup] = name.strip()
-            full = os.path.join(os.path.dirname(path), name.strip())
+            fields = line.split()
+            # Two fields is the pre-FFA form and means Teams.
+            mode, setup, name = (("teams",) + tuple(fields)) if len(fields) == 2 \
+                else tuple(fields)
+            named[(mode, setup)] = name
+            full = os.path.join(os.path.dirname(path), name)
             if not os.path.exists(full):
-                missing.append(name.strip())
-    check("it covers every setup", set(named) == set(SETUPS),
+                missing.append(name)
+    check("it covers every Teams setup",
+          {s for m, s in named if m == "teams"} == set(SETUPS),
           str(sorted(named)))
+    check("it names only known modes",
+          all(m in MODE_NAMES for m, _s in named), str(sorted(named)))
     check("every net it names is on disk", not missing,
           "missing: %s" % sorted(set(missing)) if missing else "")
 
@@ -1732,9 +1738,10 @@ def test_net_bundle():
     # Absolute, because load_bundle resolves a relative name against the
     # manifest's own directory and this manifest lives in the temp dir.
     with open(scratch, "w") as handle:
-        handle.write("classic %s\nmodern %s\n"
+        handle.write("classic %s\nteams modern %s\nffa classic %s\n"
                      % (os.path.join(nets_dir, "net-v5.nnue"),
-                        os.path.join(nets_dir, "net-v4.nnue")))
+                        os.path.join(nets_dir, "net-v4.nnue"),
+                        os.path.join(nets_dir, "net-v7.nnue")))
     engine = uci_mod.Engine()
     engine.bundle = uci_mod.load_bundle(scratch)
     engine.net = None
@@ -1744,6 +1751,31 @@ def test_net_bundle():
         engine._use_net_for_setup()
         picked[setup] = os.path.basename(engine.net or "none")
 
+    # The mode is half the key. Teams and FFA are different games -- the eval
+    # sees a points race in one and never in the other -- so the same setup
+    # has to be able to name a different net in each.
+    engine.setup = "classic"
+    engine.mode = MODE_FFA
+    engine._use_net_for_setup()
+    check("the net follows the MODE as well as the setup",
+          os.path.basename(engine.net or "none") == "net-v7.nnue",
+          os.path.basename(engine.net or "none"))
+
+    # And with no FFA line at all, the hand eval -- NOT the default net, which
+    # is a Teams net and would be the exact mistake the bundle exists to stop.
+    engine.setup = "modern"
+    engine._use_net_for_setup()
+    check("an unbundled FFA setup plays the hand eval, not a Teams net",
+          engine.net is None and not core.net_loaded(),
+          "net %r, loaded %r" % (engine.net, core.net_loaded()))
+
+    # Switching back must restore the Teams net rather than leave FFA's
+    # decision in place for the rest of the session.
+    engine.mode = MODE_TEAMS
+    engine._use_net_for_setup()
+    check("switching back to Teams reloads its net",
+          os.path.basename(engine.net or "none") == "net-v4.nnue",
+          os.path.basename(engine.net or "none"))
     os.remove(scratch)
     check("the net follows the setup",
           picked["classic"] == "net-v5.nnue"
