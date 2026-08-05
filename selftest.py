@@ -1928,6 +1928,56 @@ def test_repetition():
     check_all("a key off the seat cycle changes nothing", offcycle)
     check_all("the halfmove clock bounds the scan", bounded)
 
+    # --- FFA (the paranoid search) -----------------------------------------
+    #
+    # Built rather than injected: a real eight-ply cycle exists here and is
+    # cheap to reach, and it proves the whole chain -- the root writing its own
+    # key, the scan striding the seat cycle, and the value returned.
+    b = pgn4.start_board("classic", MODE_FFA)
+    keys, out = [], []
+    for _ in range(4):                   # one knight move per seat, out ...
+        m = next(x for x in fast.gen_legal(b)
+                 if PC_TYPE[b.sq[mv_from(x)]] == KNIGHT)
+        keys.append(b.key)
+        out.append(m)
+        b.make(m)
+    for m in out:                        # ... and each straight back
+        rev = next((x for x in fast.gen_legal(b)
+                    if mv_from(x) == mv_to(m) and mv_to(x) == mv_from(m)), None)
+        if rev is None:
+            break
+        keys.append(b.key)
+        b.make(rev)
+    check("the FFA cycle returns to the start position",
+          b.key == pgn4.start_board("classic", MODE_FFA).key
+          and b.halfmove == 8, "halfmove %d" % b.halfmove)
+
+    core.clear_hash()
+    seen = core.search(b, 4, repetitions=keys)
+    core.clear_hash()
+    blind = core.search(b, 4, repetitions=())
+    check("FFA repetition cuts the lines that walk back into it",
+          seen.nodes < blind.nodes // 2,
+          "%d nodes with history, %d without" % (seen.nodes, blind.nodes))
+
+    # The value must NOT be zero. A paranoid score is one seat against three
+    # and sits near -8600 here, so a Teams-style draw of 0 would read as an
+    # enormous win and the engine would chase repetitions.
+    check("an FFA repetition is not scored as a Teams draw",
+          seen.score < -1000, "%+d" % seen.score)
+    check("it is scored as the standing", abs(seen.score - blind.score) < 400,
+          "with %+d, without %+d" % (seen.score, blind.score))
+
+    # And with the detection off, the history must stop mattering -- otherwise
+    # the toggle is not the thing being measured.
+    was = core.rep_detect_enabled()
+    core.set_rep_detect(False)
+    core.clear_hash()
+    off = core.search(b, 4, repetitions=keys)
+    core.set_rep_detect(was)
+    check("the FFA toggle really turns it off", off.nodes == blind.nodes,
+          "%d vs %d" % (off.nodes, blind.nodes))
+
 
 def test_see():
     section("static exchange evaluation")

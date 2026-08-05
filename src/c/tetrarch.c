@@ -1817,7 +1817,9 @@ static int search_aborted;
 
 /* Repetition (§10.2). Positions already played arrive from Python before the
  * search; the search path is appended as it descends, so a single backward
- * scan covers both at once.
+ * scan covers both at once. Shared by both searches -- what a repeat is WORTH
+ * differs between them and lives at the two call sites, but what counts as one
+ * does not.
  *
  * The scan stops at the last irreversible move, which `halfmove` counts: no
  * position before a capture or a pawn advance can equal one after it. Since
@@ -1858,7 +1860,10 @@ static int is_repetition(const TtBoard *b, int ply)
      * alive, which in Teams is the whole game (§7). A dead seat shortens the
      * cycle, and rather than work out by how much, fall back to every ply:
      * this runs at every node and the wrong stride would silently stop
-     * detecting anything. */
+     * detecting anything. That fallback is what makes this correct for FFA
+     * with a seat out, where the cycle is three; a stride of one can only
+     * scan positions with a different seat to move, whose keys cannot match,
+     * so it costs work and never invents a repetition. */
     if (!(b->alive[0] && b->alive[1] && b->alive[2] && b->alive[3])) step = 1;
     for (i = top - step; i >= lo; i -= step)
         if (rep_keys[i] == b->key) return 1;
@@ -2479,6 +2484,24 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
 
     if (!b->alive[root]) return -(MATE_SCORE - ply);
     if (ffa_alive_count(b) <= 1) return MATE_SCORE - ply;
+
+    /* A repetition ends the game (8.2), so the line stops here rather than
+     * being searched on as though the position were fresh.
+     *
+     * The value is the STANDING, which the evaluation is the only estimate
+     * of -- not zero. A Teams draw is zero because negamax is centred on
+     * level; a paranoid score is one seat against three and sits near -8600
+     * at the start, so returning zero here would read as an enormous win and
+     * the engine would chase repetitions instead of avoiding them.
+     *
+     * The rule's +10 to each surviving seat is deliberately not applied: the
+     * evaluation reads point DIFFERENCES only, and a payment every live seat
+     * receives moves none of them. It is worth a fraction of a centipawn even
+     * with a seat already out. One line to add if an FFA net ever makes the
+     * points inputs sharp enough to notice. */
+    if (use_repetitions && is_repetition(b, ply)) return eval_for(b, root);
+    rep_keys[rep_root + ply] = b->key;
+
     if (depth <= 0 || ply >= MAX_DEPTH - 2) return eval_for(b, root);
 
     moves = search_buf[ply];
