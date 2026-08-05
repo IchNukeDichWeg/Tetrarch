@@ -2335,6 +2335,52 @@ def test_match_rotation():
           len(fens) == match.ROTATIONS, "%d distinct" % len(fens))
 
 
+def test_uci_ffa_replay():
+    section("uci.py FFA position replay")
+    import uci
+
+    # The move list does not encode eliminations, so the receiver has to apply
+    # the same rule the sender did. Without it the engine's turn diverges from
+    # the caller's at the first mate and every later search answers for the
+    # wrong seat -- which showed up as `bestmove 0000` in 20 of 24 games of the
+    # first FFA match run, not as an error.
+    b = _sparse_ffa(random.Random(FFA_MATE_SEED))
+    engine = uci.Engine()
+    engine.mode = MODE_FFA
+    engine.cmd_position(["fen4", b.to_fen4().replace("\n", "")])
+    check("a position that arrives already mated is resolved on load",
+          not all(engine.board.alive) and bool(fast.gen_legal(engine.board)),
+          "alive %r" % (engine.board.alive,))
+
+    # A replayed game has to land on the same turn and alive mask as the
+    # sender's board. Seed 11 loses a seat at ply 434.
+    ref = start_board("classic", MODE_FFA)
+    rng = random.Random(11)
+    tokens = []
+    while all(ref.alive) and len(tokens) < 600:
+        m = rng.choice(fast.gen_legal(ref))
+        tokens.append(move_str(m))
+        ref.make(m)
+        game.resolve(ref)
+    check("the sample really did lose a seat", not all(ref.alive),
+          "%d plies" % len(tokens))
+
+    engine = uci.Engine()
+    engine.mode = MODE_FFA
+    engine.cmd_position(["startpos", "classic", "moves"] + tokens)
+    check("a replayed FFA game agrees on turn and alive mask",
+          (engine.board.turn, list(engine.board.alive))
+          == (ref.turn, list(ref.alive)),
+          "engine (%r, %r) vs (%r, %r)"
+          % (engine.board.turn, engine.board.alive, ref.turn, ref.alive))
+
+    # Teams must not resolve anything: a dead seat there is a corrupt
+    # position, not a state to play on from.
+    engine = uci.Engine()
+    engine.cmd_position(["startpos", "classic"])
+    check("Teams still loads with every seat alive", all(engine.board.alive))
+
+
 def test_js_replay():
     section("standalone viewer replayer (gui/viewer.html)")
     import json
@@ -2776,6 +2822,7 @@ def main():
     test_pgn4_named_start()
     test_resume()
     test_match_rotation()
+    test_uci_ffa_replay()
     test_pgn4()
     test_js_replay()
     if args.crosscheck:

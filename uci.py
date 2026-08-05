@@ -24,6 +24,7 @@ from tetrarch.board import (
 )
 from tetrarch import core
 from tetrarch import movegen as gen
+from tetrarch import game
 from tetrarch.search import Limits, search, search_multi, MATE_SCORE
 
 NAME = "Tetrarch"
@@ -289,6 +290,11 @@ class Engine:
             print("info string unrecognised position %r" % args[0])
             return
 
+        # A position can arrive already holding a seat with no moves -- FFA
+        # eliminations are part of the position, not an event the caller
+        # replays -- so it is resolved on load as well as after every move.
+        game.resolve(self.board)
+
         # Every position the game passed through, so the search can tell a
         # repetition from a transposition (§10.2). The board's own key is not
         # included: the root supplies that itself.
@@ -301,10 +307,18 @@ class Engine:
                 break
 
     def play(self, token):
-        """Apply a move given as from-to plus an optional promotion letter."""
+        """Apply a move given as from-to plus an optional promotion letter.
+
+        The move list does not encode eliminations, so the receiver has to
+        apply the same rule the sender did: in FFA a seat with no legal moves
+        leaves the game and the turn passes over it (§7). Without this the
+        engine's idea of whose turn it is diverges from the caller's at the
+        first mate, and every later search answers for the wrong seat.
+        """
         for m in gen.gen_legal(self.board):
             if move_str(m) == token:
                 self.board.make(m)
+                game.resolve(self.board)
                 return True
         return False
 
