@@ -131,6 +131,11 @@ CAPTURE_POINTS = (1, 3, 5, 5, 9, 20, 1)
 #: pays the stalemated seat itself. Mirrored in C as FFA_ELIM_POINTS.
 ELIM_POINTS = 20
 
+#: §8.3, indexed [kings checked - 2][the checker is a queen]. A queen forks two
+#: lines by standing still, which is why it is paid less. Mirrored in C as
+#: FFA_MULTICHECK_POINTS.
+MULTICHECK_POINTS = ((5, 1), (20, 5))
+
 
 def same_team(mode, a, b):
     """Team membership for capture legality. Dead-origin pieces join no team."""
@@ -712,6 +717,35 @@ class Board:
         from . import movegen
         return movegen.in_check(self, seat)
 
+    def _multicheck_points(self, to, mover):
+        """§8.3: the bonus for a move that checks more than one king at once.
+
+        The rule names ONE checking piece -- "with a queen" against "with any
+        other piece" -- so what is counted is the kings the MOVED piece
+        attacks, not every king that happens to be in check afterwards. A
+        discovered check by some third piece is not covered by the wording at
+        any value and no source settles it; see docs/RULES.md §14, open item 11.
+
+        A promoted queen counts as a queen: the discount exists because a queen
+        forks two lines without moving, and a 1-point queen forks identically.
+
+        Dead seats are skipped -- their kings stay on the board (§9.1), so
+        without this a seat could be paid for "checking" a king that has left.
+        """
+        if self.mode != MODE_FFA:
+            return 0
+        from . import movegen
+        checked = 0
+        for seat in range(4):
+            king = self.kings[seat]
+            if seat == mover or not self.alive[seat] or king < 0:
+                continue
+            if movegen.attacks_from(self, to, king):
+                checked += 1
+        if checked < 2:
+            return 0
+        return MULTICHECK_POINTS[checked - 2][PC_TYPE[self.sq[to]] in QUEENISH]
+
     def _capture_points(self, victim):
         """What the mover scores for taking `victim` (§8.1). Dead seats' pieces
         are worth nothing (§9.1): they stay on the board as obstacles, and a
@@ -823,6 +857,15 @@ class Board:
         self.turn = self.next_turn()
         key ^= ZOB_TURN[self.turn]
         self.key = key
+
+        # Last, not with the capture award: §8.3 asks what the moved piece
+        # attacks FROM ITS NEW SQUARE, over the occupancy the move leaves
+        # behind. A capture that opens a line changes the answer.
+        bonus = self._multicheck_points(to, mover)
+        if bonus:
+            self.points = list(self.points)
+            self.points[mover] += bonus
+            undo = undo[:-1] + (undo[-1] + bonus,)
         return undo
 
     def _drop_castling(self, frm, to, piece):

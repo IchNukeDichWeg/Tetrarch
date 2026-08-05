@@ -110,6 +110,13 @@ typedef struct {
  * is unreachable while 9.2 is out of scope. */
 #define FFA_ELIM_POINTS 20
 
+/* RULES.md 8.3, indexed [kings checked - 2][the checker is a queen].
+ * A queen forks two lines by standing still, which is why it is paid less. */
+static const uint8_t FFA_MULTICHECK_POINTS[2][2] = {
+    /* two kings   */ { 5, 1 },
+    /* three kings */ { 20, 5 },
+};
+
 static const uint8_t FFA_CAPTURE_POINTS[NTYPE] = {
     1,   /* PAWN   */
     3,   /* KNIGHT */
@@ -469,6 +476,9 @@ int tt_ffa_capture_points(int ptype)
 
 int tt_ffa_elim_points(void) { return FFA_ELIM_POINTS; }
 
+/* Defined below, with the ray geometry it needs (§8.3). */
+static int ffa_multicheck_points(const TtBoard *b, int to, int mover);
+
 /* What the mover scores for taking `victim`. Dead seats' pieces are worth
  * nothing (9.1) -- they stay on the board as obstacles, and DEAD_UNKNOWN owns
  * no seat at all. Teams has no points. */
@@ -624,6 +634,17 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
     key ^= P.zob_turn[b->turn];
     b->key = key;
     if (nn) nn_acc_set_key(key);
+
+    /* Last, not with the capture award at the top: 8.3 asks what the moved
+     * piece attacks FROM ITS NEW SQUARE, over the occupancy the move leaves
+     * behind. A capture that opens a line changes the answer. */
+    if (b->mode == MODE_FFA) {
+        int bonus = ffa_multicheck_points(b, to, mover);
+        if (bonus) {
+            u->scored = (uint8_t)(u->scored + bonus);
+            b->points[mover] = (uint16_t)(b->points[mover] + bonus);
+        }
+    }
 }
 
 void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
@@ -718,6 +739,78 @@ static int is_diag(int d)
     for (i = 0; i < 4; i++) if (P.diag[i] == d) return 1;
     return 0;
 }
+
+/* Does the piece standing on `src` attack `dst`? One piece, not the square's
+ * whole attacker set -- tt_is_attacked answers a different and much more
+ * expensive question, and 8.3 asks about the piece that moved. */
+static int piece_attacks(const TtBoard *b, int src, int dst)
+{
+    uint8_t p = b->sq[src];
+    int type, step, t;
+    if (!p || src == dst) return 0;
+    type = P.pc_type[p];
+
+    if (type == KNIGHT) {
+        int i;
+        for (i = 0; i < 8; i++)
+            if (((src + P.knight_deltas[i]) & 255) == dst) return 1;
+        return 0;
+    }
+
+    step = ray_step[src][dst];
+    if (!step) return 0;                       /* not on any line at all */
+
+    if (type == PAWN) {
+        /* Capture deltas are per seat (§4.1) and are the only squares a pawn
+         * attacks -- the push is not an attack. */
+        const int32_t *takes = P.pawn_takes[P.pc_color[p]];
+        if (((src + takes[0]) & 255) != dst && ((src + takes[1]) & 255) != dst)
+            return 0;
+        return 1;
+    }
+    if (type == KING) return ((src + step) & 255) == dst;
+    if (type == ROOK && is_diag(step)) return 0;
+    if (type == BISHOP && !is_diag(step)) return 0;
+
+    for (t = (src + step) & 255; t != dst; t = (t + step) & 255)
+        if (b->sq[t]) return 0;                /* blocked */
+    return 1;
+}
+
+/* 8.3: the bonus for a move that checks more than one king at once.
+ *
+ * The rule names ONE checking piece -- "with a queen" against "with any other
+ * piece" -- so what is counted is the kings the MOVED piece attacks, not every
+ * king that happens to be in check after the move. A discovered check by some
+ * third piece is not covered by the wording at any value, and no source
+ * settles it; recorded as open item 11 rather than guessed at.
+ *
+ * A promoted queen counts as a queen: the discount exists because a queen
+ * forks two lines without moving, and a 1-point queen forks identically.
+ *
+ * Only the destination square is tested, so a castling rook that lands on a
+ * double check goes uncredited. Same reason: the rule names one piece, and
+ * which of the two a castle counts as is not written down anywhere.
+ *
+ * Dead seats are skipped. Their kings stay on the board (§9.1) and b->kings
+ * still points at them, so without this a seat could be paid for "checking" a
+ * king that left the game.
+ */
+static int ffa_multicheck_points(const TtBoard *b, int to, int mover)
+{
+    int seat, checked = 0, queenish, type;
+    if (b->mode != MODE_FFA) return 0;
+    type = P.pc_type[b->sq[to]];
+    for (seat = 0; seat < 4; seat++) {
+        int k = b->kings[seat];
+        if (seat == mover || !b->alive[seat] || k < 0) continue;
+        if (piece_attacks(b, to, k)) checked++;
+    }
+    if (checked < 2) return 0;
+    queenish = (type == QUEEN || type == PQUEEN);
+    return FFA_MULTICHECK_POINTS[checked - 2][queenish];
+}
+
 
 typedef struct { int16_t sq; int16_t dir; } Pin;
 

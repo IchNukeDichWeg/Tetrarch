@@ -89,6 +89,38 @@ def is_attacked(b, sq, me):
     return False
 
 
+def attacks_from(b, src, dst):
+    """Does the piece standing on `src` attack `dst`?
+
+    One piece, not the square's whole attacker set: `is_attacked` answers a
+    different and far more expensive question, and §8.3 asks about the piece
+    that moved. Mirrored in src/c/tetrarch.c as piece_attacks.
+    """
+    p = b.sq[src]
+    if not p or src == dst:
+        return False
+    ptype = PC_TYPE[p]
+
+    if ptype == KNIGHT:
+        return any(((src + d) & 255) == dst for d in KNIGHT_DELTAS)
+    if ptype == PAWN:
+        # The push is not an attack, and the capture deltas are per seat (§4.1).
+        return any(((src + d) & 255) == dst for d in PAWN_TAKES[PC_COLOR[p]])
+    if ptype == KING:
+        return any(((src + d) & 255) == dst for d in QUEEN_DIRS)
+
+    dirs = ORTHO if ptype == ROOK else DIAG if ptype == BISHOP else QUEEN_DIRS
+    for d in dirs:
+        t = (src + d) & 255
+        while VALID[t]:
+            if t == dst:
+                return True
+            if b.sq[t]:
+                break
+            t = (t + d) & 255
+    return False
+
+
 def in_check(b, color):
     king = b.kings[color]
     if king < 0:

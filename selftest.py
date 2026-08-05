@@ -1442,6 +1442,106 @@ def test_ffa_points():
 FFA_MATE_SEED, FFA_STALEMATE_SEED = 589, 5217
 
 
+def _fork_board(frm, ptype, kings, mode=MODE_FFA):
+    b = Board(mode)
+    for seat, name in kings.items():
+        b.sq[sq_from_name(name)] = make_piece(seat, KING)
+    b.sq[sq_from_name(frm)] = make_piece(RED, ptype)
+    b.turn = RED
+    b.find_kings()
+    b.recompute_key()
+    return b
+
+
+def test_ffa_multicheck():
+    section("FFA multi-check bonuses (8.3)")
+
+    # A rook stepping to g7 attacks along rank 7 and file g at once.
+    TWO = {RED: "a1", BLUE: "b7", YELLOW: "g13", GREEN: "n2"}
+    THREE = {RED: "a1", BLUE: "b7", YELLOW: "g13", GREEN: "n7"}
+    ONE = {RED: "a1", BLUE: "b7", YELLOW: "m13", GREEN: "n2"}
+    cases = [
+        ("a rook checking two kings pays +5", ROOK, TWO, MODE_FFA, 5),
+        ("a queen checking two kings pays +1", QUEEN, TWO, MODE_FFA, 1),
+        ("a 1-point queen counts as a queen", PQUEEN, TWO, MODE_FFA, 1),
+        ("a rook checking three kings pays +20", ROOK, THREE, MODE_FFA, 20),
+        ("a queen checking three kings pays +5", QUEEN, THREE, MODE_FFA, 5),
+        ("a single check pays nothing", ROOK, ONE, MODE_FFA, 0),
+        ("Teams pays no multi-check bonus", ROOK, THREE, MODE_TEAMS, 0),
+    ]
+    for label, ptype, kings, mode, want in cases:
+        b = _fork_board("g8", ptype, kings, mode)
+        m = make_move(sq_from_name("g8"), sq_from_name("g7"))
+        py = b.copy()
+        u = py.make(m)
+        got = py.points[RED]
+        py.unmake(m, u)
+        if HAVE_C:
+            cb = core.CBoard(b)
+            cb.make(m)
+            c_got = cb.b.points[RED]
+            cb.unmake(m)
+        else:
+            c_got = got
+        check(label, got == c_got == want and py.points[RED] == 0,
+              "python %d, C %d, restored %d" % (got, c_got, py.points[RED]))
+
+    # A dead seat's king stays on the board (9.1), so without an alive test a
+    # seat would be paid for "checking" a king that has left the game.
+    b = _fork_board("g8", ROOK, THREE)
+    b.alive[GREEN] = False
+    b.recompute_key()
+    py = b.copy()
+    py.make(make_move(sq_from_name("g8"), sq_from_name("g7")))
+    check("a dead seat's king is not counted", py.points[RED] == 5,
+          "%d" % py.points[RED])
+
+    # attacks_from is new geometry, so it is tied to the scan the rest of the
+    # engine already trusts: a square is attacked exactly when some hostile
+    # piece attacks it.
+    rng = random.Random(2)
+    bad = pairs = 0
+    for i in range(30):
+        b = _sparse_ffa(random.Random(20000 + i))
+        for _ in range(8):
+            sq = rng.choice(SQUARES)
+            for me in range(4):
+                want = fast.is_attacked(b, sq, me)
+                got = any(b.sq[s] and fast._hostile(b, b.sq[s], me)
+                          and fast.attacks_from(b, s, sq) for s in SQUARES)
+                pairs += 1
+                bad += want != got
+    check("attacks_from agrees with is_attacked over %d square/seat pairs"
+          % pairs, bad == 0, "%d disagreements" % bad)
+
+    if not HAVE_C:
+        return
+
+    # And the two implementations of 8.3 against each other, over every legal
+    # move of sparse boards -- which is where forks actually happen.
+    bad = moves = forks = 0
+    for i in range(40):
+        b = _sparse_ffa(random.Random(30000 + i))
+        for m in fast.gen_legal(b):
+            py = b.copy()
+            u = py.make(m)
+            cb = core.CBoard(b)
+            cb.make(m)
+            moves += 1
+            if list(py.points) != [cb.b.points[k] for k in range(4)]:
+                bad += 1
+            if py._multicheck_points(mv_to(m), b.turn):
+                forks += 1
+            py.unmake(m, u)
+            cb.unmake(m)
+            if list(py.points) != [0, 0, 0, 0]:
+                bad += 1
+    check("Python and C award the same points over %d moves" % moves,
+          bad == 0, "%d disagreements" % bad)
+    check("the sample actually forks", forks > 0,
+          "%d moves scored a multi-check" % forks)
+
+
 def test_ffa_elimination():
     section("FFA elimination (7, 8.2)")
 
@@ -3216,6 +3316,7 @@ def main():
     test_ffa_search(workers)
     test_ffa_points()
     test_ffa_elimination()
+    test_ffa_multicheck()
     test_net_bundle()
     test_net_versions()
     test_repetition()
