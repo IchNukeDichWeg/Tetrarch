@@ -329,7 +329,9 @@ function replay(game){
   const terms = [];
   let error = null;
   for (const token of game.tokens){
-    const bare = token.replace(/[+#]+$/, "");
+    // `|| token`: a bare "#" is the checkmate terminator, and stripping the
+    // suffix from it leaves an empty string that matches no term and no move.
+    const bare = token.replace(/[+#]+$/, "") || token;
     try {
       if (TERMS[bare] !== undefined && !MOVE_RE.test(bare)){
         terms.push({seat: SEATS[st.turn], reason: TERMS[bare]});

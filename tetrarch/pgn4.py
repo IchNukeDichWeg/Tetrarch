@@ -31,6 +31,7 @@ from .board import (
     name_of, sq_from_name, move_str, F_CASTLE_SHORT, F_CASTLE_LONG, F_EP,
 )
 from . import movegen as gen
+from . import game as game_rules
 
 TAG_RE = re.compile(r'\[\s*(\w+)\s*"(.*?)"\s*\]', re.DOTALL)
 COMMENT_RE = re.compile(r"\{.*?\}", re.DOTALL)
@@ -178,7 +179,7 @@ def _is_result(token):
 
 def resolve(board, token):
     """The legal move this token names, or None if it is a terminator."""
-    stripped = token.rstrip("+#")
+    stripped = token.rstrip("+#") or token      # a bare "#" strips to nothing
     if stripped in TERMINATORS:
         return None
 
@@ -232,15 +233,27 @@ def replay(game, limit=None):
     for ply, token in enumerate(game.tokens):
         if limit is not None and ply >= limit:
             break
-        stripped = token.rstrip("+#")
+        # `or token`: a bare "#" is the checkmate TERMINATOR, and stripping
+        # "+#" from it leaves nothing, so it fell through and was read as a
+        # move. Unreachable until something wrote one.
+        stripped = token.rstrip("+#") or token
         if stripped in TERMINATORS:
             terminations.append({"ply": ply, "seat": SEAT_NAMES[board.turn],
                                  "reason": TERMINATORS[stripped]})
             # The seat leaves; its pieces stay on the board as dead material
             # and the rotation skips it (§9).
-            board.alive[board.turn] = False
-            board.turn = board.next_turn()
-            board.recompute_key()
+            #
+            # Checkmate and stalemate pay §8.2, so they go through the board's
+            # own elimination and the replayed points match the played ones.
+            # Resign and timeout do NOT: those are §9.2's dead king walking,
+            # whose scoring is out of scope, and paying them +20 would invent
+            # points no game awarded.
+            if TERMINATORS[stripped] in ("checkmate", "stalemate"):
+                board.eliminate(board.turn)
+            else:
+                board.alive[board.turn] = False
+                board.turn = board.next_turn()
+                board.recompute_key()
             frames.append(_frame(board, None, token, ply + 1))
             continue
         move = resolve(board, token)
@@ -340,13 +353,23 @@ def write(start, moves, tags=None):
     lines.append("")
 
     board = start.copy()
-    row, number = [], 1
+    tokens = []
     for move in moves:
-        row.append(move_token(board, move))
+        tokens.append(move_token(board, move))
         board.make(move)
-        if len(row) == 4:
-            lines.append("%d. %s" % (number, " .. ".join(row)))
-            row, number = [], number + 1
-    if row:
-        lines.append("%d. %s" % (number, " .. ".join(row)))
+        # An FFA seat with no legal moves leaves the game, and the file has to
+        # SAY so: readers advance past it on a standalone terminator token and
+        # have no other way to know (§7). Without one, a replay plays the next
+        # move for the wrong seat -- and so did this loop, so every token it
+        # wrote after the first elimination was resolved from the wrong turn.
+        # A cascade is possible, hence the loop.
+        while True:
+            why = game_rules.eliminate_stuck(board)
+            if why is None:
+                break
+            tokens.append("#" if why == "checkmate" else "S")
+    # Four slots to a round, terminators included: a reader consumes tokens in
+    # order and each one advances the turn, so the grouping is unchanged.
+    for i in range(0, len(tokens), 4):
+        lines.append("%d. %s" % (i // 4 + 1, " .. ".join(tokens[i:i + 4])))
     return "\n".join(lines) + "\n"
