@@ -1333,13 +1333,17 @@ static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
 }
 #endif
 
-static int32_t nnue_eval(const TtBoard *b)
+/* The net has always been perspective-relative -- the accumulator is kept for
+ * all four seats and the features rotate -- so evaluating from a seat other
+ * than the mover costs nothing but the argument. The paranoid FFA search needs
+ * exactly that: every node scored in the root seat's terms. */
+static int32_t nnue_eval_for(const TtBoard *b, int persp)
 {
     const int32_t *acc;
     int8_t x[NN_L1 + NN_EXTRA], h1[NN_L2], h2[NN_L3];
     int32_t ex[NN_EXTRA];
     int32_t out;
-    int j, k, persp = b->turn;
+    int j, k;
 
     if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
     nn_flush(persp);
@@ -1365,6 +1369,11 @@ static int32_t nnue_eval(const TtBoard *b)
     }
     out = nn_b4 + nn_dot(h2, nn_w4, NN_L3);
     return out >> NN_SHIFT_OUT;
+}
+
+static int32_t nnue_eval(const TtBoard *b)
+{
+    return nnue_eval_for(b, b->turn);
 }
 
 /* The cheap half: material only. */
@@ -1507,6 +1516,15 @@ static int32_t hand_mobility(const TtBoard *b)
     return hand_mobility_for(b, b->turn);
 }
 
+/* The whole hand evaluation from one seat's point of view. Used by the
+ * paranoid FFA search, which scores every node in the ROOT player's terms; in
+ * Teams hand_eval already means this with persp = b->turn. */
+static int32_t hand_eval_for(const TtBoard *b, int persp)
+{
+    return hand_material_for(b, persp) + hand_danger_for(b, persp)
+           + (use_mobility ? hand_mobility_for(b, persp) : 0);
+}
+
 static int32_t hand_eval(const TtBoard *b)
 {
     int32_t total = hand_material(b) + hand_danger(b);
@@ -1558,6 +1576,14 @@ static int32_t lazy_margin(void)
 int32_t tt_eval(const TtBoard *b)
 {
     return nn_loaded ? nnue_eval(b) : hand_eval(b);
+}
+
+/* tt_eval from an arbitrary seat's point of view. Same dispatch: one binary,
+ * two evals. Without this the FFA search would silently run the hand eval on
+ * a machine with a net loaded, and no test would have said so. */
+static int32_t eval_for(const TtBoard *b, int persp)
+{
+    return nn_loaded ? nnue_eval_for(b, persp) : hand_eval_for(b, persp);
 }
 
 /* Same value as tt_eval unless the lazy toggle is on and the bound is already
@@ -2290,6 +2316,129 @@ double tt_bench_makeunmake(TtBoard *b, int iters)
     return now_sec() - t0;
 }
 
+/* --- FFA: paranoid search --------------------------------------------------
+ *
+ * Teams is genuinely two-player -- team = seat & 1 and the turn advances by
+ * one, so the side to move flips every ply and plain negamax applies. FFA is
+ * not. If Red sacrifices a queen to wreck Blue, Yellow and Green both profit
+ * and Red pays alone; there is no single number both sides negate.
+ *
+ * Paranoid (Korf 1991, Sturtevant 2000) collapses that back to two sides by
+ * assuming the other three cooperate against the root player. It understates
+ * the root's chances, which in a four-player game is the safe direction to be
+ * wrong in, and it buys back alpha-beta: the value is held in the ROOT's terms
+ * throughout, maximised at the root's nodes and minimised at everyone else's.
+ *
+ * Deliberately a separate function rather than a mode branch inside alphabeta.
+ * Every measured Elo in this project lives on the Teams path, and sharing a
+ * node loop would put all of it at risk of a subtle FFA-only edit. This shares
+ * everything below the loop -- movegen, make/unmake, ordering, the pin filter
+ * -- and duplicates only the loop.
+ *
+ * Two rules make FFA simpler here than Teams, not harder (§7):
+ *   - No legal move ELIMINATES that seat, checkmate and stalemate alike, and
+ *     play continues with the rest. There is no "the game is over" branch to
+ *     get wrong.
+ *   - The game ends when three are eliminated, so the terminal test is "one
+ *     seat alive", not a mate.
+ *
+ * v0 evaluates with the hand evaluation. Every net in the tree was trained on
+ * Teams self-play, where the alive mask never changes and points never move,
+ * so a net's opinion about a three-player position is untrained rather than
+ * merely unmeasured. */
+
+static int ffa_alive_count(const TtBoard *b)
+{
+    return b->alive[0] + b->alive[1] + b->alive[2] + b->alive[3];
+}
+
+/* Take `seat` out of the game and hand the turn on. Returns what unmake needs.
+ * Nothing moves on the board -- the seat's pieces stay as obstacles worth no
+ * points (§9.1) -- so only the alive mask, the turn and the key change. */
+static uint64_t ffa_eliminate(TtBoard *b, int seat)
+{
+    uint64_t saved = b->key;
+    int c, t = seat;
+    b->alive[seat] = 0;
+    b->key ^= P.zob_alive[seat] ^ P.zob_turn[seat];
+    for (c = 0; c < 4; c++) {
+        t = (t + 1) & 3;
+        if (b->alive[t]) break;
+    }
+    b->turn = (uint8_t)t;
+    b->key ^= P.zob_turn[t];
+    return saved;
+}
+
+static void ffa_restore(TtBoard *b, int seat, uint64_t key)
+{
+    b->alive[seat] = 1;
+    b->turn = (uint8_t)seat;
+    b->key = key;
+}
+
+static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
+                        int root, int ply)
+{
+    uint32_t *moves;
+    int32_t *scores;
+    TtUndo u;
+    Pin pins[8];
+    int n, i, me = b->turn, legal = 0, king0, npins, in_chk;
+    int maximising = (me == root);
+    int32_t best;
+
+    if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
+
+    if (!b->alive[root]) return -(MATE_SCORE - ply);
+    if (ffa_alive_count(b) <= 1) return MATE_SCORE - ply;
+    if (depth <= 0 || ply >= MAX_DEPTH - 2) return eval_for(b, root);
+
+    moves = search_buf[ply];
+    scores = order_buf[ply];
+    n = tt_gen_pseudo(b, moves);
+    score_moves(b, moves, scores, n, 0, -1);
+    king0 = b->kings[me];
+    in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
+    npins = compute_pins(b, me, king0, pins);
+
+    best = maximising ? -INF_SCORE : INF_SCORE;
+    for (i = 0; i < n; i++) {
+        int king, skip;
+        int32_t score;
+        pick_move(moves, scores, n, i);
+        skip = surely_legal(moves[i], king0, pins, npins, in_chk);
+        tt_make(b, moves[i], &u);
+        king = b->kings[me];
+        if (!skip && king >= 0 && tt_is_attacked(b, king, me)) {
+            tt_unmake(b, moves[i], &u);
+            continue;
+        }
+        legal++;
+        score = paranoid(b, depth - 1, alpha, beta, root, ply + 1);
+        tt_unmake(b, moves[i], &u);
+        if (search_aborted) return 0;
+        if (maximising) {
+            if (score > best) best = score;
+            if (best > alpha) alpha = best;
+        } else {
+            if (score < best) best = score;
+            if (best < beta) beta = best;
+        }
+        if (alpha >= beta) break;
+    }
+
+    if (!legal) {
+        /* Eliminated, and the game goes on. Depth is not spent: no move was
+         * played, and each elimination strictly shrinks the alive mask, so
+         * this can recurse at most three times. */
+        uint64_t saved = ffa_eliminate(b, me);
+        best = paranoid(b, depth, alpha, beta, root, ply + 1);
+        ffa_restore(b, me, saved);
+    }
+    return best;
+}
+
 typedef struct {
     uint64_t nodes;
     int32_t score;
@@ -2300,6 +2449,49 @@ typedef struct {
 } TtResult;
 
 int tt_result_size(void) { return (int)sizeof(TtResult); }
+
+/* The FFA root. Every child is scored in the root seat's terms, so unlike the
+ * Teams root there is no negation here: paranoid returns a value already from
+ * this seat's point of view, and the root simply takes the largest. */
+static void tt_search_ffa(TtBoard *b, int depth, TtResult *out)
+{
+    uint32_t *moves, best_move = 0;
+    int32_t *scores, best = -INF_SCORE;
+    TtUndo u;
+    int n, i, legal = 0, me = b->turn;
+
+    moves = search_buf[0];
+    scores = order_buf[0];
+    n = tt_gen_pseudo(b, moves);
+    score_moves(b, moves, scores, n, 0, 0);
+
+    for (i = 0; i < n; i++) {
+        int king;
+        int32_t score;
+        pick_move(moves, scores, n, i);
+        tt_make(b, moves[i], &u);
+        king = b->kings[me];
+        if (king >= 0 && tt_is_attacked(b, king, me)) {
+            tt_unmake(b, moves[i], &u);
+            continue;
+        }
+        legal++;
+        if (legal == 1) best_move = moves[i];
+        score = paranoid(b, depth - 1, best, INF_SCORE, me, 1);
+        tt_unmake(b, moves[i], &u);
+        if (search_aborted) break;
+        if (score > best) {
+            best = score;
+            best_move = moves[i];
+        }
+    }
+
+    out->nodes = search_nodes;
+    out->score = legal ? best : -(MATE_SCORE);
+    out->best = best_move;
+    out->depth = depth;
+    out->aborted = search_aborted;
+}
 
 /* One fixed-depth search. Iterative deepening and time management live in
  * Python at the root, per the architecture; this is the per-node loop only. */
@@ -2323,6 +2515,11 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     if (use_killers) killers_clear();
     /* The root sits at ply 0 of the path, so children at ply 1 can see it. */
     rep_keys[rep_root] = b->key;
+
+    if (b->mode == MODE_FFA) {
+        tt_search_ffa(b, depth, out);
+        return;
+    }
 
     moves = search_buf[0];
     scores = order_buf[0];

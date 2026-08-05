@@ -60,6 +60,15 @@ import time
 from tetrarch.board import Board, MODE_FFA, MODE_TEAMS
 from tetrarch import core
 
+#: How much shallower a position is searched than the bench depth. The FFA
+#: search is paranoid and carries no transposition table and no quiescence, so
+#: it branches an order of magnitude wider than Teams: at the shared depth it
+#: was 99.7% of the whole bench and the other four positions could not move the
+#: total. Three plies shallower puts it in the same range as the other four,
+#: so no single position decides the bench.
+#: ponytail: a depth offset, not a fix -- delete it when paranoid gets a TT.
+DEPTH_DELTA = {"classic-24ply-ffa": -3}
+
 #: (label, mode, fen4). Frozen -- see the module docstring.
 POSITIONS = [
     ("classic-start", MODE_TEAMS,
@@ -119,7 +128,7 @@ def search_round(depth):
         b = Board.from_fen4(fen, mode)
         core.clear_hash()
         t = time.perf_counter()
-        r = core.search(b, depth)
+        r = core.search(b, depth + DEPTH_DELTA.get(label, 0))
         per_position.append((label, r.nodes, time.perf_counter() - t))
         nodes += r.nodes
     return nodes, time.perf_counter() - started, per_position
@@ -204,7 +213,7 @@ def profile(depth, iters):
         b = Board.from_fen4(fen, mode)
         core.clear_hash()
         t = time.perf_counter()
-        r = core.search(b, depth)
+        r = core.search(b, depth + DEPTH_DELTA.get(label, 0))
         secs += time.perf_counter() - t
         nodes += r.nodes
         makes += core.search_makes()

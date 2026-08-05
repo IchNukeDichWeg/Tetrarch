@@ -992,6 +992,11 @@ SEARCH_PINS = {
 #: seconds and buys a gate that actually fires.
 MINIMAX_POSITIONS = 90
 
+#: Sparse FFA positions compared against the paranoid oracle. Cheaper than the
+#: Teams comparison -- the FFA search has no quiescence, so neither does the
+#: oracle -- and the boards are thinner, so this can afford to be larger.
+FFA_POSITIONS = 120
+
 
 #: Every toggle that makes the search return something other than the exact
 #: minimax value. The oracle compares against unpruned minimax, so all of them
@@ -1305,6 +1310,148 @@ def _sparse_teams(rng):
     b.find_kings()
     b.recompute_key()
     return b
+
+
+def _sparse_ffa(rng):
+    """Like _sparse_teams but FFA, and thin enough that seats really do run
+    out of moves -- the elimination branch is the whole point of the FFA
+    search and a crowded board never reaches it."""
+    b = Board(MODE_FFA)
+    free = list(SQUARES)
+    rng.shuffle(free)
+    for color in range(4):
+        b.sq[free.pop()] = make_piece(color, KING)
+        for _ in range(rng.randrange(0, 2)):
+            ptype = rng.choice((KNIGHT, BISHOP, ROOK, QUEEN))
+            b.sq[free.pop()] = make_piece(color, ptype)
+    b.turn = rng.randrange(4)
+    b.find_kings()
+    b.recompute_key()
+    return b
+
+
+def _paranoid_job(index):
+    """One seeded sparse FFA position against the unpruned paranoid oracle.
+
+    No toggle has to be switched off first: the FFA path shares none of the
+    Teams heuristics -- no TT, no killers, no LMR, no LMP, no SEE pruning, no
+    quiescence -- so the comparison is exact by construction.
+    """
+    rng = random.Random(9000 + index)
+    b = _sparse_ffa(rng)
+    if not fast.gen_legal(b):
+        return (0, 0, 0)
+    tested = bad = elim = 0
+    for depth in (1, 2, 3):
+        core.clear_hash()
+        got = core.search(b, depth).score
+        want = search.reference_paranoid(b.copy(), b.turn, depth)
+        if got != want:
+            bad += 1
+        tested += 1
+    # Did any line in this position actually eliminate somebody? Counted so
+    # the section can prove it exercised the branch rather than assume it.
+    elim = 1 if _has_elimination(b.copy(), 2) else 0
+    return (tested, bad, elim)
+
+
+def _has_elimination(b, depth):
+    if depth <= 0:
+        return False
+    legal = fast.gen_legal(b)
+    if not legal:
+        return True
+    for m in legal:
+        u = b.make(m)
+        hit = _has_elimination(b, depth - 1)
+        b.unmake(m, u)
+        if hit:
+            return True
+    return False
+
+
+def test_ffa_search(workers=1):
+    section("FFA paranoid search (7)")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+
+    # The oracle reproduces the leaf eval through the C core, so both sides
+    # have to agree on which eval that is.
+    core.unload_net()
+
+    # The move actually has to be playable. A paranoid search that returns a
+    # pseudo-legal move loses the game on the server, not in a test.
+    for setup in SETUPS:
+        b = start_board(setup)
+        b.mode = MODE_FFA
+        b.recompute_key()
+        legal = set(fast.gen_legal(b))
+        ok = True
+        for depth in (1, 2, 3, 4):
+            core.clear_hash()
+            if core.search(b, depth).best not in legal:
+                ok = False
+        check("%s: FFA best move is legal at depths 1-4" % setup, ok)
+
+    # Teams is negamax and FFA is paranoid; the two share the node loop only
+    # by accident if this ever agrees.
+    b = start_board("classic")
+    core.clear_hash()
+    teams = core.search(b, 4).score
+    b2 = b.copy()
+    b2.mode = MODE_FFA
+    b2.recompute_key()
+    core.clear_hash()
+    ffa = core.search(b2, 4).score
+    check("FFA start scores worse than Teams (three opponents, not one)",
+          ffa < teams, "teams %+d, ffa %+d" % (teams, ffa))
+
+    # One seat left alive is a win for it, and the score says so rather than
+    # running an eval on an empty game.
+    b = start_board("classic")
+    b.mode = MODE_FFA
+    for seat in (BLUE, YELLOW, GREEN):
+        b.alive[seat] = False
+    b.turn = RED
+    b.recompute_key()
+    core.clear_hash()
+    check("last seat alive scores as a win", core.search(b, 3).score > 20000)
+
+    # A dead seat is a legal FFA position, and search.py must not reject it.
+    b = start_board("classic")
+    b.mode = MODE_FFA
+    b.alive[YELLOW] = False
+    b.turn = RED
+    b.recompute_key()
+    try:
+        r = search.search(b, search.Limits(depth=2))
+        check("search.py accepts an FFA position with a dead seat",
+              r.best in set(fast.gen_legal(b)))
+    except ValueError as exc:
+        check("search.py accepts an FFA position with a dead seat", False,
+              str(exc))
+
+    # Teams keeps its invariant: it ends the moment a seat is mated, so a dead
+    # seat there is a corrupt position and has to be refused, not searched.
+    b = start_board("classic")
+    b.alive[YELLOW] = False
+    b.recompute_key()
+    try:
+        search.search(b, search.Limits(depth=1))
+        check("search.py still refuses a dead seat in Teams", False)
+    except ValueError:
+        check("search.py still refuses a dead seat in Teams", True)
+
+    results = pool_map(_paranoid_job, list(range(FFA_POSITIONS)), workers)
+    tested = sum(r[0] for r in results)
+    bad = sum(r[1] for r in results)
+    elim = sum(r[2] for r in results)
+    check("paranoid matches the unpruned oracle over %d comparisons" % tested,
+          bad == 0, "%d disagreements" % bad)
+    check("the sample reaches the elimination branch", elim > 0,
+          "%d of %d positions had a seat run out of moves"
+          % (elim, FFA_POSITIONS))
 
 
 def test_net_bundle():
@@ -2377,6 +2524,7 @@ def main():
     test_rotation()
     test_eval()
     test_search(workers)
+    test_ffa_search(workers)
     test_net_bundle()
     test_net_versions()
     test_repetition()

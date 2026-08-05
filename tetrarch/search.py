@@ -11,10 +11,13 @@ theorem for the whole search, and it is the only thing that would catch a TT
 that silently returns wrong values. Pinned node counts would not: a wrong score
 still produces a node count.
 
-Teams only for now. In Teams the seat rotation alternates team every ply
+Two searches, one root. In Teams the seat rotation alternates team every ply
 (team = seat & 1, turn advances by one), so this is genuine two-player
-zero-sum and plain negamax applies (§2). FFA needs paranoid search and arrives
-in Phase 5.
+zero-sum and plain negamax applies (§2). FFA is not zero-sum between any two
+seats, so the C core searches it paranoid instead: every node scored in the
+ROOT seat's terms, maximising at its own nodes and minimising at the other
+three (Korf 1991). The score of an FFA search is therefore already from the
+root's point of view and must not be negated by the caller.
 
 Section references (§n) are to docs/RULES.md.
 """
@@ -81,12 +84,12 @@ def search(board, limits, info=None, repetitions=()):
     game already passed through, so the search can see a repetition it is
     walking into (§10.2); the root's own key is not among them.
     """
-    # Not asserts: python3 -O strips them, and this is the gate that stops a
-    # negamax search running on an FFA position, where the score does not
-    # negate ply to ply and the answer is silently meaningless (§2).
-    if board.mode != MODE_TEAMS:
-        raise ValueError("FFA search arrives in Phase 5 (§ brief)")
-    if not all(board.alive):
+    # FFA is searched too, by a paranoid formulation in the C core rather than
+    # by negamax -- the score does not negate ply to ply there, so the two
+    # cannot share a node loop (§2). The all-alive rule is a Teams invariant
+    # only: Teams ends the moment a seat is mated, while FFA continues with
+    # three and the alive mask is part of the position (§7).
+    if board.mode == MODE_TEAMS and not all(board.alive):
         raise ValueError("Teams ends when a seat is mated, so no seat is dead "
                          "during search (§7)")
 
@@ -150,9 +153,7 @@ def search_multi(board, limits, lines=1, info=None, repetitions=()):
 
     Returns a list of `Result`, best first.
     """
-    if board.mode != MODE_TEAMS:
-        raise ValueError("FFA search arrives in Phase 5 (§ brief)")
-    if not all(board.alive):
+    if board.mode == MODE_TEAMS and not all(board.alive):
         raise ValueError("Teams ends when a seat is mated, so no seat is dead "
                          "during search (§7)")
 
@@ -306,6 +307,62 @@ def reference_score(board, depth, ply=0):
         if score > best:
             best = score
     return best
+
+
+def reference_paranoid(board, root, depth, ply=0):
+    """The value the C FFA search must return: paranoid minimax, unpruned.
+
+    Held in ROOT's terms the whole way down, so it maximises at root's nodes
+    and minimises at the other three (Korf 1991). No quiescence, matching the
+    C side. "No legal moves" is elimination rather than a terminal, and it
+    spends no depth -- each one shrinks the alive mask, so it cannot recur
+    more than three times (RULES.md 7).
+    """
+    if not board.alive[root]:
+        return -(MATE_SCORE - ply)
+    if sum(board.alive) <= 1:
+        return MATE_SCORE - ply
+    if depth <= 0:
+        return _eval_for(board, root)
+
+    legal = gen.gen_legal(board)
+    if not legal:
+        # Nothing moves: an eliminated seat's pieces stay on the board as
+        # obstacles worth no points (RULES.md 9.1), so only the alive mask and
+        # the turn change.
+        dead = board.turn
+        board.alive[dead] = False
+        board.turn = next(t for t in ((dead + i) % 4 for i in (1, 2, 3, 0))
+                          if board.alive[t] or t == dead)
+        board.recompute_key()
+        score = reference_paranoid(board, root, depth, ply + 1)
+        board.alive[dead] = True
+        board.turn = dead
+        board.recompute_key()
+        return score
+
+    maximising = board.turn == root
+    best = -INF if maximising else INF
+    for m in legal:
+        u = board.make(m)
+        score = reference_paranoid(board, root, depth - 1, ply + 1)
+        board.unmake(m, u)
+        if (score > best) == maximising and score != best:
+            best = score
+    return best
+
+
+def _eval_for(board, persp):
+    """The C evaluation from an arbitrary seat. The core exposes it only for
+    the seat to move, and it is perspective-relative, so ask it about a copy
+    whose turn is the seat wanted."""
+    from . import core
+    if board.turn == persp:
+        return core.evaluate(board)
+    c = board.copy()
+    c.turn = persp
+    c.recompute_key()
+    return core.evaluate(c)
 
 
 def pv_string(result):

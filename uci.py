@@ -342,13 +342,6 @@ class Engine:
                         limits.inc = value
             i += 2 if value is not None else 1
 
-        if self.mode != MODE_TEAMS:
-            print("info string FFA search arrives in Phase 5; "
-                  "playing the first legal move")
-            legal = gen.gen_legal(self.board)
-            print("bestmove %s" % (move_str(legal[0]) if legal else "0000"))
-            return
-
         def line(r, rank=None):
             # The whole variation, not just the move: walked out of the
             # transposition table, and short rather than wrong if an entry has
