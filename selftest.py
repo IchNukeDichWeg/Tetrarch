@@ -1743,6 +1743,7 @@ def test_net_bundle():
         engine.setup = setup
         engine._use_net_for_setup()
         picked[setup] = os.path.basename(engine.net or "none")
+
     os.remove(scratch)
     check("the net follows the setup",
           picked["classic"] == "net-v5.nnue"
@@ -2381,6 +2382,87 @@ def test_uci_ffa_replay():
     check("Teams still loads with every seat alive", all(engine.board.alive))
 
 
+def test_ffa_data():
+    section("FFA data generation and training")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+    import gen_data
+    import train as train_mod
+
+    # Two short games rather than one: the record shape has to hold for a game
+    # that finishes and one that is adjudicated, and 400 plies of FFA is slow.
+    old_max = gen_data.MAX_PLIES
+    gen_data.MAX_PLIES = 40
+    try:
+        records = [gen_data.play_one(
+            (i, 500 + i, "classic", 4, 800, 8, None, MODE_FFA))
+            for i in range(2)]
+    finally:
+        gen_data.MAX_PLIES = old_max
+    records = [r for r in records if r]
+    check("FFA self-play produces records", len(records) == 2,
+          "%d of 2" % len(records))
+    if not records:
+        return
+
+    for r in records:
+        check("the record is labelled ffa", r.get("mode") == "ffa", repr(r.get("mode")))
+        check("the result is a per-seat vector summing to 2",
+              isinstance(r["result"], list) and len(r["result"]) == 4
+              and abs(sum(r["result"]) - 2.0) < 1e-9, "%r" % (r["result"],))
+        check("one score per move", len(r["scores"]) == len(r["moves"].split()),
+              "%d scores, %d moves" % (len(r["scores"]), len(r["moves"].split())))
+
+    # The trainer replays these games to build features. If it does not resolve
+    # eliminations the replay drifts off the recorded game at the first mate --
+    # the same bug uci.py had -- and every later position is mislabelled
+    # silently rather than producing a visible bad move.
+    scratch = os.path.join(tempfile.gettempdir(), "tetrarch_ffa_data_test.jsonl")
+    cache = os.path.join(tempfile.gettempdir(), "tetrarch_ffa_cache_test.npz")
+    with open(scratch, "w") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+    train_mod.build_cache(scratch, cache, quiet=True, workers=1)
+    import numpy as np
+    data = np.load(cache)
+    check("the cache holds one position per recorded move",
+          len(data["cp"]) == sum(len(r["scores"]) for r in records),
+          "%d cached, %d recorded"
+          % (len(data["cp"]), sum(len(r["scores"]) for r in records)))
+    check("every cached result is one of the four thirds",
+          set(np.round(data["result"] * 3).astype(int).tolist()) <= {0, 1, 2, 3},
+          "%r" % sorted(set(data["result"].tolist())))
+
+    # FFA cannot be augmented: a paranoid score is in the MOVER's terms and
+    # does not convert to any other seat, so asking for it must be ignored
+    # rather than quietly producing three mislabelled copies of every row.
+    train_mod.build_cache(scratch, cache, quiet=True, workers=1, augment=True)
+    augmented = np.load(cache)
+    check("augment is ignored for FFA",
+          len(augmented["cp"]) == len(data["cp"]),
+          "%d vs %d" % (len(augmented["cp"]), len(data["cp"])))
+
+    # A mixed file is refused. The two modes label differently, so a cache
+    # built from both is not merely worse -- it is meaningless, and nothing
+    # downstream would say so.
+    with open(scratch, "w") as fh:
+        fh.write(json.dumps(records[0]) + "\n")
+        teams = dict(records[0])
+        teams.pop("mode")
+        teams["result"] = 0.5
+        fh.write(json.dumps(teams) + "\n")
+    try:
+        train_mod.build_cache(scratch, cache, quiet=True, workers=1)
+        check("a file mixing the two modes is refused", False)
+    except ValueError as exc:
+        check("a file mixing the two modes is refused", "mixes" in str(exc),
+              str(exc))
+    for path in (scratch, cache):
+        if os.path.exists(path):
+            os.remove(path)
+
+
 def test_match_ffa():
     section("match.py FFA pairing and scoring")
     import match
@@ -2902,6 +2984,7 @@ def main():
     test_match_rotation()
     test_uci_ffa_replay()
     test_match_ffa()
+    test_ffa_data()
     test_pgn4()
     test_js_replay()
     if args.crosscheck:

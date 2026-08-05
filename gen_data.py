@@ -45,7 +45,8 @@ import sys
 import time
 
 from tetrarch.board import (
-    Board, start_board, SETUPS, DEFAULT_SETUP, MODE_TEAMS, move_str)
+    Board, start_board, SETUPS, DEFAULT_SETUP, MODE_TEAMS, MODE_FFA, move_str)
+from tetrarch import game as game_rules
 from tetrarch import core
 from tetrarch import movegen as gen
 from tetrarch.search import Limits, search
@@ -59,15 +60,15 @@ RESIGN_PLIES = 8
 
 def play_one(job):
     """Self-play one game. Returns a dict, or None if the opening was dead."""
-    index, seed, setup, opening_plies, nodes, depth, opening = job
+    index, seed, setup, opening_plies, nodes, depth, opening, mode = job
     rng = random.Random(seed)
 
     if opening is not None:
         # A book position, already walked and already checked for balance.
         setup, fen4 = opening
-        board = Board.from_fen4(fen4, MODE_TEAMS)
+        board = Board.from_fen4(fen4, mode)
     else:
-        board = start_board(setup, MODE_TEAMS)
+        board = start_board(setup, mode)
         for _ in range(opening_plies):
             legal = gen.gen_legal(board)
             if not legal:
@@ -84,19 +85,30 @@ def play_one(job):
     result, reason = None, ""
     resign_run = 0
 
+    ffa = mode == MODE_FFA
     core.clear_hash()
     for _ in range(MAX_PLIES):
-        legal = gen.gen_legal(board)
-        if not legal:
-            if gen.in_check(board, board.turn):
+        ended = game_rules.resolve(board)
+        if ended:
+            if ffa:
+                # Four seats, so the outcome is a vector and not a scalar:
+                # each seat's share of its three pairwise contests, on the same
+                # [0,1] scale the Teams result uses.
+                result = [game_rules.ffa_score(board, s) for s in range(4)]
+            elif ended["over"] == "checkmate":
                 # The mated seat's team loses (§7). Result is from team 0's view.
                 result = 0.0 if (board.turn & 1) == 0 else 1.0
-                reason = "checkmate"
             else:
-                result, reason = 0.5, "stalemate"
+                result = 0.5
+            reason = ended["over"].replace(" ", "-")
             break
         if board.halfmove >= 200:
-            result, reason = 0.5, "fifty-move"
+            if ffa:
+                game_rules.award_draw(board)
+                result = [game_rules.ffa_score(board, s) for s in range(4)]
+            else:
+                result = 0.5
+            reason = "fifty-move"
             break
 
         # Through the root driver, not core.search directly: iterative
@@ -105,14 +117,28 @@ def play_one(job):
         # subtree.
         r = search(board, Limits(depth=depth, nodes=nodes), None, history)
         if not r.best:
-            result, reason = 0.5, "no move"
+            result = ([game_rules.ffa_score(board, s) for s in range(4)] if ffa
+                      else 0.5)
+            reason = "no move"
             break
-        # Store from team 0's perspective so the trainer never has to guess.
-        scores.append(r.score if (board.turn & 1) == 0 else -r.score)
+        # Teams: from team 0's perspective, so the trainer never has to guess.
+        # FFA: raw, in the MOVER's terms. A paranoid score is not convertible
+        # to another seat by negation -- that is the whole difference between
+        # the two modes -- so there is no common frame to store it in, and the
+        # trainer labels each position from the seat that was to move.
+        scores.append(r.score if ffa or (board.turn & 1) == 0 else -r.score)
         moves.append(move_str(r.best))
         history.append(board.key)
         board.make(r.best)
 
+        # No resign adjudication in FFA. The rule counts consecutive plies over
+        # a threshold, and consecutive plies are DIFFERENT seats here, so the
+        # run means nothing. A seat 2500 ahead of one opponent still has two
+        # more; the game is not over and cutting it there would teach the net
+        # that it is. FFA games therefore run to the fifty-move rule or the
+        # ply cap, which is most of why they cost 3-4x a Teams game.
+        if ffa:
+            continue
         if abs(scores[-1]) >= RESIGN_CP:
             resign_run += 1
             if resign_run >= RESIGN_PLIES:
@@ -122,11 +148,21 @@ def play_one(job):
         else:
             resign_run = 0
     else:
-        result, reason = 0.5, "adjudicated"
+        result = ([game_rules.ffa_score(board, s) for s in range(4)] if ffa
+                  else 0.5)
+        reason = "adjudicated"
 
-    return {"i": index, "setup": setup, "fen4": start_fen4,
-            "moves": " ".join(moves), "scores": scores,
-            "result": result, "reason": reason}
+    record = {"i": index, "setup": setup, "fen4": start_fen4,
+              "moves": " ".join(moves), "scores": scores,
+              "result": result, "reason": reason}
+    if ffa:
+        # The mode is on every line, so the trainer reads it off the data
+        # rather than being told, and a Teams and an FFA file can never be
+        # silently mixed into one cache.
+        record["mode"] = "ffa"
+        record["points"] = [int(p) for p in board.points]
+        record["alive"] = [bool(a) for a in board.alive]
+    return record
 
 
 def setup_for(index, setup):
@@ -153,7 +189,8 @@ def jobs(start, count, args):
     for i in range(start, start + count):
         yield (i, args.seed * 1000003 + i, setup_for(i, args.setup),
                args.opening_plies, args.nodes, args.depth,
-               BOOK[i % len(BOOK)] if BOOK else None)
+               BOOK[i % len(BOOK)] if BOOK else None,
+               MODE_FFA if args.mode == "ffa" else MODE_TEAMS)
 
 
 def resume_index(path):
@@ -208,6 +245,13 @@ def main():
     ap.add_argument("--setup", default=DEFAULT_SETUP,
                     choices=list(SETUPS) + ["all"],
                     help="one setup, or `all` to round-robin the five")
+    ap.add_argument("--mode", default="teams", choices=("teams", "ffa"),
+                    help="teams is a two-sided game with a scalar result; ffa "
+                         "is four independent seats and stores a per-seat "
+                         "result vector plus scores in the mover's terms. The "
+                         "two cannot be trained together -- the mode is "
+                         "written on every line so they cannot be mixed by "
+                         "accident")
     ap.add_argument("--book", metavar="PATH",
                     help="opening positions from book.py instead of random "
                          "plies; --setup and --opening-plies are then unused")
@@ -246,10 +290,10 @@ def main():
         BOOK = book_mod.load(args.book)
 
     nproc = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
-    print("%d games (%d remaining) | %s teams | nodes %d depth %d | eval %s"
+    print("%d games (%d remaining) | %s %s | nodes %d depth %d | eval %s"
           % (args.games, remaining,
              ("book:%s (%d)" % (os.path.basename(args.book), len(BOOK)))
-             if BOOK else args.setup,
+             if BOOK else args.setup, args.mode,
              args.nodes, args.depth,
              args.net if args.net else "hand (throwaway)"))
 

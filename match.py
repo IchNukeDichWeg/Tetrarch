@@ -85,6 +85,7 @@ from tetrarch.board import (
 )
 from tetrarch import movegen as gen
 from tetrarch import game
+from tetrarch.game import ffa_score
 from tetrarch import pgn4
 
 ROTATIONS = 4
@@ -250,31 +251,6 @@ def ffa_seats(rotation):
     opening share a literally identical start position.
     """
     return rotation, [s for s in range(4) if s != rotation]
-
-
-def ffa_score(board, a_seat):
-    """A's share of its three pairwise contests against the B seats.
-
-    Survival outranks points: the game ends when three seats are eliminated
-    (§7), so the survivor wins however few points it holds. Ties split rather
-    than being broken on seat index -- two seats out on equal points are
-    genuinely level, and breaking that tie by index would put seat bias back
-    into the one number the rotation exists to remove.
-
-    Ranges 0..1 with 0.5 the expectation between equal engines, which is what
-    lets elo() and the whole summary machinery stay as they are.
-    """
-    def rank(seat):
-        return (not board.alive[seat], -board.points[seat])
-
-    mine = rank(a_seat)
-    won = 0.0
-    for seat in range(4):
-        if seat == a_seat:
-            continue
-        theirs = rank(seat)
-        won += 1.0 if mine < theirs else (0.5 if mine == theirs else 0.0)
-    return won / 3.0
 
 
 def play_game_ffa(job):

@@ -40,7 +40,8 @@ import time
 
 import numpy as np
 
-from tetrarch.board import Board, MODE_TEAMS, move_str
+from tetrarch.board import Board, MODE_TEAMS, MODE_FFA, move_str
+from tetrarch import game as game_rules
 from tetrarch import movegen as gen
 from tetrarch import nnue
 
@@ -63,28 +64,47 @@ def _cache_chunk(job):
     feats, extras, cps, results, games = [], [], [], [], []
     for game_id, line in enumerate(lines):
         record = json.loads(line)
-        board = Board.from_fen4(record["fen4"], MODE_TEAMS)
-        result = record["result"]               # team 0's score
+        ffa = record.get("mode") == "ffa"
+        mode = MODE_FFA if ffa else MODE_TEAMS
+        board = Board.from_fen4(record["fen4"], mode)
+        result = record["result"]      # team 0's score, or a per-seat vector
         for token, cp in zip(record["moves"].split(), record["scores"]):
             # The score was recorded before this move was played, so the
             # position to label is the one we are standing in now.
-            views = range(4) if augment else (board.turn,)
+            #
+            # FFA cannot be augmented. The four-view trick rests on a Teams
+            # score negating to the other team; a paranoid score is in the
+            # MOVER's terms and does not convert to any other seat, so only
+            # the seat that moved has a label. That costs FFA a factor of four
+            # in positions per game, which is the price of the mode and not a
+            # setting anyone should reach for.
+            views = range(4) if (augment and not ffa) else (board.turn,)
             for persp in views:
                 active = nnue.active_features(board, persp)
                 row = np.full(MAX_FEATURES, -1, dtype=np.int16)
                 row[:len(active)] = active[:MAX_FEATURES]
                 feats.append(row)
                 extras.append(nnue.extra_inputs(board, persp))
-                # Stored scores and results are team 0's; flip for team 1.
-                flip = (persp & 1) == 1
-                cps.append(-cp if flip else cp)
-                results.append(1.0 - result if flip else result)
+                if ffa:
+                    cps.append(cp)                 # already the mover's
+                    results.append(result[persp])
+                else:
+                    # Stored scores and results are team 0's; flip for team 1.
+                    flip = (persp & 1) == 1
+                    cps.append(-cp if flip else cp)
+                    results.append(1.0 - result if flip else result)
                 games.append(game_id)
             move = next((m for m in gen.gen_legal(board)
                          if move_str(m) == token), None)
             if move is None:
                 break                          # corrupt line; drop the rest
             board.make(move)
+            # The move list does not encode eliminations, so a replay that
+            # only makes moves drifts off the recorded game at the first mate
+            # -- same failure uci.py had, and here it would silently mislabel
+            # every position after it rather than produce a visible bad move.
+            if ffa:
+                game_rules.resolve(board)
     return (np.asarray(feats, dtype=np.int16).reshape(-1, MAX_FEATURES),
             np.asarray(extras, dtype=np.int16).reshape(-1, nnue.NEXTRA),
             np.asarray(cps, dtype=np.float32),
@@ -113,6 +133,23 @@ def build_cache(data_path, cache_path, limit=None, augment=False, quiet=False,
         lines = [line for _, line in zip(range(limit), fh)] if limit \
             else fh.readlines()
     games = len(lines)
+
+    # Refuse a mixed file rather than train on one. The two modes label
+    # differently -- a scalar team result against a per-seat vector, a
+    # negatable score against a paranoid one -- so a cache built from both is
+    # not merely worse, it is meaningless, and nothing downstream would say so.
+    modes = set()
+    for line in lines:
+        try:
+            modes.add(json.loads(line).get("mode") or "teams")
+        except ValueError:
+            continue
+    if len(modes) > 1:
+        raise ValueError("%s mixes %s games; the two modes cannot be trained "
+                         "together" % (data_path, " and ".join(sorted(modes))))
+    if not quiet and modes:
+        print("  mode: %s" % modes.pop())
+
     if workers == 0:
         workers = multiprocessing.cpu_count()
     chunk = max(1, min(CACHE_CHUNK,
@@ -157,8 +194,9 @@ def build_cache(data_path, cache_path, limit=None, augment=False, quiet=False,
     }
     os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
     np.savez(cache_path, **arrays)
-    print("cached %d positions from %d games in %.0fs -> %s"
-          % (len(arrays["cp"]), games, time.time() - started, cache_path))
+    if not quiet:
+        print("cached %d positions from %d games in %.0fs -> %s"
+              % (len(arrays["cp"]), games, time.time() - started, cache_path))
     return arrays
 
 

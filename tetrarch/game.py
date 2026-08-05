@@ -63,6 +63,33 @@ def award_draw(board):
             board.points[seat] += DRAW_POINTS
 
 
+def ffa_score(board, seat):
+    """One seat's share of its three pairwise contests against the others.
+
+    Survival outranks points: the game ends when three seats are eliminated
+    (§7), so the survivor wins however few points it holds. Ties split rather
+    than being broken on seat index -- two seats out on equal points are
+    genuinely level, and breaking that tie by index would put seat bias back
+    into the one number the rotation exists to remove.
+
+    Ranges 0..1 with 0.5 the expectation between equal seats, and the four
+    seats always sum to 2. That is what lets match.py feed it straight to
+    elo(), and what makes it usable as a per-seat training target beside the
+    Teams result on the same [0,1] scale.
+    """
+    def rank(s):
+        return (not board.alive[s], -board.points[s])
+
+    mine = rank(seat)
+    won = 0.0
+    for other in range(4):
+        if other == seat:
+            continue
+        theirs = rank(other)
+        won += 1.0 if mine < theirs else (0.5 if mine == theirs else 0.0)
+    return won / 3.0
+
+
 def placement(board):
     """Final seat order, best first: survival outranks points.
 
