@@ -888,7 +888,7 @@ Tetrarch's own perft numbers for both setups, both modes, to depth 5, are record
 | ~~1~~ | ~~Which setup is chess.com's live default~~ | **CLOSED** -- `modern`, "default since 2022" per [cc-lobby]. Tetrarch nonetheless defaults to `classic` by decision, and supports all five | 3.4, 3.5 |
 | 2 | 50-move threshold in plies | **ASSUMPTION: 200** | 10.1 |
 | 9 | Can a live, in-check king be captured by an intermediate mover before its own turn? | **OPEN -- and the engine is incoherent either way.** See below | 7, 9.2 |
-| 3 | Repetition key definition | **ASSUMPTION: full Zobrist incl. alive mask, excl. points** | 10.2 |
+| 3 | Repetition key definition | **ASSUMPTION: full Zobrist incl. alive mask, excl. points.** Vacuous in Teams, where points never move. In FFA it has teeth: two positions with the same material and alive mask but a different *holder* of the same captures share a key, so the search will call them one repetition. Same total points, different distribution -- accepted, and recorded here rather than left implicit | 10.2 |
 | 4 | Insufficient material in 4PC | **ASSUMPTION: bare-kings only** | 10.3 |
 | 5 | Two-flank en passant: which engine is right | Tetrarch derives from first principles; expect perft divergence | 5.4 |
 | ~~6~~ | ~~Named `StartFen4` codes~~ | **CLOSED** -- read off chess.com's own exports for all five setups in both modes. `4PCo` = classic, `4PCb` = by, `4PCn` = byg, `4PCrg` = rg, and `modern` carries no tag at all. The code names the *position*, so it does not vary with the mode | 11.5 |

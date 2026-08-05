@@ -553,6 +553,11 @@ def summarise(by_opening, games, elapsed):
         places = [0] * 4
         a_pts, b_pts, counted = 0, 0, 0
         for g in games:
+            # Scored games only, matching the Elo. A game voided because a B
+            # seat crashed still carries a standing, and counting it here
+            # while excluding it there would make the two disagree.
+            if g.get("score") is None:
+                continue
             if g.get("a_place"):
                 places[g["a_place"] - 1] += 1
             pts = g.get("points")

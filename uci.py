@@ -95,6 +95,11 @@ class Engine:
         self.mode = MODE_TEAMS
         self.hash_mb = core.DEFAULT_TT_MB
         self.net = None
+        #: Set once `setoption name Net` arrives. The bundle is a DEFAULT, and
+        #: a caller that named a net meant it -- match.py's banner reports what
+        #: it asked for, and a later Setup or Mode silently swapping it would
+        #: make that banner a lie. Every A/B in docs/AB.md rests on it.
+        self.net_explicit = False
         self.lmr_min_depth = 3
         self.lmr_min_move = 3
         self.lmp_max_depth = 3
@@ -125,6 +130,8 @@ class Engine:
         file actually changes -- a `setoption name Setup` that does not change
         which net plays must not throw the table away.
         """
+        if self.net_explicit:
+            return
         want = self.bundle.get((self.mode, self.setup)) if self.bundle else None
         if want is None and self.mode == MODE_TEAMS:
             want = DEFAULT_NET if os.path.exists(DEFAULT_NET) else None
@@ -272,6 +279,7 @@ class Engine:
                 core.unload_net()
                 self.net = None
                 self.bundle = {}
+                self.net_explicit = True
                 print("info string net unloaded; using the throwaway hand eval")
                 return
             # A .txt value is a bundle -- one net per setup -- rather than a
@@ -281,6 +289,8 @@ class Engine:
                 try:
                     self.bundle = load_bundle(value.strip())
                     self.net = None
+                    # A bundle IS the dispatch, so it re-enables it.
+                    self.net_explicit = False
                     self._use_net_for_setup()
                     print("info string net bundle loaded: %d setups"
                           % len(self.bundle))
@@ -293,6 +303,7 @@ class Engine:
                 from tetrarch import nnue
                 core.load_net(nnue.Net.load(value.strip()))
                 self.net = value.strip()
+                self.net_explicit = True
                 print("info string net loaded: %s" % self.net)
             except Exception as exc:                        # noqa: BLE001
                 print("info string could not load net %s: %s" % (value, exc))
