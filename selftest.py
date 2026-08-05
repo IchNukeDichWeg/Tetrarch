@@ -2381,6 +2381,84 @@ def test_uci_ffa_replay():
     check("Teams still loads with every seat alive", all(engine.board.alive))
 
 
+def test_match_ffa():
+    section("match.py FFA pairing and scoring")
+    import match
+
+    # A takes every seat exactly once across the rotation. That IS the seat
+    # cancellation in FFA -- the board is not turned, unlike Teams.
+    assignments = [match.ffa_seats(r) for r in range(match.ROTATIONS)]
+    check("A plays each seat exactly once over the rotation",
+          sorted(a for a, _b in assignments) == [0, 1, 2, 3],
+          "%r" % (assignments,))
+    check("B fills the other three seats every time",
+          all(sorted([a] + b) == [0, 1, 2, 3] and a not in b
+              for a, b in assignments), "%r" % (assignments,))
+
+    b = start_board("classic", MODE_FFA)
+
+    # Survival first: the game ends when three seats are eliminated (7), so a
+    # survivor on no points still beats three eliminated seats holding plenty.
+    b.alive = [True, False, False, False]
+    b.points = [0, 99, 50, 20]
+    check("the survivor scores 1.0 however few points it holds",
+          match.ffa_score(b, RED) == 1.0)
+    check("the lowest-scoring eliminated seat scores 0",
+          match.ffa_score(b, GREEN) == 0.0)
+
+    # Points rank everyone who is out.
+    b.alive = [True, True, False, False]
+    b.points = [10, 20, 50, 5]
+    check("points rank the eliminated seats below every survivor",
+          match.ffa_score(b, YELLOW) < match.ffa_score(b, RED)
+          < match.ffa_score(b, BLUE),
+          "%r" % [match.ffa_score(b, s) for s in range(4)])
+
+    # Ties split rather than breaking on seat index: breaking them by index
+    # would put the seat bias the rotation removes straight back in.
+    b.alive = [True] * 4
+    b.points = [7, 7, 7, 7]
+    scores = [match.ffa_score(b, s) for s in range(4)]
+    check("a four-way tie scores every seat 0.5", scores == [0.5] * 4,
+          "%r" % (scores,))
+
+    # The whole point of the scale: it is a share of three pairwise contests,
+    # so it lands on thirds and sums to 2 over any complete standing. That is
+    # what makes the null exact -- four identical engines produce four
+    # move-identical games, and the rotation sum is 2.0 with zero variance.
+    b.points = [40, 30, 20, 10]
+    total = sum(match.ffa_score(b, s) for s in range(4))
+    check("the four seats' scores sum to 2 over one standing",
+          abs(total - 2.0) < 1e-9, "%r" % (total,))
+    check("every score is a whole number of thirds",
+          all(abs(match.ffa_score(b, s) * 3 - round(match.ffa_score(b, s) * 3))
+              < 1e-9 for s in range(4)))
+
+    # 0.5 has to be the expectation between equal engines, or elo() reports
+    # nonsense and the whole summary machinery has to be rewritten.
+    b.points = [25, 25, 25, 25]
+    check("the expectation between equal seats is 0.5",
+          match.ffa_score(b, GREEN) == 0.5)
+
+    # Thirteen buckets, not nine: an FFA rotation sums in thirds. A summary
+    # that used the Teams step would index past the end of the list.
+    ffa_games = [{"mode": "ffa", "score": 1.0, "opening": 0, "plies": 10,
+                  "reason": "last-seat-standing", "a_seat": 0, "a_place": 1,
+                  "points": [40, 1, 2, 3]} for _ in range(match.ROTATIONS)]
+    text = match.summarise({0: [1.0] * match.ROTATIONS}, ffa_games, 0.0)
+    check("the FFA summary reports thirteen buckets",
+          len(text.split("Dist: ")[1].split("\n")[0].split(",")) == 13, text)
+    check("the FFA summary reports placement and points",
+          "A placed" in text and "Points A" in text, text)
+
+    teams_games = [{"score": 1.0, "opening": 0, "plies": 10,
+                    "reason": "checkmate R"} for _ in range(match.ROTATIONS)]
+    text = match.summarise({0: [1.0] * match.ROTATIONS}, teams_games, 0.0)
+    check("a Teams summary still reports nine",
+          len(text.split("Dist: ")[1].split("\n")[0].split(",")) == 9, text)
+    check("a Teams summary reports no placement", "A placed" not in text)
+
+
 def test_js_replay():
     section("standalone viewer replayer (gui/viewer.html)")
     import json
@@ -2823,6 +2901,7 @@ def main():
     test_resume()
     test_match_rotation()
     test_uci_ffa_replay()
+    test_match_ffa()
     test_pgn4()
     test_js_replay()
     if args.crosscheck:

@@ -26,6 +26,34 @@ THE ROTATION
     nine-bucket distribution reported below -- NOT a pentanomial, which would
     assume two games per opening.
 
+THE ROTATION IN FFA (--mode ffa)
+    Free-for-all has no teams, so the pairing is one against the field:
+    engine A takes one seat, engine B the other three, and the four rotations
+    move A around the four seats. The board is NOT turned -- moving A between
+    the seats of one fixed position IS the cancellation, and it leaves the
+    four games of an opening sharing an identical start.
+
+    A 2v2 pairing was rejected: adjacent and opposite seat pairs are
+    different games, so cancelling that needs six arrangements where 1v3
+    needs the four already there.
+
+    A game scores A's share of its three pairwise contests -- survival first,
+    then points, ties split -- so it lands on thirds, expects 0.5 between
+    equal engines, and sums to one of THIRTEEN values over a rotation. Teams
+    and FFA runs therefore cannot be pooled: different pairing, different
+    scale, different distribution.
+
+    The null is exact rather than statistical. Two identical deterministic
+    engines produce four move-identical games, in which A is simply each of
+    the four seats in turn, so the rotation sums to 2.0 every time with zero
+    variance. Seat identity is cancelled by construction, not on average.
+
+    FFA games are LONG: the smoke runs average ~320 plies against a 400-ply
+    cap, so a fifth of games are adjudicated on the standing rather than
+    played out. That is defensible -- FFA has a meaningful standing at any
+    moment, unlike Teams -- but it is the instrument, and it should be stated
+    with any result rather than discovered afterwards.
+
 THREE IMPLEMENTATION NOTES, each of which cost real money to learn elsewhere
     * Workers are fed from a generator through Pool.imap_unordered, whose task
       handler is a thread. A plain multiprocessing.Queue silently deadlocks on
@@ -52,10 +80,11 @@ import sys
 import time
 
 from tetrarch.board import (
-    Board, start_board, rotate, SETUPS, DEFAULT_SETUP, MODE_TEAMS,
+    Board, start_board, rotate, SETUPS, DEFAULT_SETUP, MODE_TEAMS, MODE_FFA,
     move_str, SEAT_NAMES,
 )
 from tetrarch import movegen as gen
+from tetrarch import game
 from tetrarch import pgn4
 
 ROTATIONS = 4
@@ -213,6 +242,157 @@ def make_opening(setup, mode, plies, seed):
 
 # --- one game ---------------------------------------------------------------
 
+def ffa_seats(rotation):
+    """(A's seat, B's three seats) for one rotation.
+
+    A takes each seat once over the four. That IS the seat cancellation in
+    FFA: the board is not turned, unlike Teams, so the four games of an
+    opening share a literally identical start position.
+    """
+    return rotation, [s for s in range(4) if s != rotation]
+
+
+def ffa_score(board, a_seat):
+    """A's share of its three pairwise contests against the B seats.
+
+    Survival outranks points: the game ends when three seats are eliminated
+    (§7), so the survivor wins however few points it holds. Ties split rather
+    than being broken on seat index -- two seats out on equal points are
+    genuinely level, and breaking that tie by index would put seat bias back
+    into the one number the rotation exists to remove.
+
+    Ranges 0..1 with 0.5 the expectation between equal engines, which is what
+    lets elo() and the whole summary machinery stay as they are.
+    """
+    def rank(seat):
+        return (not board.alive[seat], -board.points[seat])
+
+    mine = rank(a_seat)
+    won = 0.0
+    for seat in range(4):
+        if seat == a_seat:
+            continue
+        theirs = rank(seat)
+        won += 1.0 if mine < theirs else (0.5 if mine == theirs else 0.0)
+    return won / 3.0
+
+
+def play_game_ffa(job):
+    """One FFA game: engine A on one seat, engine B on the other three.
+
+    A one-against-the-field test, not two-against-two. Which two seats an
+    engine holds changes the game -- adjacent and opposite are different
+    positions -- so a 2v2 pairing needs six arrangements to cancel, while
+    1v3 cancels in the four the rotation already provides.
+
+    The board is NOT rotated here, unlike Teams. Moving A between the four
+    seats of one fixed position IS the seat-identity cancellation, and it
+    leaves the four games of an opening sharing a literally identical start.
+
+    Engine B gets three subprocesses rather than one. Three seats sharing a
+    transposition table see each other's search results inside the same game
+    tree, which is extra effective hash that A's single seat does not get --
+    a real bias toward B, and cheaper to avoid than to measure.
+    """
+    (index, opening_seed, rotation, setup, mode, plies, cmd_a, cmd_b,
+     go_string, seed, want_pgn4, net_a, net_b, hash_mb, opts_a, opts_b) = job
+
+    if BOOK is not None:
+        _setup, fen4 = BOOK[opening_seed % len(BOOK)]
+        board = Board.from_fen4(fen4, mode)
+    else:
+        board = make_opening(setup, mode, plies, opening_seed)
+    if board is None:
+        return None
+    start_fen4 = board.to_fen4().replace("\n", "")
+
+    a_seat, b_seats = ffa_seats(rotation)
+    engines = {}
+    try:
+        engines[a_seat] = get_engine("A", cmd_a, setup, mode, hash_mb,
+                                     net_a, opts_a)
+        for n, seat in enumerate(b_seats):
+            engines[seat] = get_engine("B%d" % n, cmd_b, setup, mode, hash_mb,
+                                       net_b, opts_b)
+    except Exception as exc:                                   # noqa: BLE001
+        return {"index": index, "error": "engine start: %r" % (exc,)}
+
+    rng = random.Random(seed)
+    moves, played = [], []
+    score = None
+    reason = ""
+
+    for _ply in range(MAX_PLIES):
+        ended = game.resolve(board)
+        if ended:
+            # A stable one-word key, because the summary's reason histogram
+            # splits on the first word. The readable version is derivable
+            # from the points and alive fields the record already carries.
+            reason = ended["over"].replace(" ", "-")
+            score = ffa_score(board, a_seat)
+            break
+        if board.halfmove >= 200:
+            # A real draw under the rules, so it pays (§8.2) before the
+            # standing is read. The ply cap below is an adjudication and does
+            # not pay: nothing in the rules ended that game.
+            game.award_draw(board)
+            reason = "fifty-move"
+            score = ffa_score(board, a_seat)
+            break
+
+        legal = gen.gen_legal(board)
+        engine = engines[board.turn]
+        if engine is RANDOM_ENGINE:
+            chosen = rng.choice(legal)
+        else:
+            try:
+                token = engine.bestmove(start_fen4, moves, go_string)
+            except Exception as exc:                           # noqa: BLE001
+                token, exc_text = None, "engine failure: %r" % (exc,)
+            else:
+                exc_text = None
+            match = [m for m in legal if move_str(m) == token]
+            if not match:
+                fault = exc_text or ("illegal move %s by %s"
+                                     % (token, SEAT_NAMES[board.turn]))
+                if board.turn == a_seat:
+                    # A's own fault costs A the game. A B seat failing is NOT
+                    # scored: crediting A because one of three opponents
+                    # crashed manufactures Elo out of a bug.
+                    score, reason = 0.0, fault
+                else:
+                    score, reason = None, fault
+                break
+            chosen = match[0]
+        moves.append(move_str(chosen))
+        played.append(chosen)
+        board.make(chosen)
+    else:
+        reason = "adjudicated at %d plies" % MAX_PLIES
+        score = ffa_score(board, a_seat)
+
+    order = game.placement(board)
+    record = {"index": index, "opening": opening_seed, "rotation": rotation,
+              "mode": "ffa", "score": score, "reason": reason,
+              "plies": len(moves), "a_seat": a_seat,
+              "a_place": order.index(a_seat) + 1,
+              "points": [int(p) for p in board.points],
+              "alive": [bool(a) for a in board.alive],
+              "moves": " ".join(moves)}
+    if want_pgn4:
+        names = [cmd_a if s == a_seat else cmd_b for s in range(4)]
+        record["pgn4"] = pgn4.write(
+            Board.from_fen4(start_fen4, mode), played, {
+                "Event": "Tetrarch match (FFA)",
+                "Round": "%d.%d" % (opening_seed, rotation),
+                "Red": names[0], "Blue": names[1],
+                "Yellow": names[2], "Green": names[3],
+                "Result": "*",
+                "Termination": reason,
+            })
+    return record
+
+
 def play_game(job):
     """Play one game. Returns a dict; never raises past a forfeit."""
     (index, opening_seed, rotation, setup, mode, plies, cmd_a, cmd_b,
@@ -321,7 +501,18 @@ def elo(score_rate):
 
 def summarise(by_opening, games, elapsed):
     """Report as the doctrine requires: Elo with its margin, games, and the
-    nine-bucket distribution. Never a bare Elo, never a pentanomial."""
+    distribution over the rotation. Never a bare Elo, never a pentanomial.
+
+    Teams scores in half-points, so a four-game rotation sums to one of nine
+    values. FFA scores in thirds -- A's share of three pairwise contests -- so
+    it sums to one of thirteen. The two distributions are not comparable and
+    the runs cannot be pooled; the mode is read off the log rather than passed
+    in, so --summarise on an old file still reports it correctly.
+    """
+    ffa = any(g.get("mode") == "ffa" for g in games)
+    step = 3 if ffa else 2
+    decisive_keys = (("last-seat-standing",) if ffa
+                     else ("checkmate", "resign"))
     complete = [v for v in by_opening.values() if len(v) == ROTATIONS]
     partial = len(by_opening) - len(complete)
     total = sum(g["score"] for g in games if g.get("score") is not None)
@@ -344,11 +535,12 @@ def summarise(by_opening, games, elapsed):
             margin = float("inf")
         lines.append("Elo %+.2f +/- %.2f   (%d complete rotations)"
                      % (e, margin, len(complete)))
-        buckets = [0] * 9
+        buckets = [0] * (ROTATIONS * step + 1)
         for s in sums:
-            buckets[int(round(s * 2))] += 1
+            buckets[int(round(s * step))] += 1
         lines.append("Dist: %s" % ", ".join(str(b) for b in buckets))
-        lines.append("      (score sums 0, 0.5, 1 ... 4 over the 4-game rotation)")
+        lines.append("      (score sums 0, %s, %s ... 4 over the 4-game "
+                     "rotation)" % (("1/3", "2/3") if ffa else ("0.5", "1")))
     if partial:
         lines.append("%d openings have an INCOMPLETE rotation and are excluded "
                      "from the Elo -- an incomplete rotation is seat bias, not "
@@ -366,8 +558,7 @@ def summarise(by_opening, games, elapsed):
             words = (g.get("reason") or "unknown").split()
             key = words[0] if words else "unknown"
             reasons[key] = reasons.get(key, 0) + 1
-        decisive = sum(v for k, v in reasons.items()
-                       if k in ("checkmate", "resign"))
+        decisive = sum(v for k, v in reasons.items() if k in decisive_keys)
         lines.append("Games %.2f plies mean, %.2f median, %d..%d"
                      % (sum(plies) / len(plies), sorted(plies)[len(plies) // 2],
                         min(plies), max(plies)))
@@ -377,6 +568,27 @@ def summarise(by_opening, games, elapsed):
                                  for k, v in sorted(reasons.items(),
                                                     key=lambda kv: -kv[1])))
         lines.append("Decisive %.2f%%" % (100.0 * decisive / len(games)))
+
+    if ffa:
+        # The score is a placement share, so where A actually finished is the
+        # thing it compresses. Points are reported beside it because the win
+        # is survival, not the points race (§7) -- an engine can top the
+        # points table and still come third.
+        places = [0] * 4
+        a_pts, b_pts, counted = 0, 0, 0
+        for g in games:
+            if g.get("a_place"):
+                places[g["a_place"] - 1] += 1
+            pts = g.get("points")
+            if pts and g.get("a_seat") is not None:
+                a_pts += pts[g["a_seat"]]
+                b_pts += sum(pts) - pts[g["a_seat"]]
+                counted += 1
+        if counted:
+            lines.append("A placed %s  (1st/2nd/3rd/4th; 25%% each if level)"
+                         % "/".join(str(p) for p in places))
+            lines.append("Points A %.1f mean, B %.1f mean per seat"
+                         % (a_pts / counted, b_pts / (3.0 * counted)))
 
     if elapsed > 0:
         hrs, rem = divmod(int(elapsed), 3600)
@@ -396,7 +608,8 @@ def jobs(count, args):
     for i in range(count):
         for rotation in range(ROTATIONS):
             yield (index, args.seed * 7919 + i, rotation, args.setup,
-                   MODE_TEAMS, args.opening_plies, args.engine_a,
+                   MODE_FFA if args.mode == "ffa" else MODE_TEAMS,
+                   args.opening_plies, args.engine_a,
                    args.engine_b, args.go_string, args.seed * 104729 + index,
                    bool(args.pgn4), args.net_a, args.net_b, args.hash,
                    args.opts_a, args.opts_b)
@@ -426,6 +639,11 @@ def main():
     ap.add_argument("--movetime", type=int, metavar="MS")
     ap.add_argument("--depth", type=int)
     ap.add_argument("--setup", default=DEFAULT_SETUP, choices=SETUPS)
+    ap.add_argument("--mode", default="teams", choices=("teams", "ffa"),
+                    help="teams pairs 2v2 and rotates the board; ffa puts "
+                         "engine A on one seat against three of B and rotates "
+                         "which seat that is. The two score differently and "
+                         "cannot be pooled")
     ap.add_argument("--opening-plies", type=int, default=8)
     ap.add_argument("--book", metavar="PATH",
                     help="opening positions from book.py rather than random "
@@ -513,9 +731,9 @@ def main():
         import book as book_mod
         BOOK = book_mod.load(args.book)
 
-    print("setup %s teams | %s | %d openings x %d = %d games | %d workers"
+    print("setup %s %s | %s | %d openings x %d = %d games | %d workers"
           % (("book:%s (%d)" % (os.path.basename(args.book), len(BOOK)))
-             if BOOK else args.setup,
+             if BOOK else args.setup, args.mode,
              args.go_string, args.positions, ROTATIONS, total, nproc))
     def describe(cmd, net, opts):
         bits = ["net=%s" % (net or "none (hand eval)")]
@@ -531,17 +749,20 @@ def main():
     log = open(args.log, "w")
     pgn_out = open(args.pgn4, "w") if args.pgn4 else None
 
-    def absorb(game):
-        if game is None:
+    # Named `record`, not `game`: this module imports tetrarch.game, and a
+    # loop variable shadowing it is the kind of bug that only shows up in the
+    # one branch that reaches for the module.
+    def absorb(record):
+        if record is None:
             return
-        games.append(game)
-        if pgn_out and game.get("pgn4"):
-            pgn_out.write(game.pop("pgn4") + "\n")
+        games.append(record)
+        if pgn_out and record.get("pgn4"):
+            pgn_out.write(record.pop("pgn4") + "\n")
             pgn_out.flush()
-        log.write(json.dumps(game) + "\n")
+        log.write(json.dumps(record) + "\n")
         log.flush()
-        if game.get("score") is not None:
-            by_opening.setdefault(game["opening"], []).append(game["score"])
+        if record.get("score") is not None:
+            by_opening.setdefault(record["opening"], []).append(record["score"])
 
     def progress():
         if args.quiet:
@@ -557,17 +778,18 @@ def main():
                             rate, eta // 60, eta % 60))
         sys.stderr.flush()
 
+    play = play_game_ffa if args.mode == "ffa" else play_game
     try:
         if nproc == 1:
             for job in jobs(args.positions, args):
-                absorb(play_game(job))
+                absorb(play(job))
                 progress()
         else:
             with multiprocessing.Pool(nproc, initializer=_ignore_sigint) as pool:
-                for game in pool.imap_unordered(play_game,
-                                                jobs(args.positions, args),
-                                                chunksize=1):
-                    absorb(game)
+                for record in pool.imap_unordered(play,
+                                                  jobs(args.positions, args),
+                                                  chunksize=1):
+                    absorb(record)
                     progress()
     except KeyboardInterrupt:
         sys.stderr.write("\ninterrupted -- summary of what completed:\n")
