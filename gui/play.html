@@ -545,6 +545,13 @@ function describe(){
     say('<span class="big">Stalemate.</span>');
     return true;
   }
+  if (state.status === "over"){
+    // FFA: three seats eliminated, and the survivor wins however few points
+    // it holds (§7). The points race decides the ranking, not the win.
+    say('<span class="big">Game over.</span><div class="note">'
+        + state.result + "</div>");
+    return true;
+  }
   const chk = state.status === "check" ? " -- in check" : "";
   const mode = control[state.turn] === "engine" ? "engine" : "you";
   say('<span class="big">' + who + " to move" + chk + "</span>" + side
@@ -826,12 +833,7 @@ hintBtn.onclick = async () => {
 document.getElementById("mode").onchange = () => {
   // The board on screen belongs to the game in progress; this control only
   // takes effect on New game, so it must not redraw as though it applied.
-  const next = document.getElementById("mode").value;
-  if (next !== "teams")
-    say('<span class="warn">The engine plays Teams only. In free-for-all set '
-        + 'every seat to Human.</span><div class="note">'
-        + "FFA needs a paranoid search -- Phase 5, not built.</div>");
-  else say('<span class="note">press New game</span>');
+  say('<span class="note">press New game</span>');
 };
 
 fetch("/api/version").then(r => r.json()).then(d => {

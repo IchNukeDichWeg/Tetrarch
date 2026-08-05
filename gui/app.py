@@ -41,6 +41,7 @@ from tetrarch.board import (Board, MODE_FFA, MODE_TEAMS, SETUPS,  # noqa: E402
 from tetrarch import pgn4                                        # noqa: E402
 from tetrarch import core                                        # noqa: E402
 from tetrarch import movegen as gen                              # noqa: E402
+from tetrarch import game                                        # noqa: E402
 from tetrarch.search import Limits, search, search_multi         # noqa: E402
 
 app = Flask(__name__)
@@ -100,12 +101,22 @@ def _render_state(board):
             })
         grid.append(row)
 
+    # In FFA a stuck seat is eliminated and the rest play on (§7), so the
+    # state handed to the browser is the one AFTER those eliminations -- an
+    # earlier version reported checkmate and stopped, which deadlocked every
+    # FFA game at the first mate.
+    ended = game.resolve(board)
     legal = [move_str(m) for m in gen.gen_legal(board)]
     in_check = gen.in_check(board, board.turn)
-    if legal:
+    if ended is None:
         status = "check" if in_check else "playing"
+    elif board.mode == MODE_TEAMS:
+        status = ended["over"]                      # checkmate | stalemate
     else:
-        status = "checkmate" if in_check else "stalemate"
+        # The FFA end is neither: the last seat standing wins, and it still
+        # has legal moves. A status the client cannot match would leave it
+        # ticking forever, so this is a value and not a sentence.
+        status = "over"
     return {
         "fen4": board.to_fen4().replace("\n", ""),
         "grid": grid,
@@ -114,6 +125,7 @@ def _render_state(board):
         "points": [int(p) for p in board.points],
         "legal": legal,
         "status": status,
+        "result": ended["text"] if ended else None,
     }
 
 
@@ -165,16 +177,10 @@ def api_play_engine():
     except Exception as exc:                                    # noqa: BLE001
         return jsonify({"error": str(exc)}), 400
 
-    if not gen.gen_legal(board):
+    # _render_state resolves eliminations, so an FFA game that has just lost a
+    # seat comes back playable rather than stuck.
+    if game.resolve(board):
         return jsonify(_render_state(board))
-    if mode == MODE_FFA or not all(board.alive):
-        # The search is genuine two-player negamax on the team split, which
-        # FFA is not. Saying so beats returning a Teams score for a position
-        # Teams cannot represent. Phase 5.
-        return jsonify({"unsupported":
-                        "the engine plays Teams only -- FFA needs the "
-                        "paranoid search from Phase 5"}), 409
-
     movetime = max(50, min(int(payload.get("movetime", 1000)), 30000))
     want_net = payload.get("net")
     want_net = DEFAULT_NET if want_net is None else want_net.strip()
@@ -380,15 +386,9 @@ def api_eval():
     except Exception as exc:                                    # noqa: BLE001
         return jsonify({"error": str(exc)}), 400
 
-    if not gen.gen_legal(board):
-        state = "checkmate" if gen.in_check(board, board.turn) else "stalemate"
-        return jsonify({"terminal": state})
-    if mode == MODE_FFA or not all(board.alive):
-        # Paranoid search is Phase 5; saying so beats reporting a Teams score
-        # for a position Teams cannot represent.
-        return jsonify({"unsupported":
-                        "FFA and eliminated-seat search arrive in Phase 5"})
-
+    ended = game.resolve(board)
+    if ended:
+        return jsonify({"terminal": ended["text"]})
     # Above one line the root gives up its cutoffs so every line has a real
     # score rather than a bound; that costs several times the nodes, which is
     # why it is asked for rather than always on.

@@ -44,6 +44,7 @@ from tetrarch import core
 from tetrarch import eval_hand
 from tetrarch.board import SQUARES as SQUARES_ALL
 from tetrarch import search
+from tetrarch import game
 from tetrarch import pgn4
 
 HAVE_C = core.available()
@@ -1485,6 +1486,70 @@ def test_ffa_elimination():
     b.uneliminate(undo)
     check("eliminate/uneliminate round-trips alive, points, turn and key",
           changed and (list(b.alive), list(b.points), b.turn, b.key) == snapshot)
+
+    # Teams must NOT eliminate: it ends at the first stuck seat (7).
+    teams_mate = _sparse_ffa(random.Random(FFA_MATE_SEED))
+    teams_mate.mode = MODE_TEAMS
+    teams_mate.recompute_key()
+    ended = game.resolve(teams_mate)
+    check("Teams ends at the first stuck seat rather than eliminating",
+          ended is not None and ended["over"] in ("checkmate", "stalemate")
+          and all(teams_mate.alive),
+          "%r, alive %r" % (ended, teams_mate.alive))
+    check("Teams elimination pays no points", teams_mate.points == [0, 0, 0, 0])
+
+    # FFA plays on. resolve returns None because a live seat can still move.
+    ffa_mate = _sparse_ffa(random.Random(FFA_MATE_SEED))
+    dead_seat = ffa_mate.turn
+    ended = game.resolve(ffa_mate)
+    check("FFA eliminates the stuck seat and plays on",
+          ended is None and not ffa_mate.alive[dead_seat]
+          and sum(ffa_mate.alive) == 3 and bool(fast.gen_legal(ffa_mate)),
+          "%r, alive %r" % (ended, ffa_mate.alive))
+
+    # Three seats down ends it, and the survivor wins however few points it
+    # holds -- the game ends on eliminations, not on the points race (7).
+    b = start_board("classic", MODE_FFA)
+    b.alive[BLUE] = b.alive[GREEN] = False
+    b.points = [0, 99, 5, 99]
+    b.turn = RED
+    b.recompute_key()
+    ended = game.resolve(b)
+    check("the game continues while two seats are alive", ended is None)
+    b.alive[YELLOW] = False
+    b.recompute_key()
+    b.turn = RED
+    check("survival outranks points in the placement",
+          game.placement(b)[0] == RED,
+          "placement %r" % [SEAT_NAMES[s] for s in game.placement(b)])
+
+    # A draw pays every live seat +10 (8.2); Teams draws pay nothing.
+    b = start_board("classic", MODE_FFA)
+    b.alive[GREEN] = False
+    game.award_draw(b)
+    check("a draw pays each live seat +%d" % game.DRAW_POINTS,
+          list(b.points) == [game.DRAW_POINTS] * 3 + [0],
+          "%r" % (list(b.points),))
+    b = start_board("classic")
+    game.award_draw(b)
+    check("a Teams draw pays nothing", list(b.points) == [0, 0, 0, 0])
+
+    # The whole point of the loop: a game that actually ends. Random play
+    # almost never mates -- most seeds run past 2,500 plies without a finish --
+    # so the seed is chosen rather than arbitrary. It finishes at ply 658.
+    rng = random.Random(11)
+    b = start_board("classic", MODE_FFA)
+    ended, plies = None, 0
+    for plies in range(1500):
+        ended = game.resolve(b)
+        if ended:
+            break
+        b.make(rng.choice(fast.gen_legal(b)))
+    check("a random FFA game plays through to one seat standing",
+          ended is not None and ended["over"] == "last seat standing"
+          and sum(b.alive) == 1 and sum(b.points) > 0,
+          "%r after %d plies" % (ended, plies))
+
 
 
 def _sparse_ffa(rng):
