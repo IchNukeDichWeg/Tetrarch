@@ -1507,14 +1507,6 @@ static int32_t hand_mobility(const TtBoard *b)
     return hand_mobility_for(b, b->turn);
 }
 
-/* The whole hand evaluation from one seat's point of view. FFA only: in Teams
- * hand_eval already means this with persp = b->turn. */
-static int32_t hand_eval_for(const TtBoard *b, int persp)
-{
-    return hand_material_for(b, persp) + hand_danger_for(b, persp)
-           + (use_mobility ? hand_mobility_for(b, persp) : 0);
-}
-
 static int32_t hand_eval(const TtBoard *b)
 {
     int32_t total = hand_material(b) + hand_danger(b);
