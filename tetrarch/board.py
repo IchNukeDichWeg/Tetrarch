@@ -117,6 +117,16 @@ PC_TYPE = bytes([0] + [(i - 1) % NTYPE for i in range(1, NPIECE)])
 #: Both queen encodings answer to the queen movement routine.
 QUEENISH = frozenset((QUEEN, PQUEEN))
 
+#: What capturing each piece type scores in FFA (§8.1). Rules, not parameters:
+#: an A/B must never be able to move them. A promoted queen is worth 1, not 9,
+#: which is why PQUEEN is a separate type at all; a bishop is 5, not 3, because
+#: the diagonals are long on 14x14. KING's +20 is unreachable in engine play --
+#: a live king cannot be captured in a legal position, and zombie kings (§9.2)
+#: are Phase 6+ -- and is listed so the table matches the published one.
+#: The spare-king row (+3) is omitted: Tetrarch has one king per seat.
+#: Mirrored in src/c/tetrarch.c as FFA_CAPTURE_POINTS; selftest pins the pair.
+CAPTURE_POINTS = (1, 3, 5, 5, 9, 20, 1)
+
 
 def same_team(mode, a, b):
     """Team membership for capture legality. Dead-origin pieces join no team."""
@@ -648,6 +658,17 @@ class Board:
 
     # -- make / unmake -------------------------------------------------------
 
+    def _capture_points(self, victim):
+        """What the mover scores for taking `victim` (§8.1). Dead seats' pieces
+        are worth nothing (§9.1): they stay on the board as obstacles, and a
+        DEAD_UNKNOWN piece owns no seat at all. Teams has no points."""
+        if self.mode != MODE_FFA or not victim:
+            return 0
+        owner = PC_COLOR[victim]
+        if owner == DEAD_UNKNOWN or not self.alive[owner]:
+            return 0
+        return CAPTURE_POINTS[PC_TYPE[victim]]
+
     def make(self, m):
         """Apply `m`, returning an undo token for `unmake`.
 
@@ -676,8 +697,14 @@ class Board:
                 raise ValueError("en-passant move %s with no matching offer"
                                  % move_str(m))
 
+        # Stored rather than recomputed on unmake: §9.1 makes the award depend
+        # on the alive mask, which may have moved in between.
+        scored = self._capture_points(captured) + self._capture_points(victim)
         undo = (captured, self.ep[:], self.ck[:], self.cq[:], self.kings[:],
-                self.halfmove, self.key, mover, victim_sq, victim)
+                self.halfmove, self.key, mover, victim_sq, victim, scored)
+        if scored:
+            self.points = list(self.points)
+            self.points[mover] += scored
 
         key = self.key ^ ZOB_TURN[mover]
 
@@ -784,7 +811,10 @@ class Board:
 
     def unmake(self, m, undo):
         (captured, ep, ck, cq, kings, halfmove, key, mover,
-         victim_sq, victim) = undo
+         victim_sq, victim, scored) = undo
+        if scored:
+            self.points = list(self.points)
+            self.points[mover] -= scored
         frm, to = m & 255, (m >> 8) & 255
         flag = (m >> 16) & 15
 

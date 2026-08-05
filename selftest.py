@@ -28,7 +28,7 @@ import tempfile
 import time
 
 from tetrarch.board import (
-    Board, start_board, rotate, SETUPS, SETUP_SWAPS, MODE_FFA, MODE_TEAMS,
+    Board, start_board, CAPTURE_POINTS, make_move, rotate, SETUPS, SETUP_SWAPS, MODE_FFA, MODE_TEAMS,
     MODE_NAMES,
     VALID, COMPACT, SQUARES, NPLAYABLE, NSQ, KNIGHT_DELTAS, QUEEN_DIRS,
     PAWN_PUSH, PAWN_TAKES, PROMO_COORD, pawn_coord, CASTLE_GEO, ROOK_HOME,
@@ -1312,6 +1312,127 @@ def _sparse_teams(rng):
     return b
 
 
+def test_ffa_points():
+    section("FFA capture points (8.1, 9.1)")
+
+    # The table is duplicated in C, and a table that drifts is silent: the
+    # engine would score one game and the match runner another.
+    if HAVE_C:
+        check("C and Python agree on the capture table",
+              core.ffa_capture_table() == list(CAPTURE_POINTS),
+              "%r vs %r" % (core.ffa_capture_table(), list(CAPTURE_POINTS)))
+
+    # Every published row, taken by a live seat.
+    for ptype, want, name in ((PAWN, 1, "pawn"), (KNIGHT, 3, "knight"),
+                              (BISHOP, 5, "bishop"), (ROOK, 5, "rook"),
+                              (QUEEN, 9, "queen"), (PQUEEN, 1, "1-point queen")):
+        b = Board(MODE_FFA)
+        b.sq[sq_from_name("a4")] = make_piece(RED, ROOK)
+        b.sq[sq_from_name("a8")] = make_piece(BLUE, ptype)
+        b.sq[sq_from_name("g1")] = make_piece(RED, KING)
+        b.sq[sq_from_name("g14")] = make_piece(YELLOW, KING)
+        b.sq[sq_from_name("n7")] = make_piece(GREEN, KING)
+        b.sq[sq_from_name("a1")] = make_piece(BLUE, KING)
+        b.turn = RED
+        b.find_kings()
+        b.recompute_key()
+        m = make_move(sq_from_name("a4"), sq_from_name("a8"))
+        u = b.make(m)
+        got = b.points[RED]
+        b.unmake(m, u)
+        check("capturing a %s scores %+d" % (name, want),
+              got == want and b.points[RED] == 0,
+              "scored %d, restored to %d" % (got, b.points[RED]))
+
+    # Teams has no points at all, and a dead seat's pieces are worth nothing.
+    for mode, seat_alive, label, want in (
+            (MODE_TEAMS, True, "Teams awards no points", 0),
+            (MODE_FFA, False, "a dead seat's queen is worth nothing (9.1)", 0)):
+        b = Board(mode)
+        b.sq[sq_from_name("a4")] = make_piece(RED, ROOK)
+        b.sq[sq_from_name("a8")] = make_piece(BLUE, QUEEN)
+        b.sq[sq_from_name("g1")] = make_piece(RED, KING)
+        b.sq[sq_from_name("a1")] = make_piece(BLUE, KING)
+        b.sq[sq_from_name("g14")] = make_piece(YELLOW, KING)
+        b.sq[sq_from_name("n7")] = make_piece(GREEN, KING)
+        b.alive[BLUE] = seat_alive
+        b.turn = RED
+        b.find_kings()
+        b.recompute_key()
+        b.make(make_move(sq_from_name("a4"), sq_from_name("a8")))
+        check(label, b.points[RED] == want, "scored %d" % b.points[RED])
+
+    if not HAVE_C:
+        return
+
+    # Python and C drive the same games. Points are excluded from the Zobrist
+    # key (10.2), so nothing else in the engine would ever notice them
+    # diverging -- this is the only thing that would.
+    rng = random.Random(11)
+    disagreed = dirty = ep_scored = games = 0
+    for _game in range(40):
+        b = start_board(rng.choice(SETUPS), MODE_FFA)
+        cb = core.CBoard(b)
+        played = []
+        for _ply in range(60):
+            legal = fast.gen_legal(b)
+            if not legal:
+                break
+            m = rng.choice(legal)
+            before = list(b.points)
+            undo = b.make(m)
+            cb.make(m)
+            played.append((m, undo))
+            if mv_flag(m) == F_EP and b.points != before:
+                ep_scored += 1
+            if list(b.points) != [cb.b.points[i] for i in range(4)]:
+                disagreed += 1
+                break
+        else:
+            # Unwind the whole game: every award has to come back off, on both
+            # sides. A leak here is invisible in normal play and fatal in
+            # search, where the same node is unwound millions of times.
+            for m, undo in reversed(played):
+                b.unmake(m, undo)
+                cb.unmake(m)
+            if list(b.points) != [0, 0, 0, 0] \
+                    or [cb.b.points[i] for i in range(4)] != [0, 0, 0, 0]:
+                dirty += 1
+            games += 1
+    check("Python and C award identical points over %d random FFA games"
+          % games, disagreed == 0, "%d games diverged" % disagreed)
+    check("unwinding a game returns every seat to zero", dirty == 0,
+          "%d games left points behind" % dirty)
+    # Random play almost never reaches one in 60 plies, so the ep award is
+    # built rather than sampled. The victim sits on the pushing pawn's square,
+    # not the square captured to (§5.2), so an implementation that scores
+    # `captured` alone silently awards nothing here.
+    b = Board(MODE_FFA)
+    for seat, name in ((RED, "g1"), (BLUE, "a1"), (YELLOW, "g14"), (GREEN, "n7")):
+        b.sq[sq_from_name(name)] = make_piece(seat, KING)
+    b.sq[sq_from_name("b7")] = make_piece(BLUE, PAWN)
+    b.sq[sq_from_name("b6")] = make_piece(RED, PAWN)
+    b.turn = BLUE
+    b.find_kings()
+    b.recompute_key()
+    b.make(make_move(sq_from_name("b7"), sq_from_name("d7"), F_DOUBLE))
+    # Blue's offer outlives Yellow's and Green's turns (§5.1), so Red really
+    # does get to take it -- skipping straight to Red's turn is the position
+    # two quiet plies later, not an illegal shortcut.
+    b.turn = RED
+    b.recompute_key()
+    ep = [m for m in fast.gen_legal(b) if mv_flag(m) == F_EP]
+    if not ep:
+        check("an en-passant capture scores +1", False, "no ep move generated")
+    else:
+        u = b.make(ep[0])
+        scored = b.points[RED]
+        b.unmake(ep[0], u)
+        check("an en-passant capture scores +1",
+              scored == 1 and b.points[RED] == 0,
+              "scored %d, restored to %d" % (scored, b.points[RED]))
+
+
 def _sparse_ffa(rng):
     """Like _sparse_teams but FFA, and thin enough that seats really do run
     out of moves -- the elimination branch is the whole point of the FFA
@@ -2525,6 +2646,7 @@ def main():
     test_eval()
     test_search(workers)
     test_ffa_search(workers)
+    test_ffa_points()
     test_net_bundle()
     test_net_versions()
     test_repetition()

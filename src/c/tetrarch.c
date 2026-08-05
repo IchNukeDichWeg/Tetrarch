@@ -98,6 +98,22 @@ typedef struct {
     int32_t feature_type[NTYPE];  /* PQUEEN folds onto QUEEN */
 } TtParams;
 
+/* RULES.md 8.1. Deliberately not in P: these are rules, not tuned parameters,
+ * and an A/B must never be able to move them. A promoted queen is worth 1, not
+ * 9, which is why PQUEEN is a separate piece type at all.
+ * KING is unreachable in engine play -- a live king cannot be captured in a
+ * legal position, and zombie kings (9.2) are Phase 6+. It is listed so the
+ * table matches the published one rather than quietly omitting a row.
+ * ponytail: no spare-king row (+3); Tetrarch has one king per seat. */
+static const uint8_t FFA_CAPTURE_POINTS[NTYPE] = {
+    1,   /* PAWN   */
+    3,   /* KNIGHT */
+    5,   /* BISHOP -- 5, not 3: the diagonals are long on 14x14 */
+    5,   /* ROOK   */
+    9,   /* QUEEN  */
+    20,  /* KING   */
+    1,   /* PQUEEN */
+};
 typedef struct {
     uint64_t key;
     int32_t halfmove;
@@ -126,6 +142,7 @@ typedef struct {
     uint8_t captured;
     uint8_t victim;
     uint8_t mover;
+    uint8_t scored;
 } TtUndo;
 
 static TtParams P;
@@ -431,6 +448,26 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
  * uint64 increment is nothing against the work either side of it. */
 static uint64_t search_makes;
 
+/* The published table, for selftest. Two hardcoded copies of a rules constant
+ * drift silently -- the engine would score one game and the match runner
+ * another -- so the pair is pinned rather than trusted. */
+int tt_ffa_capture_points(int ptype)
+{
+    return (ptype < 0 || ptype >= NTYPE) ? -1 : FFA_CAPTURE_POINTS[ptype];
+}
+
+/* What the mover scores for taking `victim`. Dead seats' pieces are worth
+ * nothing (9.1) -- they stay on the board as obstacles, and DEAD_UNKNOWN owns
+ * no seat at all. Teams has no points. */
+static int ffa_capture_points(const TtBoard *b, uint8_t victim)
+{
+    int owner;
+    if (b->mode != MODE_FFA || !victim) return 0;
+    owner = P.pc_color[victim];
+    if (owner >= 4 || !b->alive[owner]) return 0;
+    return FFA_CAPTURE_POINTS[P.pc_type[victim]];
+}
+
 void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
 {
     search_makes++;
@@ -461,6 +498,11 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
     u->mover = (uint8_t)mover;
     u->victim_sq = (int16_t)victim_sq;
     u->victim = victim;
+    /* Stored rather than recomputed: unmake runs after the alive mask may have
+     * moved, and 9.1 makes the award depend on it. */
+    u->scored = (uint8_t)(ffa_capture_points(b, captured)
+                          + ffa_capture_points(b, victim));
+    b->points[mover] = (uint16_t)(b->points[mover] + u->scored);
     memcpy(u->ep_target, b->ep_target, sizeof(u->ep_target));
     memcpy(u->ep_victim, b->ep_victim, sizeof(u->ep_victim));
     memcpy(u->ck, b->ck, sizeof(u->ck));
@@ -575,6 +617,8 @@ void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
 {
     int frm = MV_FROM(m), to = MV_TO(m), flag = MV_FLAG(m), promo = MV_PROMO(m);
     int mover = u->mover;
+
+    b->points[mover] = (uint16_t)(b->points[mover] - u->scored);
 
     /* Before anything moves: integer add/subtract is exactly invertible, so
      * undoing make's toggles restores the accumulator make was handed. */

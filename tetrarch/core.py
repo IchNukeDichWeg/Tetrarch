@@ -571,6 +571,13 @@ def qs_evasions_enabled():
     return bool(load().tt_get_qs_evasions())
 
 
+def ffa_capture_table():
+    """The C core's copy of RULES.md §8.1, so selftest can pin it against
+    board.CAPTURE_POINTS rather than trust two hardcoded tables to agree."""
+    lib = load()
+    return [int(lib.tt_ffa_capture_points(t)) for t in range(B.NTYPE)]
+
+
 def evaluate(b):
     """The C core's evaluation, for the bit-exactness assertion."""
     lib = load()
