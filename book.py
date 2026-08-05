@@ -212,6 +212,10 @@ def main():
     if args.depth is None:
         args.depth = 4 if args.mode == "ffa" else 6
 
+    # Like gen_data.py and train.py: a run that dies on a missing directory
+    # costs a round-trip to the box for nothing.
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+
     nproc = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
     print("%d positions | %s %s | %d plies, depth %d, band %s%d | eval %s"
           % (args.positions, args.setup, args.mode, args.plies, args.depth,
