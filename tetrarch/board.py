@@ -127,6 +127,10 @@ QUEENISH = frozenset((QUEEN, PQUEEN))
 #: Mirrored in src/c/tetrarch.c as FFA_CAPTURE_POINTS; selftest pins the pair.
 CAPTURE_POINTS = (1, 3, 5, 5, 9, 20, 1)
 
+#: What an elimination pays (§8.2). Checkmate pays the mating seat, stalemate
+#: pays the stalemated seat itself. Mirrored in C as FFA_ELIM_POINTS.
+ELIM_POINTS = 20
+
 
 def same_team(mode, a, b):
     """Team membership for capture legality. Dead-origin pieces join no team."""
@@ -657,6 +661,56 @@ class Board:
         return SEAT_NAMES[color].lower() + shape
 
     # -- make / unmake -------------------------------------------------------
+
+    def eliminate(self, seat):
+        """Take `seat` out of an FFA game and hand the turn on (§7).
+
+        Nothing moves: an eliminated seat's pieces stay on the board as
+        obstacles worth no points (§9.1), so only the alive mask, the turn, the
+        key and §8.2's award change. Returns an undo token for `uneliminate`.
+
+        Who the +20 goes to is settled for stalemate -- the stalemated seat --
+        and not settled for checkmate, where several seats can be checking at
+        once. Tetrarch credits the LAST MOVER, the nearest live seat walking
+        backwards: that is the move that ended the game for `seat`, it agrees
+        with the checking seat in every ordinary mate, and it needs no extra
+        state. Recorded as open item 10 in docs/RULES.md §14.
+        """
+        undo = (seat, self.turn, self.key, list(self.points))
+        if self.mode == MODE_FFA:
+            self.points = list(self.points)
+            king = self.kings[seat]
+            if king < 0 or not self._checked(seat):
+                self.points[seat] += ELIM_POINTS
+            else:
+                for back in (3, 2, 1):
+                    other = (seat + back) % 4
+                    if self.alive[other]:
+                        self.points[other] += ELIM_POINTS
+                        break
+        self.alive = list(self.alive)
+        self.alive[seat] = False
+        for step in range(1, 5):
+            t = (seat + step) % 4
+            if self.alive[t]:
+                break
+        self.turn = t
+        self.recompute_key()
+        return undo
+
+    def uneliminate(self, undo):
+        seat, turn, key, points = undo
+        self.alive = list(self.alive)
+        self.alive[seat] = True
+        self.turn = turn
+        self.points = points
+        self.key = key
+
+    def _checked(self, seat):
+        # Imported here: movegen imports board, so the module cannot import it
+        # back at the top.
+        from . import movegen
+        return movegen.in_check(self, seat)
 
     def _capture_points(self, victim):
         """What the mover scores for taking `victim` (§8.1). Dead seats' pieces

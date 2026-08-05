@@ -896,6 +896,7 @@ Tetrarch's own perft numbers for both setups, both modes, to depth 5, are record
 | 8 | `PromoteTo=D` in FFA `RuleVariants` | Observed but not decoded. Consistent with §4.2's 1-point queen -- no underpromotion in FFA -- but what `D` names is unconfirmed | 4.2 |
 | 6 | Per-piece capture values rest on chess.com only | Two pages agree verbatim; Wikibook has no table | 8.1 |
 | 7 | Which FEN4 castling array is "kingside" for a king-left seat | **ASSUMPTION: short side.** Only affects chess.com interop | 6.3 |
+| 10 | Which seat is credited the +20 when a checkmated seat is checked by more than one | **ASSUMPTION: the last mover** -- the nearest live seat walking backwards. "Checkmating an opponent" names one player and no source says who when several are checking. The last mover is the move that ended the game for that seat, and it agrees with the checking seat in every ordinary mate. `Board.eliminate` and `ffa_award_elimination` both implement it; selftest pins them | 8.2 |
 | 8 | En passant onto an *occupied* skipped square | **ASSUMPTION: one move, captures both**, plain capture suppressed | 5.5 |
 
 Items 2-4 are the ones that could silently corrupt results, and each can wait for the

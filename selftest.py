@@ -28,7 +28,7 @@ import tempfile
 import time
 
 from tetrarch.board import (
-    Board, start_board, CAPTURE_POINTS, make_move, rotate, SETUPS, SETUP_SWAPS, MODE_FFA, MODE_TEAMS,
+    Board, start_board, CAPTURE_POINTS, ELIM_POINTS, make_move, rotate, SETUPS, SETUP_SWAPS, MODE_FFA, MODE_TEAMS,
     MODE_NAMES,
     VALID, COMPACT, SQUARES, NPLAYABLE, NSQ, KNIGHT_DELTAS, QUEEN_DIRS,
     PAWN_PUSH, PAWN_TAKES, PROMO_COORD, pawn_coord, CASTLE_GEO, ROOK_HOME,
@@ -1433,6 +1433,60 @@ def test_ffa_points():
               "scored %d, restored to %d" % (scored, b.points[RED]))
 
 
+#: Seeds into _sparse_ffa that land on a mated and a stalemated seat. Found by
+#: sweep rather than built by hand -- a mate on a 14x14 board is fiddly to
+#: construct and easy to construct wrongly. Both are asserted to still BE a
+#: mate and a stalemate below, so a change to _sparse_ffa fails loudly here
+#: rather than silently testing the wrong thing.
+FFA_MATE_SEED, FFA_STALEMATE_SEED = 589, 5217
+
+
+def test_ffa_elimination():
+    section("FFA elimination (7, 8.2)")
+
+    if HAVE_C:
+        check("C and Python agree on the elimination award",
+              core.ffa_elim_points() == ELIM_POINTS,
+              "%r vs %r" % (core.ffa_elim_points(), ELIM_POINTS))
+
+    mate = _sparse_ffa(random.Random(FFA_MATE_SEED))
+    stale = _sparse_ffa(random.Random(FFA_STALEMATE_SEED))
+    check("the mate seed is still a checkmate",
+          not fast.gen_legal(mate) and fast.in_check(mate, mate.turn))
+    check("the stalemate seed is still a stalemate",
+          not fast.gen_legal(stale) and not fast.in_check(stale, stale.turn))
+
+    # 8.2, and the one part of it no source settles: which seat is credited
+    # when several are checking. Tetrarch pays the last mover -- the nearest
+    # live seat walking backwards (RULES.md 14, open item 10).
+    seat = mate.turn
+    expected = next((seat + back) % 4 for back in (3, 2, 1)
+                    if mate.alive[(seat + back) % 4])
+    before = list(mate.points)
+    mate.eliminate(seat)
+    won = [mate.points[s] - before[s] for s in range(4)]
+    check("checkmate pays the last mover +%d" % ELIM_POINTS,
+          won == [ELIM_POINTS if s == expected else 0 for s in range(4)],
+          "awards %r, expected seat %s" % (won, SEAT_NAMES[expected]))
+
+    seat = stale.turn
+    before = list(stale.points)
+    stale.eliminate(seat)
+    won = [stale.points[s] - before[s] for s in range(4)]
+    check("being stalemated pays the stalemated seat +%d" % ELIM_POINTS,
+          won == [ELIM_POINTS if s == seat else 0 for s in range(4)],
+          "awards %r" % (won,))
+
+    # Elimination has to be exactly invertible or the search cannot use it.
+    b = _sparse_ffa(random.Random(FFA_MATE_SEED))
+    snapshot = (list(b.alive), list(b.points), b.turn, b.key)
+    undo = b.eliminate(b.turn)
+    changed = (list(b.alive), list(b.points), b.turn, b.key) != snapshot
+    b.uneliminate(undo)
+    check("eliminate/uneliminate round-trips alive, points, turn and key",
+          changed and (list(b.alive), list(b.points), b.turn, b.key) == snapshot)
+
+
 def _sparse_ffa(rng):
     """Like _sparse_teams but FFA, and thin enough that seats really do run
     out of moves -- the elimination branch is the whole point of the FFA
@@ -2647,6 +2701,7 @@ def main():
     test_search(workers)
     test_ffa_search(workers)
     test_ffa_points()
+    test_ffa_elimination()
     test_net_bundle()
     test_net_versions()
     test_repetition()

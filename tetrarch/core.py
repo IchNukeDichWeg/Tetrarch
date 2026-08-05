@@ -578,6 +578,11 @@ def ffa_capture_table():
     return [int(lib.tt_ffa_capture_points(t)) for t in range(B.NTYPE)]
 
 
+def ffa_elim_points():
+    """The C core's copy of RULES.md §8.2, pinned against board.ELIM_POINTS."""
+    return int(load().tt_ffa_elim_points())
+
+
 def evaluate(b):
     """The C core's evaluation, for the bit-exactness assertion."""
     lib = load()

@@ -105,6 +105,11 @@ typedef struct {
  * legal position, and zombie kings (9.2) are Phase 6+. It is listed so the
  * table matches the published one rather than quietly omitting a row.
  * ponytail: no spare-king row (+3); Tetrarch has one king per seat. */
+/* RULES.md 8.2. Checkmating an opponent pays +20; being stalemated pays the
+ * stalemated seat itself +20. The zombie-king row (+10 to each remaining seat)
+ * is unreachable while 9.2 is out of scope. */
+#define FFA_ELIM_POINTS 20
+
 static const uint8_t FFA_CAPTURE_POINTS[NTYPE] = {
     1,   /* PAWN   */
     3,   /* KNIGHT */
@@ -129,6 +134,12 @@ typedef struct {
     uint8_t ck[4];
     uint8_t cq[4];
 } TtBoard;
+
+/* What restoring an elimination needs: the key, and the points 8.2 moved. */
+typedef struct {
+    uint64_t key;
+    uint16_t points[4];
+} FfaUndo;
 
 typedef struct {
     uint64_t key;
@@ -455,6 +466,8 @@ int tt_ffa_capture_points(int ptype)
 {
     return (ptype < 0 || ptype >= NTYPE) ? -1 : FFA_CAPTURE_POINTS[ptype];
 }
+
+int tt_ffa_elim_points(void) { return FFA_ELIM_POINTS; }
 
 /* What the mover scores for taking `victim`. Dead seats' pieces are worth
  * nothing (9.1) -- they stay on the board as obstacles, and DEAD_UNKNOWN owns
@@ -2391,6 +2404,34 @@ double tt_bench_makeunmake(TtBoard *b, int iters)
  * so a net's opinion about a three-player position is untrained rather than
  * merely unmeasured. */
 
+/* Who the +20 goes to when `seat` is eliminated (8.2).
+ *
+ * Stalemate is unambiguous: the stalemated seat is paid. Checkmate is not --
+ * "checkmating an opponent" names one player, and in 4PC several seats can be
+ * checking at once. No source settles it (14, open item 10), so the credit
+ * goes to the LAST MOVER, the nearest live seat walking backwards. That is the
+ * move that ended the game for `seat`, it agrees with the checking seat in
+ * every ordinary mate, and it needs no extra state. Elimination cascades stay
+ * correct because an eliminated seat never moved: it is skipped on the walk.
+ */
+static void ffa_award_elimination(TtBoard *b, int seat)
+{
+    int king = b->kings[seat], c, t;
+    if (b->mode != MODE_FFA) return;
+    if (king < 0 || !tt_is_attacked(b, king, seat)) {
+        b->points[seat] = (uint16_t)(b->points[seat] + FFA_ELIM_POINTS);
+        return;
+    }
+    t = seat;
+    for (c = 0; c < 3; c++) {
+        t = (t + 3) & 3;
+        if (b->alive[t]) {
+            b->points[t] = (uint16_t)(b->points[t] + FFA_ELIM_POINTS);
+            return;
+        }
+    }
+}
+
 static int ffa_alive_count(const TtBoard *b)
 {
     return b->alive[0] + b->alive[1] + b->alive[2] + b->alive[3];
@@ -2399,10 +2440,12 @@ static int ffa_alive_count(const TtBoard *b)
 /* Take `seat` out of the game and hand the turn on. Returns what unmake needs.
  * Nothing moves on the board -- the seat's pieces stay as obstacles worth no
  * points (§9.1) -- so only the alive mask, the turn and the key change. */
-static uint64_t ffa_eliminate(TtBoard *b, int seat)
+static void ffa_eliminate(TtBoard *b, int seat, FfaUndo *u)
 {
-    uint64_t saved = b->key;
     int c, t = seat;
+    u->key = b->key;
+    memcpy(u->points, b->points, sizeof(u->points));
+    ffa_award_elimination(b, seat);
     b->alive[seat] = 0;
     b->key ^= P.zob_alive[seat] ^ P.zob_turn[seat];
     for (c = 0; c < 4; c++) {
@@ -2411,14 +2454,14 @@ static uint64_t ffa_eliminate(TtBoard *b, int seat)
     }
     b->turn = (uint8_t)t;
     b->key ^= P.zob_turn[t];
-    return saved;
 }
 
-static void ffa_restore(TtBoard *b, int seat, uint64_t key)
+static void ffa_restore(TtBoard *b, int seat, const FfaUndo *u)
 {
     b->alive[seat] = 1;
     b->turn = (uint8_t)seat;
-    b->key = key;
+    b->key = u->key;
+    memcpy(b->points, u->points, sizeof(b->points));
 }
 
 static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
@@ -2476,9 +2519,10 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         /* Eliminated, and the game goes on. Depth is not spent: no move was
          * played, and each elimination strictly shrinks the alive mask, so
          * this can recurse at most three times. */
-        uint64_t saved = ffa_eliminate(b, me);
+        FfaUndo eu;
+        ffa_eliminate(b, me, &eu);
         best = paranoid(b, depth, alpha, beta, root, ply + 1);
-        ffa_restore(b, me, saved);
+        ffa_restore(b, me, &eu);
     }
     return best;
 }

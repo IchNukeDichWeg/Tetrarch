@@ -327,18 +327,9 @@ def reference_paranoid(board, root, depth, ply=0):
 
     legal = gen.gen_legal(board)
     if not legal:
-        # Nothing moves: an eliminated seat's pieces stay on the board as
-        # obstacles worth no points (RULES.md 9.1), so only the alive mask and
-        # the turn change.
-        dead = board.turn
-        board.alive[dead] = False
-        board.turn = next(t for t in ((dead + i) % 4 for i in (1, 2, 3, 0))
-                          if board.alive[t] or t == dead)
-        board.recompute_key()
+        undo = board.eliminate(board.turn)
         score = reference_paranoid(board, root, depth, ply + 1)
-        board.alive[dead] = True
-        board.turn = dead
-        board.recompute_key()
+        board.uneliminate(undo)
         return score
 
     maximising = board.turn == root
