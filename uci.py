@@ -107,6 +107,9 @@ class Engine:
         self.multipv = 1
         self.board = start_board(self.setup, self.mode)
         self.history = []
+        #: (position spec, tokens already applied) for the board as it stands.
+        #: None means "rebuild from scratch next time".
+        self._replayed = None
         self.bundle = {}
         self._load_default_net()
 
@@ -222,12 +225,14 @@ class Engine:
                 self.setup = value.lower()
                 self.board = start_board(self.setup, self.mode)
                 self.history = []
+                self._replayed = None
                 self._use_net_for_setup()
         elif name == "mode":
             if value.lower() in MODE_NAMES:
                 self.mode = MODE_NAMES.index(value.lower())
                 self.board = start_board(self.setup, self.mode)
                 self.history = []
+                self._replayed = None
                 # The net follows the mode as well as the setup: FFA and Teams
                 # are different games and a net trained on one has no signal
                 # for the other.
@@ -312,8 +317,24 @@ class Engine:
         core.clear_hash()
         self.board = start_board(self.setup, self.mode)
         self.history = []
+        self._replayed = None
 
     def cmd_position(self, args):
+        """Set the position, replaying only what is new since the last one.
+
+        A caller playing a game sends `position ... moves` once per ply with
+        one more move each time, so rebuilding from move one costs O(n^2) in
+        the move generator over a game. That is invisible in Teams, where games
+        run about a hundred plies, and dominant in FFA, where they run three
+        hundred and there are four engines rather than two: measured per engine
+        move, 0.026s at ply 0 against 0.386s at ply 300, which is ~60
+        core-seconds a game of replay against ~3 of actual search.
+
+        The cache is only ever used when the new command is the old one plus
+        moves on the end. Anything else -- a different start, a shorter list, a
+        list that diverges -- falls through to the full rebuild that was always
+        here, so this can lose speed and cannot change an answer.
+        """
         if not args:
             return
         moves = []
@@ -322,34 +343,54 @@ class Engine:
             moves = args[i + 1:]
             args = args[:i]
 
-        if not args or args[0] == "startpos":
-            setup = args[1] if len(args) > 1 else self.setup
-            self.board = start_board(setup, self.mode)
-        elif args[0] in ("fen4", "fen"):
-            self.board = Board.from_fen4(" ".join(args[1:]), self.mode)
-        elif args[0] in SETUPS:
-            self.setup = args[0]
-            self.board = start_board(self.setup, self.mode)
-            self._use_net_for_setup()
+        # Setup and mode are part of the key: the same words mean a different
+        # board under each, and only `position <setup>` announces a change.
+        spec = (tuple(args), self.setup, self.mode)
+        prior = self._replayed
+        if (prior is not None and prior[0] == spec
+                and len(moves) >= len(prior[1])
+                and moves[:len(prior[1])] == prior[1]):
+            fresh = moves[len(prior[1]):]
+            applied = list(prior[1])
         else:
-            print("info string unrecognised position %r" % args[0])
-            return
+            if not args or args[0] == "startpos":
+                setup = args[1] if len(args) > 1 else self.setup
+                self.board = start_board(setup, self.mode)
+            elif args[0] in ("fen4", "fen"):
+                self.board = Board.from_fen4(" ".join(args[1:]), self.mode)
+            elif args[0] in SETUPS:
+                self.setup = args[0]
+                self.board = start_board(self.setup, self.mode)
+                self._use_net_for_setup()
+                spec = (tuple(args), self.setup, self.mode)
+            else:
+                print("info string unrecognised position %r" % args[0])
+                self._replayed = None
+                return
 
-        # A position can arrive already holding a seat with no moves -- FFA
-        # eliminations are part of the position, not an event the caller
-        # replays -- so it is resolved on load as well as after every move.
-        game.resolve(self.board)
+            # A position can arrive already holding a seat with no moves -- FFA
+            # eliminations are part of the position, not an event the caller
+            # replays -- so it is resolved on load as well as after every move.
+            game.resolve(self.board)
 
-        # Every position the game passed through, so the search can tell a
-        # repetition from a transposition (§10.2). The board's own key is not
-        # included: the root supplies that itself.
-        self.history = []
-        for token in moves:
+            # Every position the game passed through, so the search can tell a
+            # repetition from a transposition (§10.2). The board's own key is
+            # not included: the root supplies that itself.
+            self.history = []
+            fresh = moves
+            applied = []
+
+        for token in fresh:
             self.history.append(self.board.key)
             if not self.play(token):
                 self.history.pop()
                 print("info string illegal move %s" % token)
-                break
+                # Cache what was actually applied, not what was asked for, or
+                # the next command extends a position that never existed.
+                self._replayed = (spec, applied)
+                return
+            applied.append(token)
+        self._replayed = (spec, applied)
 
     def play(self, token):
         """Apply a move given as from-to plus an optional promotion letter.

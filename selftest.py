@@ -2798,6 +2798,94 @@ def test_pgn4_ffa_elimination():
           pgn4.resolve(start.copy(), "#") is None)
 
 
+def test_uci_incremental_position():
+    section("uci.py incremental position replay")
+    import uci
+
+    # A caller playing a game sends one more move each ply, so rebuilding from
+    # move one is O(n^2) in the generator over a game -- 0.026s per engine move
+    # at ply 0 against 0.386s at ply 300 before this, and ~4x end to end on an
+    # FFA match. The cache may only ever make it FASTER, so the assertion is
+    # that it is invisible: every field of the board, plus the repetition
+    # history, must equal a rebuild from scratch at every ply.
+    def snapshot(engine):
+        b = engine.board
+        return (b.key, b.turn, list(b.alive), list(b.points), b.halfmove,
+                bytes(b.sq), list(engine.history))
+
+    plies = bad = 0
+    for mode in (MODE_TEAMS, MODE_FFA):
+        rng = random.Random(700 + mode)
+        board = start_board("classic", mode)
+        start = board.to_fen4().replace("\n", "")
+        incremental = uci.Engine()
+        incremental.mode = mode
+        tokens = []
+        for _ply in range(120):
+            legal = fast.gen_legal(board)
+            if not legal:
+                break
+            move = rng.choice(legal)
+            tokens.append(move_str(move))
+            board.make(move)
+            game.resolve(board)
+            incremental.cmd_position(["fen4", start, "moves"] + tokens)
+            scratch = uci.Engine()
+            scratch.mode = mode
+            scratch.cmd_position(["fen4", start, "moves"] + tokens)
+            plies += 1
+            if snapshot(incremental) != snapshot(scratch):
+                bad += 1
+                break
+    check("incremental replay matches a full rebuild over %d plies" % plies,
+          bad == 0, "%d mismatches" % bad)
+
+    # The cache is only valid when the new command EXTENDS the old one. A
+    # shorter or divergent list has to fall back, or the engine answers for a
+    # position nobody asked about.
+    engine = uci.Engine()
+    board = start_board("classic")
+    start = board.to_fen4().replace("\n", "")
+    seq = []
+    for _ in range(6):
+        move = fast.gen_legal(board)[0]
+        seq.append(move_str(move))
+        board.make(move)
+    engine.cmd_position(["fen4", start, "moves"] + seq)
+    deep = snapshot(engine)
+    engine.cmd_position(["fen4", start, "moves"] + seq[:3])
+    truncated = snapshot(engine)
+    fresh = uci.Engine()
+    fresh.cmd_position(["fen4", start, "moves"] + seq[:3])
+    check("a shorter move list falls back to a rebuild",
+          truncated == snapshot(fresh))
+    engine.cmd_position(["fen4", start, "moves"] + seq)
+    check("re-extending returns to the same position",
+          snapshot(engine) == deep)
+
+    # A Mode or Setup change rebuilds the board, so the cache must not survive
+    # it -- the same words mean a different position under each.
+    engine = uci.Engine()
+    engine.cmd_position(["startpos", "classic", "moves"] + seq[:2])
+    engine.cmd_setoption(["name", "Mode", "value", "ffa"])
+    check("a Mode change drops the cache", engine._replayed is None)
+    engine.cmd_position(["startpos", "classic", "moves"] + seq[:2])
+    engine.cmd_setoption(["name", "Setup", "value", "modern"])
+    check("a Setup change drops the cache", engine._replayed is None)
+
+    # An illegal move truncates the applied list, and the cache has to record
+    # what was applied rather than what was asked for.
+    engine = uci.Engine()
+    engine.cmd_position(["fen4", start, "moves", seq[0], "z9z9"])
+    check("an illegal move leaves only the legal prefix cached",
+          engine._replayed is not None and engine._replayed[1] == [seq[0]],
+          "%r" % (engine._replayed,))
+    after_bad = snapshot(engine)
+    fresh = uci.Engine()
+    fresh.cmd_position(["fen4", start, "moves", seq[0]])
+    check("and the position is the legal prefix", after_bad == snapshot(fresh))
+
+
 def test_match_ffa():
     section("match.py FFA pairing and scoring")
     import match
@@ -3327,6 +3415,7 @@ def main():
     test_resume()
     test_match_rotation()
     test_uci_ffa_replay()
+    test_uci_incremental_position()
     test_pgn4_ffa_elimination()
     test_match_ffa()
     test_ffa_data()
