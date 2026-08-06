@@ -2562,11 +2562,34 @@ static void ffa_restore(TtBoard *b, int seat, const FfaUndo *u)
     memcpy(b->points, u->points, sizeof(b->points));
 }
 
+/* On by default, matching the Teams search where the table is unconditional.
+ * NOT a measured gain: it cuts an iterative deepening to depth 7 from 47.4M
+ * nodes to 24.3M, but at fixed nodes it changes which moves get played, so the
+ * Elo is an A/B nobody has run. The toggle exists so that A/B is possible,
+ * not because off is a real configuration -- same footing as repetition
+ * detection. */
+static int use_ffa_tt = 1;
+
+void tt_set_ffa_tt(int on) { use_ffa_tt = on ? 1 : 0; }
+int tt_get_ffa_tt(void) { return use_ffa_tt; }
+
+/* The transposition key for a paranoid node. The score is in the ROOT seat's
+ * terms, so the position alone does not identify it: the same board searched
+ * for a different root is a different question with a different answer. Mixing
+ * the root in keeps FFA entries apart from each other and from Teams entries
+ * sharing the table. */
+static uint64_t paranoid_key(const TtBoard *b, int root)
+{
+    return b->key ^ P.zob_turn[root];
+}
+
 static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
                         int root, int ply)
 {
-    uint32_t *moves;
-    int32_t *scores;
+    uint32_t *moves, ttmove = 0, best_move = 0;
+    int32_t *scores, orig_alpha = alpha, orig_beta = beta;
+    TtEntry *slot = 0;
+    uint64_t probe;
     TtUndo u;
     Pin pins[8];
     int n, i, me = b->turn, legal = 0, king0, npins, in_chk;
@@ -2595,12 +2618,30 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     if (use_repetitions && is_repetition(b, ply)) return eval_for(b, root);
     rep_keys[rep_root + ply] = b->key;
 
+    /* Same bound logic as the Teams search, and for the same reasons -- see
+     * alphabeta. The one difference is the key. */
+    if (tt_table && use_ffa_tt) {
+        probe = paranoid_key(b, root);
+        slot = &tt_table[probe & tt_mask];
+        if (slot->key == probe) {
+            ttmove = slot->best;
+            if (slot->depth >= depth) {
+                int32_t s = slot->score;
+                if (s > MATE_SCORE - MAX_DEPTH) s -= ply;
+                else if (s < -(MATE_SCORE - MAX_DEPTH)) s += ply;
+                if (slot->flag == TT_EXACT) return s;
+                if (slot->flag == TT_LOWER && s >= beta) return s;
+                if (slot->flag == TT_UPPER && s <= alpha) return s;
+            }
+        }
+    }
+
     if (depth <= 0 || ply >= MAX_DEPTH - 2) return eval_for(b, root);
 
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, 0, -1);
+    score_moves(b, moves, scores, n, ttmove, -1);
     king0 = b->kings[me];
     in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     npins = compute_pins(b, me, king0, pins);
@@ -2622,10 +2663,10 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         tt_unmake(b, moves[i], &u);
         if (search_aborted) return 0;
         if (maximising) {
-            if (score > best) best = score;
+            if (score > best) { best = score; best_move = moves[i]; }
             if (best > alpha) alpha = best;
         } else {
-            if (score < best) best = score;
+            if (score < best) { best = score; best_move = moves[i]; }
             if (best < beta) beta = best;
         }
         if (alpha >= beta) break;
@@ -2639,6 +2680,26 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         ffa_eliminate(b, me, &eu);
         best = paranoid(b, depth, alpha, beta, root, ply + 1);
         ffa_restore(b, me, &eu);
+        /* Not stored: no move was played, so `depth` here does not mean what
+         * it means at every other node, and the entry would be probed as
+         * though it did. ponytail: rare path, not worth the care to get right.
+         */
+        return best;
+    }
+
+    if (slot) {
+        int32_t s = best;
+        if (s > MATE_SCORE - MAX_DEPTH) s += ply;
+        else if (s < -(MATE_SCORE - MAX_DEPTH)) s -= ply;
+        slot->key = probe;
+        slot->score = s;
+        slot->best = best_move;
+        slot->depth = (int16_t)depth;
+        /* Against the window this node was ENTERED with. Unlike negamax, both
+         * ends move here: a max node raises alpha and a min node lowers beta,
+         * so comparing against the live values would mislabel every cutoff. */
+        slot->flag = (uint8_t)(best <= orig_alpha ? TT_UPPER
+                               : (best >= orig_beta ? TT_LOWER : TT_EXACT));
     }
     return best;
 }
@@ -2659,7 +2720,7 @@ int tt_result_size(void) { return (int)sizeof(TtResult); }
  * this seat's point of view, and the root simply takes the largest. */
 static void tt_search_ffa(TtBoard *b, int depth, TtResult *out)
 {
-    uint32_t *moves, best_move = 0;
+    uint32_t *moves, best_move = 0, ttmove = 0;
     int32_t *scores, best = -INF_SCORE;
     TtUndo u;
     int n, i, legal = 0, me = b->turn;
@@ -2667,7 +2728,12 @@ static void tt_search_ffa(TtBoard *b, int depth, TtResult *out)
     moves = search_buf[0];
     scores = order_buf[0];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, 0, 0);
+    if (tt_table && use_ffa_tt) {
+        uint64_t probe = paranoid_key(b, me);
+        TtEntry *slot = &tt_table[probe & tt_mask];
+        if (slot->key == probe) ttmove = slot->best;
+    }
+    score_moves(b, moves, scores, n, ttmove, 0);
 
     for (i = 0; i < n; i++) {
         int king;

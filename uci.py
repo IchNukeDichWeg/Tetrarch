@@ -195,6 +195,7 @@ class Engine:
         # Both dormant until an A/B says otherwise. SEE prices a capture after
         # the exchange settles; ordering by it and pruning on it are separate
         # claims and separate toggles.
+        print("option name FFATT type check default true")
         print("option name SEEOrder type check default false")
         print("option name SEEPrune type check default true")
         # Hand eval only; a loaded net ignores it. Default off until it has
@@ -252,6 +253,8 @@ class Engine:
             core.set_pvs(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "lmr":
             core.set_lmr(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "ffatt":
+            core.set_ffa_tt(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "lazyeval":
             core.set_lazy_eval(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "lmp":

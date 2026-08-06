@@ -160,7 +160,13 @@ def search_multi(board, limits, lines=1, info=None, repetitions=()):
     legal = gen.gen_legal(board)
     if not legal:
         return []
-    if lines <= 1:
+    # FFA gets one line whatever was asked for. Each line here is scored by
+    # searching the CHILD and negating, which is the negamax identity: in FFA
+    # the child's root is the next seat, and -(next seat's paranoid value) is
+    # not this seat's value at all. Ranking every root move for one fixed root
+    # needs a C entry that takes the root explicitly.
+    # ponytail: analysis-only feature, and one right line beats four wrong ones.
+    if lines <= 1 or board.mode != MODE_TEAMS:
         best = search(board, limits, info, repetitions)
         return [best] if best.best else []
 

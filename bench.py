@@ -66,7 +66,9 @@ from tetrarch import core
 #: was 99.7% of the whole bench and the other four positions could not move the
 #: total. Three plies shallower puts it in the same range as the other four,
 #: so no single position decides the bench.
-#: ponytail: a depth offset, not a fix -- delete it when paranoid gets a TT.
+#: The table arrived and this stayed: it is worth 1.7% at depth 6 and 8.5% at
+#: depth 7 from cold, against the ~200x gap that made the offset necessary.
+#: Where it pays is iterative deepening, which the bench does not do.
 DEPTH_DELTA = {"classic-24ply-ffa": -3}
 
 #: (label, mode, fen4). Frozen -- see the module docstring.

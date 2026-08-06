@@ -2094,6 +2094,47 @@ def test_repetition():
     check_all("a key off the seat cycle changes nothing", offcycle)
     check_all("the halfmove clock bounds the scan", bounded)
 
+    # --- the FFA transposition table ---------------------------------------
+    #
+    # A table that returns wrong values still produces plausible node counts,
+    # so the assertion is the oracle, not the count. What makes it need its own
+    # checks is the KEY: a paranoid score is in the root seat's terms, so the
+    # same board searched for a different root is a different question, and the
+    # table is shared with Teams entries besides. The hash is deliberately NOT
+    # cleared between these -- a stale entry answering is the failure mode.
+    check("the FFA table is default on", core.ffa_tt_enabled())
+    core.clear_hash()
+    bad = tested = 0
+    for i in range(24):
+        pos = _sparse_ffa(random.Random(9000 + i))
+        for seat in range(4):
+            view = pos.copy()
+            view.turn = seat
+            view.recompute_key()
+            if not fast.gen_legal(view):
+                continue
+            for depth in (2, 3):
+                got = core.search(view, depth).score
+                want = search.reference_paranoid(view.copy(), seat, depth)
+                tested += 1
+                bad += got != want
+        # A Teams search into the same table, so the two are proved not to
+        # answer each other.
+        core.search(start_board("classic"), 4)
+    check("the table survives every root and both modes over %d searches"
+          % tested, bad == 0, "%d disagreements" % bad)
+
+    # And the toggle has to do something, or an A/B of it measures nothing.
+    b = start_board("classic", MODE_FFA)
+    core.clear_hash()
+    on = core.search(b, 6).nodes
+    core.set_ffa_tt(False)
+    core.clear_hash()
+    off = core.search(b, 6).nodes
+    core.set_ffa_tt(True)
+    check("the FFA table toggle changes the tree", on < off,
+          "on %d nodes, off %d" % (on, off))
+
     # --- FFA (the paranoid search) -----------------------------------------
     #
     # Built rather than injected: a real eight-ply cycle exists here and is

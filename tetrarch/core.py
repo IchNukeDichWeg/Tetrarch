@@ -578,6 +578,15 @@ def ffa_capture_table():
     return [int(lib.tt_ffa_capture_points(t)) for t in range(B.NTYPE)]
 
 
+def set_ffa_tt(on):
+    """The transposition table inside the paranoid FFA search. Default on."""
+    load().tt_set_ffa_tt(1 if on else 0)
+
+
+def ffa_tt_enabled():
+    return bool(load().tt_get_ffa_tt())
+
+
 def ffa_elim_points():
     """The C core's copy of RULES.md §8.2, pinned against board.ELIM_POINTS."""
     return int(load().tt_ffa_elim_points())
