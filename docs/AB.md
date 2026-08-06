@@ -3,10 +3,16 @@
 Every measured result, kept so a rejected idea is never quietly re-enabled and
 a confirmed one can be traced to the tree that produced it.
 
-Report format is fixed: Elo with its error margin, games, the nine-bucket
-distribution, and the instrument. Never a bare Elo. The distribution is score
-sums over the four-game seat rotation (0, 0.5, 1 … 4) -- **not** a pentanomial,
-which would assume two games per opening.
+Report format is fixed: Elo with its error margin, games, the distribution, and
+the instrument. Never a bare Elo. The distribution is score sums over the
+four-game seat rotation -- **not** a pentanomial, which would assume two games
+per opening.
+
+Teams and FFA runs are reported the same way and **cannot be pooled**. Teams
+pairs 2v2 and scores in half-points, so a rotation sums to one of NINE values
+(0, 0.5, 1 … 4). FFA puts engine A on one seat against three of B and scores
+its share of three pairwise contests, so it lands on thirds and sums to one of
+THIRTEEN. Different pairing, different scale, different distribution.
 
 Reference machine for these runs: 111-core Linux box, `--hash 256`.
 
@@ -1039,6 +1045,43 @@ overperformed. All three were misjudged in the same direction -- by assuming
 chess proportions.
 
 ---
+
+### FFA generation 1 -- built, A/B PENDING
+
+The first FFA self-play dataset and the first net trained on it. Recorded now
+because the runs have ended; the Elo has not been measured yet and this entry
+is not a result.
+
+| | |
+|---|---|
+| Games | 50,000, `--mode ffa --nodes 7500` |
+| Teacher | the throwaway hand eval -- no FFA net existed to label with |
+| Positions | 13,222,513 (264 a game) |
+| Training | 8 epochs, otherwise the defaults (lambda 0.7, batch 1024, val 0.02) |
+| Net | `nets/ffa1/net-best.nnue` |
+
+**FFA gets a quarter of the rows per position that Teams does.** The four-view
+augmentation rests on a Teams score negating to the other team; a paranoid
+score is in the MOVER's terms and converts to no other seat, so only the seat
+that moved carries a label. Raw throughput is the same -- 164 positions per
+core-second against Teams' 162, measured on 16 games at 7,500 nodes on an M2
+Pro -- and the whole difference lands at cache time.
+
+**Validation bottomed at epoch 2 and got worse for six consecutive epochs.**
+`net-best.nnue` is byte-identical to `net-epoch02.nnue`, confirmed by md5, so
+epochs 3 through 8 each moved away from it. 13.2M unaugmented rows is about a
+third of what a Teams generation feeds the same net, and it overfits by epoch
+3. **The next FFA generation should use `--epochs 3`**; 8 was six too many.
+
+The per-epoch validation table was lost with the SSH session that owned the
+run. The checkpoint md5s are the surviving evidence, and they are enough to
+say which epoch won but not by how much.
+
+Screening against the hand eval, which is what FFA plays today. Fixed nodes
+first as a kill filter -- an order-of-magnitude cheaper here, because FFA games
+run ~300 plies and fixed time pays for every one of them -- and fixed time to
+decide, since a net costs more per node than the hand eval and fixed nodes
+hands it an advantage it will not have in a real game.
 
 ## A property of the harness worth knowing
 
