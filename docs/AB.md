@@ -1077,8 +1077,32 @@ The per-epoch validation table was lost with the SSH session that owned the
 run. The checkpoint md5s are the surviving evidence, and they are enough to
 say which epoch won but not by how much.
 
-Screening against the hand eval, which is what FFA plays today. Fixed nodes
-first as a kill filter -- an order-of-magnitude cheaper here, because FFA games
+**Partial screen, terminated at 229 games on throughput.** Fixed nodes 20,000,
+against the hand eval:
+
+```
+Elo   | +34.45 +/- 42.18   (43 complete rotations)
+Dist  | 0, 0, 1, 2, 8, 7, 2, 6, 7, 5, 2, 3, 0
+A pl. | 67/62/50/50  (1st/2nd/3rd/4th)
+Pts   | A 46.2 mean, B 40.9 per seat
+Games | 227.95 plies mean, 66.8% last-seat-standing
+```
+
+Inside noise at 0.8 sigma, so **not a result** -- but it is not a kill either,
+and that is the thing worth knowing. The same screen run on net-v5, a Teams net
+handed to FFA, read -124.50 +/- 49.31. This one leans positive on every
+secondary reading: more firsts than the 57 a level engine expects, and 5.3
+points a seat more than the hand eval. The net is not broken; it needs a real
+sample.
+
+The run was terminated because the harness, not the engine, is the bottleneck:
+`uci.py` rebuilt the position from move one on every `position ... moves`, so a
+300-ply FFA game costs O(n^2) in the Python movegen. Measured per engine move:
+0.026s at ply 0, 0.160s at ply 100, 0.386s at ply 300. That is ~60 core-seconds
+a game of pure replay against ~3 of actual search, and it is why 229 games took
+an hour on a large box. Fixing that comes before the real screen.
+
+Fixed nodes first as a kill filter -- an order-of-magnitude cheaper here, because FFA games
 run ~300 plies and fixed time pays for every one of them -- and fixed time to
 decide, since a net costs more per node than the hand eval and fixed nodes
 hands it an advantage it will not have in a real game.
