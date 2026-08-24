@@ -51,6 +51,13 @@ test_engine2
 
 # Generated opening books: rebuildable from book.py, and large.
 book*.txt
+# ...except the ones a campaign actually ran on. A rebuilt book is a DIFFERENT
+# book -- book.py walks at random and filters on a search -- so two boxes that
+# each build their own are not running the same experiment. Committing the
+# book is what makes an A/B reproducible without re-deriving which positions
+# it used, which is what book.py's own docstring says it is for. 20,000 FFA
+# positions is 6 MB of text and 0.6 MB packed.
+!books/*.txt
 
 # Scratch notes and review documents: drafts about the engine, not part
 # of it. Anything with `improvement` in the name stays out of the tree.
