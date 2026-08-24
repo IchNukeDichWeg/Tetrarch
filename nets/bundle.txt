@@ -28,12 +28,28 @@ teams by      net-v7.nnue
 teams byg     net-v7.nnue
 teams rg      net-v7.nnue
 
-# FFA has NO net yet, deliberately. Every net shipped was trained on Teams
-# self-play, where the points inputs are always zero and the game is decided
-# by one checkmate rather than by a four-way race; measured, a 40-point lead
-# moves net-v5 by 4cp. A screen of net-v5 against the hand eval in FFA scored
-# -124.50 +/- 49.31 over 32 games -- a kill filter reading, not a measurement,
-# but pointing the same way. With no line here the engine plays FFA on the hand
-# eval and says so on an info string -- it does NOT fall back to the default
-# net, because the default net is a Teams net and that is the exact mistake.
-# Add `ffa <setup> <net>` lines when there is one.
+# FFA plays net-ffa1, which is the first net trained on FFA self-play. Against
+# the hand eval it was playing before, on a 20,000-position FFA book:
+#
+#     fixed nodes 20,000   +67.35 +/- 10.38   2,500 games
+#     fixed time 200ms     +18.30 +/- 14.88   1,571 games
+#
+# NOT a confirmed release: fixed time is the instrument that decides and 1.23
+# sigma does not clear it. It is bundled anyway because the bundle is dispatch,
+# not a claim -- the alternative here is the hand eval, and the net beat it at
+# both instruments and on every setup.
+#
+# It was trained on `classic` self-play alone, which is exactly the mistake the
+# Teams half of this file records for net-v5. It does not repeat it. Split by
+# setup at fixed nodes: classic +89.71, rg +83.61, modern +65.22, by +60.36,
+# byg +36.88, all +/- ~23. Weakest where it never trained, positive everywhere.
+# At fixed time all five are positive too, none individually significant.
+#
+# Do NOT let FFA fall back to the default net if these lines are removed: the
+# default is a Teams net, net-v5 screened at -124.50 +/- 49.31 in FFA, and
+# uci.py drops to the hand eval and says so rather than pretending otherwise.
+ffa classic net-ffa1.nnue
+ffa modern  net-ffa1.nnue
+ffa by      net-ffa1.nnue
+ffa byg     net-ffa1.nnue
+ffa rg      net-ffa1.nnue

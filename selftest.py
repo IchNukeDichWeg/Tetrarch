@@ -1870,6 +1870,12 @@ def test_net_bundle():
     check("it covers every Teams setup",
           {s for m, s in named if m == "teams"} == set(SETUPS),
           str(sorted(named)))
+    # FFA is bundled too now. Without this a removed line sends FFA silently
+    # back to the hand eval, which is the state net-ffa1 measured +67.35
+    # against -- exactly the regression the manifest exists to catch.
+    check("it covers every FFA setup",
+          {s for m, s in named if m == "ffa"} == set(SETUPS),
+          str(sorted(s for m, s in named if m == "ffa")))
     check("it names only known modes",
           all(m in MODE_NAMES for m, _s in named), str(sorted(named)))
     check("every net it names is on disk", not missing,
