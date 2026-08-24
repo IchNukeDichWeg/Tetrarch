@@ -1117,7 +1117,9 @@ nodes against +76.79 fixed time) and cleared both. This one clears one.
 
 **The fixed-time number moved 45 Elo when the time management was fixed, and
 that is the more useful finding.** An earlier run of the same match read
-**-26.60 +/- 17.44** over 1,099 games. Nothing about either engine changed --
+**-26.60 +/- 17.44** over 1,099 games. That log has been discarded -- it is a
+measurement taken through a broken instrument, and keeping it invites someone
+to quote it. The number is recorded here only to size the effect of the fix. Nothing about either engine changed --
 only FFA_NEXT_DEPTH_FRACTION, from the Teams value of 0.45 to 0.06. At 0.45 the
 FFA search started plies costing 17x the time it had left, and the CHEAPER
 engine overshot further because it reached more depths before the check. The
