@@ -32,7 +32,25 @@ from .eval_hand import evaluate
 MATE_SCORE = 30000
 INF = 32000
 #: Do not start a depth we are unlikely to finish.
+#: Start another depth only while this much of the budget is still unspent.
+#: It is really 1/(what one more ply costs), and that differs enormously by
+#: mode. Measured, depth-to-depth cost ratios from a 20-ply classic position:
+#: Teams 1.1x-7.0x, median 3.5x; FFA 1.6x-32.7x, median 17.3x. FFA has no
+#: quiescence and a far wider fan-out, so a ply there is an order of magnitude,
+#: not a factor of two.
+#:
+#: Teams keeps 0.45, the value every measured result in this file was taken
+#: with. FFA at 0.45 committed to plies costing 17x the time it had left and
+#: overshot movetime 200 by roughly 12x, which showed up as an FFA fixed-time
+#: A/B running at 0.1 games/s instead of 1.3 and getting no faster with fewer
+#: workers.
 NEXT_DEPTH_FRACTION = 0.45
+FFA_NEXT_DEPTH_FRACTION = 0.06
+
+
+def _next_depth_fraction(board):
+    return (NEXT_DEPTH_FRACTION if board.mode == MODE_TEAMS
+            else FFA_NEXT_DEPTH_FRACTION)
 
 
 class Limits:
@@ -129,7 +147,7 @@ def search(board, limits, info=None, repetitions=()):
             break
         if budget is not None:
             elapsed_ms = out.elapsed * 1000.0
-            if elapsed_ms >= budget * NEXT_DEPTH_FRACTION:
+            if elapsed_ms >= budget * _next_depth_fraction(board):
                 break
         if limits.nodes and out.nodes >= limits.nodes:
             break
@@ -231,7 +249,7 @@ def search_multi(board, limits, lines=1, info=None, repetitions=()):
         if abs(out[0].score) >= MATE_SCORE - 100:
             break
         if budget is not None and \
-                out[0].elapsed * 1000.0 >= budget * NEXT_DEPTH_FRACTION:
+                out[0].elapsed * 1000.0 >= budget * _next_depth_fraction(board):
             break
         if limits.nodes and nodes >= limits.nodes:
             break
