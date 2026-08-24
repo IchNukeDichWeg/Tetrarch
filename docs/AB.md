@@ -1046,7 +1046,27 @@ chess proportions.
 
 ---
 
-### FFA generation 1 -- the instruments DISAGREE IN SIGN
+### FFA transposition table -- CONFIRMED, default on
+
+| | |
+|---|---|
+| Instrument | fixed nodes 20,000 |
+| Elo | **+15.90 +/- 7.28** |
+| Games | 2,500 (625 complete rotations) |
+| Dist | 1, 1, 4, 21, 50, 85, 211, 133, 70, 28, 14, 7, 0 |
+| Placement | 718/599/573/610 |
+
+`--opt-b FFATT=false` against the default, both sides the hand eval. The
+paranoid search had no table at all until this; the Teams search has always had
+one unconditionally, and the toggle exists so this could be measured rather
+than because off is a configuration anyone should use.
+
+Worth 1.95x on what the engine actually does -- iterative deepening to depth 7
+falls from 47,367,089 nodes to 24,268,215 -- and 2.2 sigma of Elo at fixed
+nodes. Both numbers matter: the node reduction is why an FFA A/B is affordable
+at all, and the Elo is why it stays on.
+
+### FFA generation 1 -- POSITIVE at both instruments
 
 The first FFA self-play dataset and the first net trained on it. Recorded now
 because the runs have ended; the Elo has not been measured yet and this entry
@@ -1077,34 +1097,33 @@ The per-epoch validation table was lost with the SSH session that owned the
 run. The checkpoint md5s are the surviving evidence, and they are enough to
 say which epoch won but not by how much.
 
-**The measured result, and it is not one number.** Against the hand eval,
-2,500 games per instrument on a 96-core box, book of 20,000 FFA positions:
+**The first FFA net beats the hand eval.** Against it, on a 96-core box with a
+book of 20,000 FFA positions:
 
 ```
               fixed nodes 20,000        fixed time 200ms
-Elo         | +67.35 +/- 10.38        | -26.60 +/- 17.44
-Games       | 2,500                   | 1,099  (partial, see below)
-A placed    | 899/640/490/471         | 275/218/275/331
-Points      | A 50.3, B 40.5          | A 35.8, B 41.7
-Decisive    | 67.9%                   | 88.4%
+Elo         | +67.35 +/- 10.38        | +18.30 +/- 14.88
+Games       | 2,500                   | 1,571
+A placed    | 899/640/490/471         | 486/339/340/406
+Points      | A 50.3, B 40.5          | A 39.7, B 39.1
+Plies       | 250.8 mean              | 208.2 mean
+Decisive    | 67.9%                   | 88.9%
 ```
 
-Fixed time is the instrument that decides here -- the net costs more per node,
-and fixed nodes hands it that cost for free. Net v4 in Teams read +135.19 at
-fixed nodes against +76.79 at fixed time for exactly this reason. What is new
-is the SIGN flip: net-ffa1 wins the evaluation contest and loses the game.
+Fixed nodes is a clear confirm at 6.5 sigma. Fixed time -- the instrument that
+decides, because the net costs more per node -- is +18.30 at 1.23 sigma:
+positive, not significant. Net v4 in Teams showed the same shape (+135.19 fixed
+nodes against +76.79 fixed time) and cleared both. This one clears one.
 
-**The fixed-time number is not yet trustworthy, and both faults flatter the
-hand eval.** It was taken at `--workers 96` on 96 cores, which oversubscribes
-roughly 2x at this instrument -- at fixed nodes an engine searches ~10ms and
-blocks, while at fixed time it burns a full core for the whole budget, and each
-worker also runs a Python driver. It managed 0.13 games/s against 8.0 at fixed
-nodes. Contention punishes the expensive engine harder. Separately, measured on
-an idle machine at movetime 200 in FFA: the hand eval overshoots its budget
-**1.6x** and the net only **1.1x**, because the budget is only checked between
-depth iterations and one more FFA ply is 10-30x the last. The hand eval was
-quietly taking ~50% more thinking time per move. A clean re-run at 64 workers
-is the number to quote.
+**The fixed-time number moved 45 Elo when the time management was fixed, and
+that is the more useful finding.** An earlier run of the same match read
+**-26.60 +/- 17.44** over 1,099 games. Nothing about either engine changed --
+only FFA_NEXT_DEPTH_FRACTION, from the Teams value of 0.45 to 0.06. At 0.45 the
+FFA search started plies costing 17x the time it had left, and the CHEAPER
+engine overshot further because it reached more depths before the check. The
+hand eval was quietly taking about 50% more thinking time per move than the
+net. A fixed-time instrument that is not actually fixed measures the wrong
+engine, and it read the sign backwards.
 
 **Earlier partial screen, terminated at 229 games on throughput.** Fixed nodes
 20,000, against the hand eval:
