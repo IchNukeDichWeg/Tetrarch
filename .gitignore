@@ -17,6 +17,12 @@ __pycache__/
 # runs produced ARE tracked, under nets/*.nnue, because an A/B number is only
 # reproducible if the net that produced it is in the tree.
 
+# Everything a campaign produced. The rules below already catch the jsonl and
+# the books; this catches whatever a future tool drops in there too, which is
+# what the paragraph above has always claimed and did not enforce -- a match
+# summary landed in the tree because .txt matched nothing.
+runs/
+
 # Generated data: training positions, nets, match logs, campaign state.
 # Every tool writes to a path given on the CLI; these are the conventional
 # scratch locations, never a default.
