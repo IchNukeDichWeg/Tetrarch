@@ -1066,6 +1066,30 @@ falls from 47,367,089 nodes to 24,268,215 -- and 2.2 sigma of Elo at fixed
 nodes. Both numbers matter: the node reduction is why an FFA A/B is affordable
 at all, and the Elo is why it stays on.
 
+### DEVIATION: the FFA confirm runs at movetime 100, not 200
+
+Declared before the run, not after it.
+
+The generation-1 numbers below were taken at movetime 200. The confirm --
+10,000 games, ~2,000 per setup -- runs at **movetime 100** and therefore
+cannot be pooled with them. It stands alone.
+
+The reason is cost. 10,000 FFA games at movetime 200 is 4.5 hours on the box
+that produced these numbers, because an FFA game is ~208 plies and that box
+spends its whole budget per ply. Halving the clock roughly halves that.
+
+What makes the trade cheap is the same thing that makes FFA expensive: a ply
+costs about 17x the one before it, so the search depth is quantised and a
+shorter clock buys almost nothing back. Measured on the reference Mac at
+movetime 200 / 100 / 50 / 25, mean depth reached was 4.15 / 4.00 / 4.00 / 3.80.
+Halving the clock costs 0.15 of a ply. In Teams, where a ply is 3.5x, the same
+cut would cost real depth and this deviation would not be available.
+
+That table is from a machine where the engine spends only 51ms of a 200ms
+budget. The generation box spends all of it, so the curve is shifted there and
+movetime 200 may genuinely reach deeper than 100 does. The deviation is
+recorded rather than assumed harmless.
+
 ### FFA generation 1 -- POSITIVE at both instruments
 
 The first FFA self-play dataset and the first net trained on it. Recorded now
