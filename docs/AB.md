@@ -1046,7 +1046,7 @@ chess proportions.
 
 ---
 
-### FFA generation 1 -- built, A/B PENDING
+### FFA generation 1 -- the instruments DISAGREE IN SIGN
 
 The first FFA self-play dataset and the first net trained on it. Recorded now
 because the runs have ended; the Elo has not been measured yet and this entry
@@ -1077,8 +1077,37 @@ The per-epoch validation table was lost with the SSH session that owned the
 run. The checkpoint md5s are the surviving evidence, and they are enough to
 say which epoch won but not by how much.
 
-**Partial screen, terminated at 229 games on throughput.** Fixed nodes 20,000,
-against the hand eval:
+**The measured result, and it is not one number.** Against the hand eval,
+2,500 games per instrument on a 96-core box, book of 20,000 FFA positions:
+
+```
+              fixed nodes 20,000        fixed time 200ms
+Elo         | +67.35 +/- 10.38        | -26.60 +/- 17.44
+Games       | 2,500                   | 1,099  (partial, see below)
+A placed    | 899/640/490/471         | 275/218/275/331
+Points      | A 50.3, B 40.5          | A 35.8, B 41.7
+Decisive    | 67.9%                   | 88.4%
+```
+
+Fixed time is the instrument that decides here -- the net costs more per node,
+and fixed nodes hands it that cost for free. Net v4 in Teams read +135.19 at
+fixed nodes against +76.79 at fixed time for exactly this reason. What is new
+is the SIGN flip: net-ffa1 wins the evaluation contest and loses the game.
+
+**The fixed-time number is not yet trustworthy, and both faults flatter the
+hand eval.** It was taken at `--workers 96` on 96 cores, which oversubscribes
+roughly 2x at this instrument -- at fixed nodes an engine searches ~10ms and
+blocks, while at fixed time it burns a full core for the whole budget, and each
+worker also runs a Python driver. It managed 0.13 games/s against 8.0 at fixed
+nodes. Contention punishes the expensive engine harder. Separately, measured on
+an idle machine at movetime 200 in FFA: the hand eval overshoots its budget
+**1.6x** and the net only **1.1x**, because the budget is only checked between
+depth iterations and one more FFA ply is 10-30x the last. The hand eval was
+quietly taking ~50% more thinking time per move. A clean re-run at 64 workers
+is the number to quote.
+
+**Earlier partial screen, terminated at 229 games on throughput.** Fixed nodes
+20,000, against the hand eval:
 
 ```
 Elo   | +34.45 +/- 42.18   (43 complete rotations)
