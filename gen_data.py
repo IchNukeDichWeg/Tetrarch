@@ -51,6 +51,31 @@ from tetrarch import core
 from tetrarch import movegen as gen
 from tetrarch.search import Limits, search
 
+#: Games to average the live rate over. The pool returns short games first and
+#: long ones last, so a rate computed since the start falls throughout every
+#: run -- it reads as the machine slowing down when nothing has changed, and
+#: that has cost real time to suspicion twice. A trailing window says what is
+#: happening now, and the elapsed clock beside it says how long it has been.
+RATE_WINDOW = 100
+
+
+def _clock(secs):
+    secs = int(max(secs, 0))
+    return "%dm%02ds" % (secs // 60, secs % 60) if secs < 3600 \
+        else "%dh%02dm" % (secs // 3600, (secs % 3600) // 60)
+
+
+def _live_rate(stamps, done, elapsed):
+    """Completions per second over the last RATE_WINDOW, or since the start
+    while there are too few to say anything."""
+    window = stamps[-RATE_WINDOW:]
+    if len(window) > 1:
+        span = window[-1] - window[0]
+        if span > 1e-9:
+            return (len(window) - 1) / span
+    return done / max(elapsed, 1e-9)
+
+
 MAX_PLIES = 400
 #: Stop recording once a side is this far ahead: the rest of the game is noise
 #: for a value net, and cheap wins would dominate the label distribution.
@@ -308,6 +333,7 @@ def main():
     started = time.time()
     written = 0
     positions = 0
+    stamps = []
     out = open(args.out, "a")
 
     def absorb(game):
@@ -318,14 +344,15 @@ def main():
         out.flush()
         written += 1
         positions += len(game["scores"])
+        stamps.append(time.time())
         if args.quiet or written % 20:
             return
         secs = time.time() - started
-        rate = written / max(secs, 1e-9)
+        rate = _live_rate(stamps, written, secs)
         eta = (remaining - written) / max(rate, 1e-9)
-        sys.stderr.write("\r%d/%d games  %d positions  %.1f g/s  eta %dm%02ds "
+        sys.stderr.write("\r%d/%d games  %d positions  %.1f g/s  up %s  eta %s  "
                          % (written, remaining, positions, rate,
-                            eta // 60, eta % 60))
+                            _clock(secs), _clock(eta)))
         sys.stderr.flush()
 
     try:

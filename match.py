@@ -88,6 +88,31 @@ from tetrarch import game
 from tetrarch.game import ffa_score
 from tetrarch import pgn4
 
+#: Games to average the live rate over. The pool returns short games first and
+#: long ones last, so a rate computed since the start falls throughout every
+#: run -- it reads as the machine slowing down when nothing has changed, and
+#: that has cost real time to suspicion twice. A trailing window says what is
+#: happening now, and the elapsed clock beside it says how long it has been.
+RATE_WINDOW = 100
+
+
+def _clock(secs):
+    secs = int(max(secs, 0))
+    return "%dm%02ds" % (secs // 60, secs % 60) if secs < 3600 \
+        else "%dh%02dm" % (secs // 3600, (secs % 3600) // 60)
+
+
+def _live_rate(stamps, done, elapsed):
+    """Completions per second over the last RATE_WINDOW, or since the start
+    while there are too few to say anything."""
+    window = stamps[-RATE_WINDOW:]
+    if len(window) > 1:
+        span = window[-1] - window[0]
+        if span > 1e-9:
+            return (len(window) - 1) / span
+    return done / max(elapsed, 1e-9)
+
+
 ROTATIONS = 4
 #: Adjudicate a draw rather than play forever. 50-move already covers most of
 #: it; this is the backstop.
@@ -734,6 +759,7 @@ def main():
 
     games = []
     by_opening = {}
+    stamps = []
     started = time.time()
     log = open(args.log, "w")
     pgn_out = open(args.pgn4, "w") if args.pgn4 else None
@@ -745,6 +771,7 @@ def main():
         if record is None:
             return
         games.append(record)
+        stamps.append(time.time())
         if pgn_out and record.get("pgn4"):
             pgn_out.write(record.pop("pgn4") + "\n")
             pgn_out.flush()
@@ -758,13 +785,13 @@ def main():
             return
         done = len(games)
         secs = time.time() - started
-        rate = done / max(secs, 1e-9)
+        rate = _live_rate(stamps, done, secs)
         eta = (total - done) / max(rate, 1e-9)
-        width = 28
+        width = 24
         filled = int(width * done / max(total, 1))
-        sys.stderr.write("\r[%s%s] %d/%d  %.1f g/s  eta %dm%02ds "
+        sys.stderr.write("\r[%s%s] %d/%d  %.1f g/s  up %s  eta %s  "
                          % ("#" * filled, "." * (width - filled), done, total,
-                            rate, eta // 60, eta % 60))
+                            rate, _clock(secs), _clock(eta)))
         sys.stderr.flush()
 
     play = play_game_ffa if args.mode == "ffa" else play_game
