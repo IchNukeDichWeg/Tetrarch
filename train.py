@@ -55,6 +55,14 @@ WQ_CLIP = 127.0 / QB
 
 # --- phase 1: cache ---------------------------------------------------------
 
+def _clock(secs):
+    """m:ss under an hour, h:mm over it. Same shape match.py prints."""
+    secs = int(max(secs, 0))
+    if secs < 3600:
+        return "%dm%02ds" % (secs // 60, secs % 60)
+    return "%dh%02dm" % (secs // 3600, (secs % 3600) // 60)
+
+
 def _cache_chunk(job):
     """Replay a block of games into arrays. Pure function of its input lines,
     so it parallelises per block with no shared state and no ordering
@@ -586,6 +594,7 @@ def main():
     opt = Adam(model, lr=args.lr)
     best = float("inf")
     history = []
+    run_started = time.time()
 
     for epoch in range(1, args.epochs + 1):
         started = time.time()
@@ -606,9 +615,17 @@ def main():
             batches += 1
             if not args.quiet and batches % 200 == 0:
                 done = start + len(sel)
-                rate = done / max(time.time() - started, 1e-9)
-                print("  epoch %d  %d/%d  loss %.5f  %.0f pos/s"
-                      % (epoch, done, len(train_index), running / batches, rate),
+                now = time.time()
+                rate = done / max(now - started, 1e-9)
+                # ETA for the WHOLE run, not this epoch: eight epochs of a
+                # 71M-position set is hours, and knowing one of them ends in
+                # twenty minutes answers the wrong question. Later epochs are
+                # priced at this epoch's rate, which is what it has to go on.
+                left = ((len(train_index) - done)
+                        + len(train_index) * (args.epochs - epoch))
+                print("  epoch %d  %d/%d  loss %.5f  %.0f pos/s  up %s  eta %s"
+                      % (epoch, done, len(train_index), running / batches, rate,
+                         _clock(now - run_started), _clock(left / max(rate, 1e-9))),
                       flush=True)
 
         val = evaluate_loss(model, data, val_index, args.batch, args.blend)
