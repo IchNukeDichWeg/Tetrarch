@@ -1090,7 +1090,7 @@ budget. The generation box spends all of it, so the curve is shifted there and
 movetime 200 may genuinely reach deeper than 100 does. The deviation is
 recorded rather than assumed harmless.
 
-### FFA generation 1 -- POSITIVE at both instruments
+### FFA generation 1 -- CONFIRMED, +106.05 +/- 5.55
 
 The first FFA self-play dataset and the first net trained on it. Recorded now
 because the runs have ended; the Elo has not been measured yet and this entry
@@ -1121,7 +1121,44 @@ The per-epoch validation table was lost with the SSH session that owned the
 run. The checkpoint md5s are the surviving evidence, and they are enough to
 say which epoch won but not by how much.
 
-**The first FFA net beats the hand eval.** Against it, on a 96-core box with a
+**CONFIRM. net-ffa1 against the hand eval, movetime 100, 10,000 games** on the
+committed 20,000-position FFA book, with movetime enforced mid-depth:
+
+```
+Elo   | +106.05 +/- 5.55   (2,500 complete rotations)
+Dist  | 0, 3, 21, 68, 121, 176, 334, 360, 421, 400, 304, 210, 82
+A pl. | 4349/2392/1607/1652  (1st/2nd/3rd/4th; 2,500 each if level)
+Pts   | A 53.6 mean, B 39.5 per seat
+Games | 255.3 plies mean, 66.9% last-seat-standing
+Time  | 10m57s at 15.21 games/s on 96 cores
+```
+
+Per setup, ~2,000 games each:
+
+```
+classic  +129.09 +/- 12.35
+rg       +109.04 +/- 12.90
+by       +102.73 +/- 12.45
+byg       +95.39 +/- 12.46
+modern    +94.33 +/- 11.84
+```
+
+Strongest where it trained and 8-10 sigma everywhere, with 35 Elo between best
+and worst. One net covers all five FFA setups; the Teams split that produced
+the two-net bundle does not repeat here.
+
+The run took 11 minutes where the same 10,000 games had been projected at four
+hours. That is the mid-depth movetime fix, not the hardware: 15.21 games/s
+against 0.7.
+
+**Earlier, at fixed nodes 20,000 over 2,500 games: +67.35 +/- 10.38.** Two
+different instruments, both confirms, and the fixed-time number is the larger
+one -- the reverse of net v4 in Teams. Offered without an explanation: when the
+clock genuinely binds, both engines are cut off mid-depth, and a hypothesis
+that the net's evaluation is worth more per node under that cut is a hypothesis
+and not a measurement.
+
+**Superseded detail below.** Against it, on a 96-core box with a
 book of 20,000 FFA positions:
 
 ```
