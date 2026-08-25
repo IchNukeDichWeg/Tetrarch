@@ -1134,9 +1134,21 @@ Plies       | 250.8 mean              | 208.2 mean
 Decisive    | 67.9%                   | 88.9%
 ```
 
-Fixed nodes is a clear confirm at 6.5 sigma. Fixed time -- the instrument that
-decides, because the net costs more per node -- is +18.30 at 1.23 sigma:
-positive, not significant. Net v4 in Teams showed the same shape (+135.19 fixed
+Fixed nodes is a clear confirm at 6.5 sigma.
+
+**The fixed-time column is VOID.** It was taken before movetime was enforced
+mid-depth: the budget was checked only between iterative-deepening iterations,
+and on the generation box a single FFA iteration cost about 660ms, so every
+move ran to the same depth whatever the clock said. movetime 200 and movetime
+100 produced identical searches there -- halving the clock changed wall time by
+13%. A fixed-time instrument that always reaches the same depth is a fixed
+DEPTH instrument wearing the wrong label, and +18.30 is not a fixed-time
+number. Neither is the -26.60 above it.
+
+Two readings taken through it, for the record and not to be quoted: +18.30
++/- 14.88 at movetime 200 over 1,571 games, and +75.71 +/- 17.21 at movetime
+100 over 1,066. They differ by 2.5 sigma on the same engines and the same book,
+which is itself the evidence that the instrument was not measuring a clock. Net v4 in Teams showed the same shape (+135.19 fixed
 nodes against +76.79 fixed time) and cleared both. This one clears one.
 
 **The fixed-time number moved 45 Elo when the time management was fixed, and
