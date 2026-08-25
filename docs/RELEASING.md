@@ -37,8 +37,13 @@ Bench | the perft bench signature
 Pins  | search node counts, if the tree moved
 ```
 
-**`Dist` is nine buckets, never a pentanomial.** A pentanomial assumes two
-games per opening; here one opening is a four-game seat rotation.
+**`Dist` is nine buckets in Teams, never a pentanomial.** A pentanomial assumes
+two games per opening; here one opening is a four-game seat rotation.
+
+**In FFA it is THIRTEEN.** The pairing there is one engine against three of the
+other, and a game scores the mover's share of its three pairwise contests, so
+sums land on thirds rather than halves. A Teams and an FFA campaign cannot be
+pooled and their distributions do not compare.
 
 **`Conf` must name the instrument** and it must be the right one. A change that
 moves nodes gets fixed nodes; a change that moves only speed gets fixed time,
@@ -46,7 +51,9 @@ because fixed nodes would report exactly zero. Mixing instruments inside one
 campaign invalidates it.
 
 **`Base` is the previous version**, not the version a feature was screened
-against. A confirm run against the current default is the point -- gains are
+against. The exception is a mode that did not exist before: the first FFA net
+has no previous FFA version to measure against, so its base is the hand
+evaluation FFA actually played, and the note says so. A confirm run against the current default is the point -- gains are
 not additive, and a number that drops between screen and confirm is usually
 the previous release having already banked some of it.
 

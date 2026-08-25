@@ -43,6 +43,8 @@ rotation, against a null self-test of −2.64 ± 6.24 on the same harness.
 
 | release | feature | Elo | instrument |
 |---|---|---|---|
+| [v8](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v8) | FFA: paranoid search + net-ffa1 | **+106.05 ± 5.55** | fixed time |
+| [v8](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v8) | FFA transposition table | **+15.90 ± 7.28** | fixed nodes |
 | [v7](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v7) | lazy accumulator perspectives | **+63.37 ± 4.68** | fixed time |
 | [v7](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v7) | NNUE net v5 | **+7.78 ± 4.61** | fixed time |
 | [v6](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v6) | NNUE evaluation (net v4) | **+76.79 ± 6.87** | fixed time |
@@ -149,9 +151,17 @@ an engine whose NNUE accumulator was corrupted from the second move of every
 game. Same method on a sound engine gives +94 where v2 gave −225. Both the
 result and the retraction are in [`docs/AB.md`](docs/AB.md).
 
-Not yet built: FFA paranoid search, an opening book, multithreading, and
-bitboards. Repetition detection and int8 SIMD for the hidden layers landed in
-v7.
+**Phase 5 is done.** Free-for-all plays, as of v8. The C core searches it
+paranoid -- every node in the root seat's terms, since FFA is not zero-sum
+between any two seats and negamax does not apply -- and the engine evaluates it
+with net-ffa1, the first net trained on FFA self-play. Against the hand eval
+FFA played before: **+106.05 ± 5.55** over 10,000 games on a clock, and
+**+67.35 ± 10.38** at fixed nodes. All five setups are 8-10 sigma positive and
+one net covers them.
+
+Not yet built: multithreading and bitboards. An opening book landed for both
+modes; the FFA one is committed at `books/`. No null self-test has been run on
+the FFA fixed-time instrument -- the confirm is 19 sigma, but it is owed.
 
 ## License and credit
 

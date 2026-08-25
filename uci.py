@@ -85,7 +85,7 @@ def load_bundle(path):
     return out
 #: Integer release number. Incremented once per CONFIRMED Elo gain, never
 #: for a dormant toggle or a tooling change. See docs/RELEASING.md.
-VERSION = "7"
+VERSION = "8"
 AUTHOR = "IchNukeDichWeg"
 
 

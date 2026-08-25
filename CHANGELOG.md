@@ -8,6 +8,86 @@ See [`docs/RELEASING.md`](docs/RELEASING.md) for the rules and
 Distribution shown is the nine-bucket seat rotation (score sums 0, 0.5, 1 … 4),
 never a pentanomial -- one opening here is four games, not two.
 
+## v8 -- FFA
+
+Free-for-all is playable. It was parsed, generated and perft-tested from the
+start, but the search refused it: FFA is not zero-sum between any two seats, so
+negamax does not apply. The C core now searches it paranoid -- every node scored
+in the ROOT seat's terms, maximised at its own nodes and minimised at the other
+three -- alongside the untouched Teams loop.
+
+The engine plays FFA with **net-ffa1**, the first net trained on FFA self-play:
+50,000 games at 7,500 nodes with the hand eval teaching, 13,222,513 positions,
+epoch 2 of 8 selected on held-out loss.
+
+```
+Elo   | +106.05 +/- 5.55 (95%)
+SPRT  | none -- a fixed-budget confirm, not a sequential test
+Conf  | FIXED TIME movetime 100, hash 16, workers 96, book of 20,000 FFA
+      | positions across all five setups, mode FFA
+Games | 10,000 (2,500 openings x 4 rotations)   score 6,480.50 (64.8%)
+Dist  | 0, 3, 21, 68, 121, 176, 334, 360, 421, 400, 304, 210, 82
+      | THIRTEEN buckets -- an FFA rotation sums in thirds, not halves
+Null  | NOT RUN at this instrument. Owed, and named here rather than implied.
+Base  | the hand evaluation. There is no previous FFA version; v7 refused to
+      | search the mode at all.
+Bench | 93,846,865 nodes perft, 597,903 search
+Pins  | unchanged on all five setups -- the Teams tree did not move
+```
+
+Per setup, ~2,000 games each: classic **+129.09 +/- 12.35**, rg **+109.04 +/-
+12.90**, by **+102.73 +/- 12.45**, byg **+95.39 +/- 12.46**, modern **+94.33
++/- 11.84**. Strongest where it trained, 8-10 sigma everywhere, 35 Elo between
+best and worst -- so one net serves all five and the two-net split the Teams
+bundle needs does not repeat.
+
+At fixed nodes 20,000 over 2,500 games it read **+67.35 +/- 10.38**. Two
+instruments, both confirms, and the fixed-time number is the larger -- the
+reverse of net v4 in Teams. No explanation is offered for that.
+
+### What else changed
+
+- **A transposition table for the paranoid search**, CONFIRMED at **+15.90 +/-
+  7.28** over 2,500 games at fixed nodes. FFA had none; iterative deepening to
+  depth 7 falls from 47.4M nodes to 24.3M with it.
+- **movetime is enforced mid-depth.** The budget was checked only between
+  iterative-deepening iterations, and one FFA ply costs ~17x the last, so a
+  single iteration overran a 200ms budget by an order of magnitude on a slow
+  machine. A fixed-time instrument that always reaches the same depth is a
+  fixed-DEPTH instrument wearing the wrong label. The next iteration now gets a
+  node cap of (observed nps x time remaining). Teams stays inside budget and
+  its node counts are unchanged.
+- **The FFA rules model**, all of RULES.md section 8: capture points, the +20
+  for an elimination, and the multi-check bonuses. FFA is a points race and
+  nothing was awarding points, so a game had no result at all.
+- **Repetition detection, elimination and the game loop** in FFA, and `match.py`,
+  `gen_data.py`, `book.py` and the net bundle all understand the mode.
+- **uci.py replays only the new moves** of a `position` command. Rebuilding from
+  move one is O(n^2) over a game -- invisible in Teams at ~100 plies, 3.9x on an
+  FFA match at ~250.
+
+### Rejected or void in this window
+
+- **The FFA fixed-time readings before the movetime fix are VOID**: +18.30 +/-
+  14.88 at movetime 200 and +75.71 +/- 17.21 at movetime 100, same engines and
+  same book, 2.5 sigma apart. A clock that moves the answer 57 Elo when halved
+  was not measuring a clock. Both are kept in docs/AB.md as the evidence.
+- **net-v5 in FFA**, a Teams net handed to the mode, screened at **-124.50 +/-
+  49.31**. FFA falls back to the hand eval rather than a Teams net, and says so.
+
+### Known limits
+
+- No null self-test at movetime 100 in FFA. The confirm is 19 sigma and a null
+  will not move it, but it is owed.
+- net-ffa1 trained on `classic` self-play alone. It generalises -- 35 Elo across
+  the five -- but generation 2 should use `--setup all`.
+- FFA training data gets no perspective augmentation: a paranoid score is in the
+  mover's terms and does not convert to another seat, so a game yields a quarter
+  the rows a Teams game does.
+- Validation bottomed at epoch 2 and worsened for six consecutive epochs. The
+  next FFA generation wants `--epochs 3`, not 8.
+- Source release. `Makefile` builds a distributable, but nothing is attached.
+
 ## v7 -- net v5
 
 The engine plays with net v5. Generation 5: 125,000 self-play games at 7,500
