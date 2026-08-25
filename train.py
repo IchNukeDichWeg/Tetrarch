@@ -596,6 +596,20 @@ def main():
     history = []
     run_started = time.time()
 
+    # The full shuffle stays. A block shuffle -- shuffling the ORDER of large
+    # contiguous blocks and rows only within one -- was built and REJECTED on
+    # measurement. The premise was that random gathers collapse once the cache
+    # outgrows memory, and in isolation they do: 14.0M rows/s at 0.1 GB against
+    # 325k at 5.1 GB, and a block shuffle gathers 5.5x faster at that size.
+    #
+    # End to end it is worth nothing. On a 4.82 GB cache of 37,685,672 rows:
+    # 371s an epoch full-shuffled, 376s block-shuffled, 1.4% the wrong way.
+    # The epoch runs at 101,579 rows/s where the forward, backward and Adam
+    # step alone manage 131,813 -- so it is already ~78% math-bound and there
+    # is no locality left to recover. The microbenchmark measured a cost that
+    # is not on the critical path.
+    #
+    # Do not rebuild it without a profile showing the gather is dominant.
     for epoch in range(1, args.epochs + 1):
         started = time.time()
         rng.shuffle(train_index)
