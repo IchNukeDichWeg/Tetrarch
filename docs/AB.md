@@ -1046,6 +1046,42 @@ chess proportions.
 
 ---
 
+### FFA repetition detection -- KEPT ON NULL
+
+| | |
+|---|---|
+| Instrument | fixed time, movetime 100 |
+| Elo | **+0.96 +/- 3.78** |
+| Games | 10,000 (2,500 complete rotations) |
+| Dist | 2, 14, 43, 106, 222, 481, 767, 437, 262, 110, 37, 16, 3 |
+| Placement | 2550/2463/2461/2526 |
+| Per setup | by +7.90, modern +3.04, byg -1.00, classic -1.88, rg -3.33, all +/- ~8 |
+
+`--opt-b Repetitions=false`, both sides the hand eval. Worth nothing at 0.25
+sigma, and no setup moves. Kept on anyway, and for the reason the Teams version
+was: without it the search cannot score a draw it is walking into, which is a
+rules gap rather than a tuning choice. The toggle exists so the claim could be
+measured like any other, and now it has been.
+
+Note what this is NOT: a null. The toggle changes the tree -- 110,732 nodes
+against 150,203 on a constructed eight-ply cycle -- so the two engines really
+do differ. What it does show is that the FFA fixed-time harness carries no seat
+bias at this scale: A placed 2550/2463/2461/2526 against 2,500 expected.
+
+### Teams null self-test at fixed time, after the movetime fix -- PASSES
+
+| | |
+|---|---|
+| Instrument | fixed time, movetime 200, classic, Teams |
+| Elo | **-0.00 +/- 14.24** |
+| Games | 2,000 (500 complete rotations), score 1000.00 |
+| Dist | 23, 3, 116, 6, 205, 9, 109, 4, 25 |
+
+Run because enforcing movetime mid-depth changed Teams play at fixed time --
+Teams now spends about 0.87x of its budget where it spent all of it. Every
+Teams fixed-time number in this file was taken before that, so the instrument
+had to be re-certified rather than assumed intact. It is.
+
 ### FFA transposition table -- CONFIRMED, default on
 
 | | |
