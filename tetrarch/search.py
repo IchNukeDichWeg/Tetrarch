@@ -127,6 +127,21 @@ def search(board, limits, info=None, repetitions=()):
             remaining_nodes = limits.nodes - out.nodes
             if remaining_nodes <= 0:
                 break
+        elif budget is not None and out.nodes and out.elapsed > 0:
+            # Cap the next iteration by NODES so it cannot overrun the clock.
+            # The budget is only checked between depths, and one FFA ply costs
+            # ~17x the last, so a single iteration can blow a 200ms budget by
+            # an order of magnitude. On a machine fast enough to finish the ply
+            # anyway this never binds; on a slower one it is the difference
+            # between movetime meaning what it says and the search quietly
+            # running to a fixed DEPTH while the clock is ignored. Measured on
+            # a 96-core box: every move took ~660ms whether it was told 100ms
+            # or 200ms, because depth 4 cost that much and nothing stopped it.
+            left_ms = budget - out.elapsed * 1000.0
+            if left_ms <= 0:
+                break
+            remaining_nodes = max(1, int(out.nodes / out.elapsed
+                                         * (left_ms / 1000.0)))
 
         r = core.search(board, depth, remaining_nodes, repetitions)
         out.nodes += r.nodes
