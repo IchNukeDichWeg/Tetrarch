@@ -86,7 +86,9 @@ reverse of net v4 in Teams. No explanation is offered for that.
   the rows a Teams game does.
 - Validation bottomed at epoch 2 and worsened for six consecutive epochs. The
   next FFA generation wants `--epochs 3`, not 8.
-- Source release. `Makefile` builds a distributable, but nothing is attached.
+- Source release: `tetrarch-v8.tar.gz` is the committed tree at the tag,
+  extracted and selftested before it was attached. No compiled binary --
+  the C core is built per machine by `setup.sh`.
 
 ## v7 -- net v5
 

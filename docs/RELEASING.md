@@ -65,6 +65,16 @@ long-form record.
 
 ## Assets
 
-None yet. `Makefile` produces a distributable binary at some point; until then
-these are source releases and the note says so rather than shipping nothing
-silently.
+`make dist REF=vN` writes `tetrarch-vN.tar.gz` and it gets attached to the
+release. It is `git archive` at the tag, so the tarball is exactly the
+committed tree -- no build output, no `.venv`, nothing uncommitted -- with the
+nets and the FFA book in it.
+
+**Extract it, build it and run the selftest before attaching.** An asset nobody
+has run is worse than no asset: it is the one thing a stranger tries first.
+
+Still a SOURCE release. There is no compiled binary because the engine is
+Python plus a C shared library that `setup.sh` builds per machine, and shipping
+a `.so` for one architecture would be worse than shipping none. A real binary
+asset means choosing which platforms to build for, and that is a project
+rather than a step.
