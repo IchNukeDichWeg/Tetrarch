@@ -756,6 +756,13 @@ function showNetNote(){
   }
   const e = netInfo.find(n => n.file === file);
   if (!e){ el.textContent = ""; return; }
+  // `auto` is a dispatch rule, not a net, so it has no Elo of its own and the
+  // "no usable result" warning below does not apply to it. Its own note says
+  // which net it resolves to.
+  if (file === "auto"){
+    el.innerHTML = '<div class="note">' + e.note + "</div>";
+    return;
+  }
   const cls = e.elo === null || e.elo === undefined ? "warn"
             : (e.elo > 0 ? "good" : "bad");
   const tempo = (e.file === "net-v4.nnue" || e.file === "net-v5.nnue")
