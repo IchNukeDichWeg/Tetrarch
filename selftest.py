@@ -1542,6 +1542,24 @@ def test_ffa_multicheck():
           "%d moves scored a multi-check" % forks)
 
 
+def test_ffa_multipv_info():
+    section("FFA MultiPV info contract")
+    # search_multi's info callback receives a LIST per depth. The FFA deferral used to hand that
+    # callback straight to search(), whose callback gets a bare Result -- so an FFA `go` with
+    # MultiPV set died with "'Result' object is not iterable" before one info line (2026-08-26,
+    # found driving FFA analysis from the Mephisto host). The deferral adapts now; this pins it.
+    from tetrarch.search import search_multi, Limits
+    b = start_board(mode=MODE_FFA)
+    got = []
+    rs = search_multi(b, Limits(nodes=2000), 5, lambda lines: got.append(lines))
+    check("FFA search_multi with lines=5 answers instead of throwing",
+          isinstance(rs, list) and len(rs) == 1 and rs[0].best is not None,
+          repr(rs[:1]))
+    check("...and every info callback got a LIST, the multi contract",
+          got and all(isinstance(x, list) and len(x) == 1 for x in got),
+          repr([type(x).__name__ for x in got[:3]]))
+
+
 def test_ffa_elimination():
     section("FFA elimination (7, 8.2)")
 
@@ -3450,6 +3468,7 @@ def main():
     test_search(workers)
     test_ffa_search(workers)
     test_ffa_points()
+    test_ffa_multipv_info()
     test_ffa_elimination()
     test_ffa_multicheck()
     test_net_bundle()

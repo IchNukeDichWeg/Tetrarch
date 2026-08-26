@@ -75,7 +75,9 @@ info depth <d> score cp <n> nodes <n> nps <n> time <ms> pv <move>
 info depth <d> score mate <n> ...
 ```
 
-`score` is from the perspective of the side to move's **team**. In Teams the
+`score` is from the perspective of the side to move's **team**; in FFA (not
+zero-sum) it is the ROOT seat's own paranoid value -- no negation relates one
+seat's outlook to another's. In Teams the
 seat rotation alternates team every ply, so this is a well-defined two-player
 score (§2). `mate n` counts the mating team's own moves.
 
@@ -87,8 +89,10 @@ counted in TEAM moves, not plies, since a team moves once per two seats.
 
 ## Not implemented yet
 
-* **FFA search** -- `go` in FFA mode prints an `info string` and returns the
-  first legal move. Paranoid search is Phase 5.
+* **MultiPV in FFA** -- the paranoid search prices ONE line whatever MultiPV
+  asks for (ranking every root move for one fixed root needs a C entry that
+  takes the root explicitly); the single line is streamed under the multi
+  contract. FFA itself searches since v8.
 * **`stop` / `ponder`** -- single-threaded (divergence 5).
 * **Repetition and the 50-move rule inside the search** -- `match.py` adjudicates
   the 50-move draw at the game level. Item 2 and 3 in §14 are still open, and

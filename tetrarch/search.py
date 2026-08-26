@@ -200,7 +200,12 @@ def search_multi(board, limits, lines=1, info=None, repetitions=()):
     # needs a C entry that takes the root explicitly.
     # ponytail: analysis-only feature, and one right line beats four wrong ones.
     if lines <= 1 or board.mode != MODE_TEAMS:
-        best = search(board, limits, info, repetitions)
+        # `info` here follows THIS function's contract -- a LIST of results per depth -- but the
+        # deferral hands it to search(), whose callback gets a bare Result. Unadapted, an FFA `go`
+        # with MultiPV set died with "'Result' object is not iterable" before a single info line
+        # (found 2026-08-26 driving FFA analysis from the Mephisto host).
+        single = (lambda r: info([r])) if info else None
+        best = search(board, limits, single, repetitions)
         return [best] if best.best else []
 
     lines = min(lines, len(legal))
