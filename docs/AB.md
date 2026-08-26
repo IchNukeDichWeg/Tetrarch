@@ -47,6 +47,38 @@ Fixed by keying on the side as well.
 
 ## Results
 
+### Net v9 retrained with the split and E-01 fixes -- REJECTED
+
+| | fixed nodes 20,000 | fixed time 200ms |
+|---|---|---|
+| Elo vs net-v5 | **-14.46 +/- 6.33** | **-31.77 +/- 6.40** |
+| Games | 10,000 | 10,000 |
+| Dist | 142, 29, 579, 109, 938, 110, 475, 26, 92 | 171, 26, 682, 79, 960, 52, 434, 11, 85 |
+
+The same 250,000 games the original net v9 was trained on, retrained with the
+two bugs that were live through all five failed generations now fixed: the
+validation split leaked across games, so the epoch table chose on a number that
+did not mean what it said, and E-01 had the extras arriving at the wrong scale.
+
+**The fixes were not the cause.** The original v9 measured -71.36; this reads
+-31.77 at fixed time. That is a large move and the fixes are worth having, but
+generation 9 data still does not produce a net that beats net-v5, so whatever
+stopped the loop compounding after v5 is something else.
+
+**This is not a clean test, and the gap should not be quoted as the value of
+the fixes.** The retrain ran 2 epochs where the original ran 8 -- the box died
+during epoch 3 and 39 minutes an epoch made restarting a bad trade. Validation
+was still improving from epoch 1 to 2 when it stopped, so the net is
+undertrained rather than converged. A fair comparison needs the same 8 epochs
+and is waiting on a GPU box.
+
+What this does close: five generations were blamed on two bugs, and the bugs
+are not enough. The next hypothesis has to be about the data or the recipe --
+self-play from a strong teacher losing diversity, the lambda blend, or the
+capacity of a 3840-256-32-32-1 net on this distribution -- not about the
+trainer being broken.
+
+
 ### Net v0 -- REJECTED
 
 | | |
