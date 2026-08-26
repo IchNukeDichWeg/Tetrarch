@@ -157,6 +157,12 @@ class Engine:
             from tetrarch import nnue
             core.load_net(nnue.Net.load(want))
             self.net = want
+            # Said out loud on every switch. The bundle dispatch was silent,
+            # so nothing in the protocol told you which evaluation was
+            # playing -- and an A/B run against the wrong net is a campaign
+            # thrown away, which has happened here once already.
+            print("info string %s %s -> %s"
+                  % (MODE_NAMES[self.mode], self.setup, os.path.basename(want)))
         except Exception as exc:                                # noqa: BLE001
             print("info string could not load %s: %s" % (want, exc))
 
