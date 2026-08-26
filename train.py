@@ -55,6 +55,103 @@ WQ_CLIP = 127.0 / QB
 
 # --- phase 1: cache ---------------------------------------------------------
 
+class TorchTrainer:
+    """The same net, the same optimiser, on torch tensors.
+
+    Same architecture, same initial weights, same Adam, same quantisation
+    clips, and the export goes through quantise() untouched -- so a net trained
+    here loads in the C core exactly like a NumPy-trained one. What differs is
+    only where the matmuls run, which is the point: --device mps or cuda puts
+    them on a GPU.
+
+    Built because the epoch is math-bound, not IO-bound. Measured on a 4.82 GB
+    cache: 101,579 rows/s for the epoch against 131,813 for forward, backward
+    and the Adam step alone -- ~78% of the wall clock is arithmetic, so a
+    faster gather buys nothing and faster arithmetic buys everything.
+    """
+
+    def __init__(self, seed, lr, device):
+        try:
+            import torch
+        except ImportError:
+            raise SystemExit(
+                "--device %s needs torch, which is not installed.\n"
+                "  pip install torch        (or --break-system-packages, or a venv)\n"
+                "  --device numpy is the default and needs nothing."
+                % device)
+        self.torch = torch
+        self.device = torch.device(device)
+        # Initialised FROM the NumPy model, so both backends start from
+        # identical weights for a given seed. Anything else and the two are not
+        # comparable -- a different init is a different experiment, and the
+        # whole value of this port is being able to check it against the
+        # trainer every shipped net came from.
+        ref = Model(seed)
+        self.names = ref.names
+        for name in self.names:
+            setattr(self, name,
+                    torch.tensor(getattr(ref, name), dtype=torch.float32,
+                                 device=self.device, requires_grad=True))
+        self.opt = torch.optim.Adam([getattr(self, n) for n in self.names],
+                                    lr=lr, betas=(0.9, 0.999), eps=1e-8)
+
+    def _forward(self, feats, extras):
+        t = self.torch
+        safe = t.where(feats >= 0, feats,
+                       t.full_like(feats, nnue.NFEATURES)).long()
+        # embedding_bag, not w1[safe].sum(dim=1). The latter materialises a
+        # (batch, MAX_FEATURES, L1) intermediate before reducing it -- 67 MB at
+        # batch 1024 and 4.3 GB at 65,536 -- which is why the naive version got
+        # SLOWER as the batch grew, exactly backwards for a GPU. This fuses the
+        # gather and the sum. padding_idx makes the pad row contribute nothing
+        # and take no gradient, which is what NumPy gets by building its
+        # indicator from active slots only.
+        acc = t.nn.functional.embedding_bag(
+            safe, self.w1, mode="sum", padding_idx=nnue.NFEATURES) + self.b1
+        x = t.cat([acc.clamp(0.0, 1.0), extras], dim=1)
+        h1 = (x @ self.w2.T + self.b2).clamp(0.0, 1.0)
+        h2 = (h1 @ self.w3.T + self.b3).clamp(0.0, 1.0)
+        return h2 @ self.w4 + self.b4
+
+    def step(self, feats, extras, want):
+        t = self.torch
+        pred = t.sigmoid(self._forward(feats, extras) * (127.0 / SCALE_CP))
+        loss = ((pred - want) ** 2).mean()
+        self.opt.zero_grad(set_to_none=True)
+        loss.backward()
+        self.opt.step()
+        with t.no_grad():
+            self.w1.clamp_(-W1_CLIP, W1_CLIP)
+            self.b1.clamp_(-W1_CLIP, W1_CLIP)
+            self.w1[nnue.NFEATURES].zero_()
+            for name in ("w2", "b2", "w3", "b3", "w4", "b4"):
+                getattr(self, name).clamp_(-WQ_CLIP, WQ_CLIP)
+        return float(loss)
+
+    def loss_on(self, feats, extras, want):
+        with self.torch.no_grad():
+            pred = self.torch.sigmoid(
+                self._forward(feats, extras) * (127.0 / SCALE_CP))
+            return float(((pred - want) ** 2).mean())
+
+    def batch(self, features, extras, want):
+        """numpy -> device tensors. Per batch rather than up front: a
+        generation-9 cache is 9.3 GB of features and does not fit on a GPU."""
+        t = self.torch
+        return (t.from_numpy(features.astype(np.int32)).to(self.device),
+                t.from_numpy(np.ascontiguousarray(extras)).to(self.device),
+                t.from_numpy(np.ascontiguousarray(want)).to(self.device))
+
+    def to_model(self):
+        """A NumPy Model, so quantise() and the checkpoint path are unchanged."""
+        out = Model.__new__(Model)
+        out.names = self.names
+        for name in self.names:
+            setattr(out, name,
+                    getattr(self, name).detach().cpu().numpy().astype(np.float32))
+        return out
+
+
 def _clock(secs):
     """m:ss under an hour, h:mm over it. Same shape match.py prints."""
     secs = int(max(secs, 0))
@@ -535,6 +632,12 @@ def main():
                     help="checkpoint directory; required, no default")
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch", type=int, default=1024)
+    ap.add_argument("--device", default="numpy",
+                    choices=("numpy", "cpu", "mps", "cuda"),
+                    help="where the training math runs. numpy is the trainer "
+                         "every shipped net came from and is the default; cpu, "
+                         "mps and cuda run the identical net through torch, "
+                         "which needs torch installed")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--lambda", dest="blend", type=float, default=0.7,
                     help="score/result blend, 1.0 = pure score")
@@ -590,8 +693,15 @@ def main():
     print("holding out %d of %d games (%d of %d positions)"
           % (len(held), len(ids), len(val_index), n))
 
+    # --device numpy is the trainer every shipped net came from and stays the
+    # default. Anything else runs the same net through torch, which is only
+    # worth it because the epoch is arithmetic-bound.
+    trainer = None
     model = Model(args.seed)
     opt = Adam(model, lr=args.lr)
+    if args.device != "numpy":
+        trainer = TorchTrainer(args.seed, args.lr, args.device)
+        print("training on %s (torch)" % args.device)
     best = float("inf")
     history = []
     run_started = time.time()
@@ -618,14 +728,17 @@ def main():
             sel = train_index[start:start + args.batch]
             features = data["features"][sel]
             extras = extras_for_training(data["extras"][sel])
-            out, cache = model.forward(features, extras)
             want = targets_for(data["cp"][sel], data["result"][sel], args.blend)
-            pred = _sigmoid(out * 127.0 / SCALE_CP)
-            # d/dout of MSE through the sigmoid.
-            d_out = (2.0 * (pred - want) * pred * (1 - pred)
-                     * 127.0 / SCALE_CP).astype(np.float32)
-            opt.step(model.backward(cache, d_out))
-            running += float(((pred - want) ** 2).mean())
+            if trainer is not None:
+                running += trainer.step(*trainer.batch(features, extras, want))
+            else:
+                out, cache = model.forward(features, extras)
+                pred = _sigmoid(out * 127.0 / SCALE_CP)
+                # d/dout of MSE through the sigmoid.
+                d_out = (2.0 * (pred - want) * pred * (1 - pred)
+                         * 127.0 / SCALE_CP).astype(np.float32)
+                opt.step(model.backward(cache, d_out))
+                running += float(((pred - want) ** 2).mean())
             batches += 1
             if not args.quiet and batches % 200 == 0:
                 done = start + len(sel)
@@ -642,6 +755,8 @@ def main():
                          _clock(now - run_started), _clock(left / max(rate, 1e-9))),
                       flush=True)
 
+        if trainer is not None:
+            model = trainer.to_model()      # for evaluate_loss and quantise
         val = evaluate_loss(model, data, val_index, args.batch, args.blend)
         secs = time.time() - started
         train_loss = running / max(batches, 1)
