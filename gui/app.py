@@ -49,10 +49,34 @@ ENGINE_LOCK = threading.Lock()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NETS_DIR = os.path.join(os.path.dirname(HERE), "nets")
-#: What both pages evaluate with unless told otherwise. Net v4 beats the hand
-#: eval by +140.01 +/- 16.97 at fixed nodes, so it is the strongest evaluation
-#: here and the sensible thing to show a human. Pass "none" for the hand eval.
+#: Teams fallback when nets/bundle.txt cannot answer. Pass "none" for the hand
+#: eval.
 DEFAULT_NET = "net-v5.nnue"
+
+#: The same manifest uci.py dispatches on, so the browser plays what the engine
+#: plays. It was hardcoded to DEFAULT_NET for both modes, which meant an FFA
+#: game in the GUI was evaluated by a TEAMS net -- exactly what the bundle
+#: exists to prevent, and what uci.py refuses to do. net-v5 screened at
+#: -124.50 +/- 49.31 in FFA against the hand eval it would have replaced.
+BUNDLE = {}
+try:
+    import uci as _uci                                          # noqa: E402
+    BUNDLE = _uci.load_bundle(os.path.join(NETS_DIR, "bundle.txt"))
+except Exception:                                               # noqa: BLE001
+    pass
+
+
+def _bundled_net(mode, setup):
+    """Basename the bundle picks, or None for the hand eval.
+
+    FFA with no bundle line gets the hand eval rather than DEFAULT_NET, for the
+    reason uci.py does the same: the default is a Teams net, and handing it to
+    FFA is the mistake, not the fallback.
+    """
+    picked = BUNDLE.get((mode, setup))
+    if picked:
+        return os.path.basename(picked)
+    return DEFAULT_NET if mode == MODE_TEAMS else None
 
 
 @app.route("/")
@@ -182,8 +206,9 @@ def api_play_engine():
     if game.resolve(board):
         return jsonify(_render_state(board))
     movetime = max(50, min(int(payload.get("movetime", 1000)), 30000))
-    want_net = payload.get("net")
-    want_net = DEFAULT_NET if want_net is None else want_net.strip()
+    want_net = (payload.get("net") or "auto").strip()
+    if want_net == "auto":
+        want_net = _bundled_net(mode, payload.get("setup", DEFAULT_SETUP)) or ""
     with ENGINE_LOCK:
         note = _select_net(want_net)
         core.clear_hash()
@@ -288,7 +313,7 @@ NET_ELO = [
              "whole NNUE phase rested on. There is no v3: that generation's "
              "data was discarded."},
     {"file": "net-v5.nnue", "label": "v5", "vs": "v4",
-     "elo": 7.78, "err": 4.61, "default": True,
+     "elo": 7.78, "err": 4.61,
      "note": "Shipped in v7: the engine's evaluation. Against net v4, "
              "+7.78 \u00b1 4.61 at fixed time and +10.50 \u00b1 4.59 at "
              "fixed nodes, 20,000 games each. A third compounding "
@@ -307,13 +332,22 @@ def api_version():
 def api_play_nets():
     """Nets on disk, each with what it measured against the previous one.
 
-    Net v5 is the engine's evaluation as of v7 and the default here. v0 and v1
-    lost; v2 is void, having been trained on data a broken engine produced.
+    The default is `auto`, which follows nets/bundle.txt for whichever mode the
+    board is in -- the same dispatch uci.py uses. Naming a net here instead
+    meant the page sent net-v5 on every request, so an FFA game in the browser
+    was evaluated by a TEAMS net; net-v5 screened at -124.50 +/- 49.31 in FFA.
+
+    v0 and v1 lost; v2 is void, having been trained on data a broken engine
+    produced; v9r is a rejection kept so it stays checkable.
     """
     try:
         found = set(n for n in os.listdir(NETS_DIR) if n.endswith(".nnue"))
     except OSError:
         found = set()
+    auto = [{"file": "auto", "label": "bundled (follows the mode)",
+             "note": "nets/bundle.txt: net-v5 or net-v7 in Teams by setup, "
+                     "net-ffa1 in FFA. The same choice the engine makes.",
+             "default": True}]
     known = {e["file"]: e for e in NET_ELO}
     order = {e["file"]: i for i, e in enumerate(NET_ELO)}
     nets = []
@@ -324,7 +358,7 @@ def api_play_nets():
                                       "note": "not measured"}))
         entry["file"] = name
         nets.append(entry)
-    return jsonify({"nets": nets})
+    return jsonify({"nets": auto + nets})
 
 
 @app.route("/api/parse", methods=["POST"])
@@ -393,7 +427,9 @@ def api_eval():
     # score rather than a bound; that costs several times the nodes, which is
     # why it is asked for rather than always on.
     lines = max(1, min(int(payload.get("lines", 1)), 8))
-    want = payload.get("net", DEFAULT_NET)
+    want = (payload.get("net") or "auto").strip()
+    if want == "auto":
+        want = _bundled_net(mode, payload.get("setup", DEFAULT_SETUP)) or "none"
     with ENGINE_LOCK:
         # Selected inside the lock: the loaded net is global state, so without
         # this the viewer would analyse with whatever the play page left behind.
