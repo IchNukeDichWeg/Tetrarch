@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Tetrarch GPU session -- TRAINING ONLY.
 #
-# Verify CUDA, build the generation-9 cache once, and train three nets from it
-# at lambda 0.5 / 0.7 / 0.85. Nothing here plays a game: match.py spawns engine
+# Verify CUDA, build the generation-9 cache once, and train six nets from it:
+# lambda 0.5 / 0.7 / 0.85 / 1.0, plus lambda 0.7 twice more at different seeds
+# to measure the noise floor the others are read against.
+#
+# Nothing here plays a game: match.py spawns engine
 # subprocesses that run the C core on the CPU and never touch the GPU, so
 # screening on a rented GPU box is paying GPU rates for CPU work on a machine
 # that usually has few cores. The screens live in scripts/screen-sweep.sh and
 # belong on something cheap and wide.
 #
-# One cache serves all three nets: lambda blends cp and result at batch time
+# One cache serves all six nets: lambda blends cp and result at batch time
 # and never touches the features.
 #
 # Out: ~/tetrarch-nets.tar.gz -- three nets and their epoch tables, ~6 MB, so
@@ -48,35 +51,49 @@ if gap > 0.02:
 print("  cuda agrees with the trainer every shipped net came from.")
 GATE
 
-echo "=== 3. the full cache, built once and reused by all three nets ==="
+echo "=== 3. the full cache, built once and reused by all six nets ==="
 python3 train.py --data runs/games/games_v9.jsonl --cache runs/cache/v9.npz \
   --augment --cache-workers 0 --out /tmp/cacheonly --epochs 1 --device cuda \
   | tee runs/logs/cache.txt
 
-echo "=== 4. lambda sweep: three nets from one cache ==="
-for L in 0.5 0.7 0.85; do
-  tag=$(echo "$L" | tr -d .)
-  echo "--- lambda $L ---"
-  python3 train.py --cache runs/cache/v9.npz --out nets/v9_l$tag \
-    --epochs 8 --lambda "$L" --device cuda | tee runs/logs/lambda$tag.txt
-  cp nets/v9_l$tag/net-best.nnue nets/net-v9l$tag.nnue
+# Six nets from the one cache. "tag lambda seed":
+#
+#   l05  l07  l085  l10   -- the lambda sweep at seed 0. 1.0 is pure score,
+#                            the control that asks whether blending in the
+#                            game result does anything at all.
+#   s1  s2              -- lambda 0.7 again at seeds 1 and 2. THE NOISE FLOOR,
+#                            and the reason the rest is interpretable: if two
+#                            nets that differ only by initialisation land 20
+#                            Elo apart, then a lambda separated by 15 Elo has
+#                            said nothing. Without this the sweep cannot be
+#                            read, only believed.
+RUNS="l05:0.5:0 l07:0.7:0 l085:0.85:0 l10:1.0:0 s1:0.7:1 s2:0.7:2"
+
+echo "=== 4. six nets from one cache ==="
+for spec in $RUNS; do
+  tag=${spec%%:*}; rest=${spec#*:}; L=${rest%%:*}; S=${rest##*:}
+  echo "--- $tag: lambda $L, seed $S ---"
+  python3 train.py --cache runs/cache/v9.npz --out nets/v9_$tag \
+    --epochs 8 --lambda "$L" --seed "$S" --device cuda | tee runs/logs/$tag.txt
+  cp nets/v9_$tag/net-best.nnue nets/net-v9$tag.nnue
 done
 
-echo "=== 5. the epoch each lambda chose ==="
+echo "=== 5. the epoch each run chose ==="
 {
-  for tag in 05 07 085; do
-    echo "== lambda 0.${tag#0} =="
-    grep -E "^epoch|best" runs/logs/lambda$tag.txt | tail -12
+  for spec in $RUNS; do
+    tag=${spec%%:*}; rest=${spec#*:}
+    echo "== $tag (lambda ${rest%%:*}, seed ${rest##*:}) =="
+    grep -E "^epoch|best" runs/logs/$tag.txt | tail -12
     echo
   done
 } | tee runs/logs/EPOCHS.txt
 
 echo "=== 6. export just the nets -- tiny, so it leaves the box fast ==="
-tar -czf ~/tetrarch-nets.tar.gz \
-  --transform='s,^,tetrarch-nets/,' \
-  nets/net-v9l05.nnue nets/net-v9l07.nnue nets/net-v9l085.nnue runs/logs
+tar -czf ~/tetrarch-nets.tar.gz --transform='s,^,tetrarch-nets/,' \
+  nets/net-v9l05.nnue nets/net-v9l07.nnue nets/net-v9l085.nnue \
+  nets/net-v9l10.nnue nets/net-v9s1.nnue nets/net-v9s2.nnue runs/logs
 ls -lh ~/tetrarch-nets.tar.gz
 echo
-echo "NEXT: pull that tarball, commit the three nets, then screen them on a"
+echo "NEXT: pull that tarball, commit the six nets, then screen them on a"
 echo "CPU box with scripts/screen-sweep.sh. Nothing left here needs a GPU."
 cat runs/logs/EPOCHS.txt
