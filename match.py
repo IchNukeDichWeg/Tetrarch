@@ -607,6 +607,39 @@ def summarise(by_opening, games, elapsed):
 
 # --- main -------------------------------------------------------------------
 
+def _cap_to_process_limit(nproc, mode):
+    """Lower `nproc` until the run fits inside RLIMIT_NPROC.
+
+    A worker holds one Python process plus one engine per side, and each engine
+    is `sh -c python3`, so two processes. Teams is 2 sides, FFA is 4 -- 5 and 9
+    processes per worker. On a 96-core box that is 480 or 864, and a container
+    with a modest pids limit refuses somewhere in the middle.
+
+    That is not hypothetical: an entire 3-net Teams sweep came back with 4,999
+    of 5,000 games reading `engine start: BlockingIOError(11, Resource
+    temporarily unavailable)`, which is fork() giving up. The games were lost,
+    the box time was paid for, and nothing said why until the log was read.
+
+    Capped at half the soft limit: the rest of the machine needs to fork too,
+    and a run that dies at game 4,000 is worth less than one that ran narrower.
+    """
+    try:
+        import resource
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NPROC)
+    except (ImportError, ValueError, OSError):
+        return nproc
+    if soft in (resource.RLIM_INFINITY, -1):
+        return nproc
+    per_worker = 1 + 2 * (4 if mode == "ffa" else 2)
+    room = max(1, int(soft * 0.5) // per_worker)
+    if nproc <= room:
+        return nproc
+    print("workers %d -> %d: RLIMIT_NPROC is %d and each worker needs %d "
+          "processes. Raise it with `ulimit -u` for the full width."
+          % (nproc, room, soft, per_worker), file=sys.stderr)
+    return room
+
+
 def jobs(count, args):
     """A generator, so Pool's thread-backed task handler feeds the workers
     lazily. A plain Queue deadlocks past 32767 items on macOS."""
@@ -731,6 +764,7 @@ def main():
         args.pgn4 = _free_path(args.pgn4)
 
     nproc = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
+    nproc = _cap_to_process_limit(nproc, args.mode)
     total = args.positions * ROTATIONS
     global BOOK
     if args.book:

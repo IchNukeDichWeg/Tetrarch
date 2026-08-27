@@ -1,62 +1,72 @@
 #!/usr/bin/env bash
-# Tetrarch: screen the lambda sweep. CPU ONLY -- rent cores, not a GPU.
+# Screen the trained nets. CPU ONLY -- rent cores, not a GPU.
 #
 # match.py spawns engine subprocesses running the C core; nothing here touches
-# a GPU, and throughput is workers-bound. A wide cheap box beats an expensive
-# narrow one by the ratio of their core counts.
+# a GPU, and throughput is workers-bound. A wide cheap box beats a narrow
+# expensive one by the ratio of their core counts.
 #
-# Expects the ten nets from scripts/gpu-session.sh to be committed, so a clone
-# has them. Screens each against net-v5 -- the current default, which is what a
-# confirm runs against -- at fixed nodes only. Fixed time decides, so whichever
-# wins earns its confirm afterwards rather than paying for ten.
+# The first attempt at this ran ON the GPU box and lost every game to
+# `BlockingIOError(11)` -- fork() refusing, because a worker needs five
+# processes in Teams and the container's pid limit could not take 96 of them.
+# match.py caps workers against RLIMIT_NPROC now, but the lesson stands: this
+# script belongs on a machine with cores to spare.
 #
-# 10 nets x 5,000 games. On 96 cores that is roughly an hour and a half; on
-# something narrow it is a day, which is the whole reason this is not on the
-# GPU box.
+# Teams nets screen against net-v5, FFA nets against net-ffa1 -- in both cases
+# the current default, which is what a confirm runs against.
 set -euo pipefail
 cd ~/Tetrarch
 mkdir -p runs/ab
 
+TEAMS="l05 l07 l085"
+FFA="f05 f07 f085 f10 fs1 fs2"
+
 echo "=== 0. sync and build ==="
 git fetch origin && git reset --hard origin/main && ./setup.sh
 
-TAGS="l05 l07 l085 l10 s1 s2 s3 e40s1 e40s2 e40s3"
+for t in $TEAMS; do [ -f "nets/net-v9$t.nnue" ] || { echo "MISSING nets/net-v9$t.nnue"; exit 1; }; done
+for t in $FFA;   do [ -f "nets/net-$t.nnue"   ] || { echo "MISSING nets/net-$t.nnue";   exit 1; }; done
 
-for tag in $TAGS; do
-  [ -f "nets/net-v9$tag.nnue" ] || {
-    echo "MISSING nets/net-v9$tag.nnue -- commit the nets the GPU run produced first."
-    exit 1
-  }
+echo "=== 1. Teams lambda sweep vs net-v5, fixed nodes ==="
+for t in $TEAMS; do
+  echo "--- $t ---"
+  python3 match.py 1250 --log runs/ab/v9${t}_nodes.jsonl --nodes 20000 \
+    --workers 0 --net-a nets/net-v9$t.nnue --net-b nets/net-v5.nnue
 done
 
-echo "=== 1. screen each lambda against net-v5 at fixed nodes ==="
-for tag in $TAGS; do
-  echo "--- $tag ---"
-  python3 match.py 1250 --log runs/ab/v9${tag}_nodes.jsonl --nodes 20000 \
-    --workers 0 --net-a nets/net-v9$tag.nnue --net-b nets/net-v5.nnue
+echo "=== 2. FFA sweep vs net-ffa1, fixed nodes ==="
+for t in $FFA; do
+  echo "--- $t ---"
+  python3 match.py 1250 --mode ffa --book books/book-ffa20k.txt \
+    --log runs/ab/${t}_nodes.jsonl --nodes 20000 \
+    --workers 0 --net-a nets/net-$t.nnue --net-b nets/net-ffa1.nnue
 done
 
-echo "=== 2. results ==="
+echo "=== 3. results ==="
 {
-  for tag in $TAGS; do
-    echo "== $tag vs net-v5, FIXED NODES =="
-    python3 match.py --summarise runs/ab/v9${tag}_nodes.jsonl
+  echo "### TEAMS -- lambda vs net-v5, fixed nodes 20,000"
+  for t in $TEAMS; do
+    echo "== $t =="; python3 match.py --summarise runs/ab/v9${t}_nodes.jsonl; echo
+  done
+  echo "  NO NOISE FLOOR FOR TEAMS. The seed replicates never ran, so a"
+  echo "  difference between these three cannot be separated from the spread"
+  echo "  two identical recipes would show anyway. Read them as direction, not"
+  echo "  as magnitude, until s1/s2/s3 exist."
+  echo
+  echo "### FFA -- vs net-ffa1, fixed nodes 20,000"
+  for t in $FFA; do
+    echo "== $t =="
+    python3 match.py --summarise runs/ab/${t}_nodes.jsonl --book books/book-ffa20k.txt
     echo
   done
-  echo "HOW TO READ THIS"
-  echo "  s1 s2 s3 are one recipe (lambda 0.7, 8 epochs) at three seeds. The"
-  echo "  spread across them is the NOISE FLOOR. Nothing else here means"
-  echo "  anything until you have it: a lambda that beats l07 by less than"
-  echo "  that spread has not been shown to differ from it."
-  echo
-  echo "  e40sN against sN is PAIRED -- same seed, same lambda, 8 epochs"
-  echo "  against 40. Compare each pair, then the three differences against"
-  echo "  each other. Do not pool the 40s and the 8s and compare the means."
-} | tee runs/ab/SWEEP.txt
+  echo "  f07, fs1 and fs2 are ONE recipe (lambda 0.7, 8 epochs) at seeds 0, 1"
+  echo "  and 2. The spread across those three is the NOISE FLOOR. Nothing else"
+  echo "  here means anything until you have it: f05, f085 or f10 beating f07"
+  echo "  by less than that spread has not been shown to differ from it."
+} | tee runs/ab/SCREENS.txt
 
-echo "=== 3. export ==="
+echo "=== 4. export ==="
 find runs/ab -type f -print0 \
-  | tar --null --transform='s,^,tetrarch-sweep/,' \
-        -czf ~/tetrarch-sweep.tar.gz --files-from=-
-ls -lh ~/tetrarch-sweep.tar.gz
-cat runs/ab/SWEEP.txt
+  | tar --null --transform='s,^,tetrarch-screens/,' \
+        -czf ~/tetrarch-screens.tar.gz --files-from=-
+ls -lh ~/tetrarch-screens.tar.gz
+cat runs/ab/SCREENS.txt

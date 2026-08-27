@@ -47,6 +47,56 @@ Fixed by keying on the side as well.
 
 ## Results
 
+### Epoch counts: Teams and FFA want opposite things
+
+Held-out loss only, no games. Both come from the generation-9 and FFA
+generation-1 caches on one GPU session, and neither needs an A/B to be read.
+
+**FFA overfits almost immediately.** Best epoch by held-out loss, 8-epoch runs:
+
+```
+f05   lambda 0.5    epoch 1        f10   lambda 1.0    epoch 4
+f07   lambda 0.7    epoch 2        fs1   lambda 0.7    epoch 1   (seed 1)
+f085  lambda 0.85   epoch 4        fs2   lambda 0.7    epoch 2   (seed 2)
+```
+
+net-ffa1, which ships, picked epoch 2 of 8. Every run agrees within a couple of
+epochs and held-out loss climbs monotonically after.
+
+**Forty epochs bought nothing.** f40s1 is lambda 0.7 at seed 1 run to 40
+epochs; it selected **epoch 1 of 40**, and `nets/net-f40s1.nnue` is
+byte-identical to `nets/net-fs1.nnue` -- md5 611e13f06b41918fd802f4311aac599b
+for both, and for `nets/ffa_f40s1/net-epoch01.nnue`. Thirty-nine epochs of GPU
+time produced a file that already existed. The 8-vs-40 comparison is not close
+in FFA; it is void, because there is nothing to compare.
+
+**Teams is the opposite: 8 epochs is too FEW.** All three Teams runs picked
+**epoch 8 of 8** -- still improving when the run ended. The 40-epoch Teams arm
+never ran, and it is now the interesting one.
+
+Why they differ is not measured, but the asymmetry has an obvious suspect: FFA
+gets no perspective augmentation, so 50,000 games yield 13.5M rows where a
+Teams generation of the same size yields four times that. Fewer rows, more
+passes over them, faster overfit.
+
+**Held-out loss does not compare ACROSS lambda.** Different blends are
+different targets, so f085's 0.00570 and f07's 0.00812 are not on one scale.
+Only the epoch each run chose transfers.
+
+### VOID: the first screen attempt died on a process limit
+
+The three Teams nets were screened on the GPU box and every game was lost:
+4,999 of 5,000 records carry `engine start: BlockingIOError(11, Resource
+temporarily unavailable)` or `engine died`. That is fork() refusing. A worker
+holds one Python process plus one engine per side, each engine being
+`sh -c python3`, so five processes in Teams and nine in FFA; ninety-six workers
+wanted 480 and the container's pid limit said no.
+
+Logs kept as `runs/ab/VOID_*_pidlimit.jsonl` and `runs/logs/VOID_SWEEP.txt`.
+match.py now caps `--workers 0` against RLIMIT_NPROC and says so on stderr
+rather than losing an hour of games to a limit nobody checked.
+
+
 ### Net v9 retrained with the split and E-01 fixes -- REJECTED
 
 | | fixed nodes 20,000 | fixed time 200ms |
