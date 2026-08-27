@@ -11,7 +11,7 @@
 # that usually has few cores. The screens live in scripts/screen-sweep.sh and
 # belong on something cheap and wide.
 #
-# One cache serves all ten nets: lambda blends cp and result at batch time
+# One cache serves all twelve nets: lambda blends cp and result at batch time
 # and never touches the features.
 #
 # Out: ~/tetrarch-nets.tar.gz -- three nets and their epoch tables, ~6 MB, so
@@ -51,7 +51,7 @@ if gap > 0.02:
 print("  cuda agrees with the trainer every shipped net came from.")
 GATE
 
-echo "=== 3. the full cache, built once and reused by all ten nets ==="
+echo "=== 3. the full cache, built once and reused by all twelve nets ==="
 python3 train.py --data runs/games/games_v9.jsonl --cache runs/cache/v9.npz \
   --augment --cache-workers 0 --out /tmp/cacheonly --epochs 1 --device cuda \
   | tee runs/logs/cache.txt
@@ -77,24 +77,30 @@ python3 train.py --data runs/games/games_v9.jsonl --cache runs/cache/v9.npz \
 #     the epoch table says so before a single game is played. The FFA run
 #     peaked at epoch 2 of 8 and generation 9 was still improving at 2, so
 #     both outcomes are live.
-RUNS="l05:0.5:0:8 l07:0.7:0:8 l085:0.85:0:8 l10:1.0:0:8 \
-      s1:0.7:1:8 s2:0.7:2:8 s3:0.7:3:8 \
-      e40s1:0.7:1:40 e40s2:0.7:2:40 e40s3:0.7:3:40"
+#
+# lr3e4 lr3e3 -- the learning rate at seed 1, paired against s1. 1e-3 is the
+#     default and has never been measured against anything; it is the last
+#     knob in train.py with no number behind it.
+RUNS="l05:0.5:0:8:1e-3 l07:0.7:0:8:1e-3 l085:0.85:0:8:1e-3 l10:1.0:0:8:1e-3 \
+      s1:0.7:1:8:1e-3 s2:0.7:2:8:1e-3 s3:0.7:3:8:1e-3 \
+      e40s1:0.7:1:40:1e-3 e40s2:0.7:2:40:1e-3 e40s3:0.7:3:40:1e-3 \
+      lr3e4:0.7:1:8:3e-4 lr3e3:0.7:1:8:3e-3"
 
-echo "=== 4. ten nets from one cache ==="
+echo "=== 4. twelve nets from one cache ==="
 for spec in $RUNS; do
-  IFS=: read -r tag L S E <<<"$spec"
-  echo "--- $tag: lambda $L, seed $S, $E epochs ---"
+  IFS=: read -r tag L S E LR <<<"$spec"
+  echo "--- $tag: lambda $L, seed $S, $E epochs, lr $LR ---"
   python3 train.py --cache runs/cache/v9.npz --out nets/v9_$tag \
-    --epochs "$E" --lambda "$L" --seed "$S" --device cuda | tee runs/logs/$tag.txt
+    --epochs "$E" --lambda "$L" --seed "$S" --lr "$LR" --device cuda \
+    | tee runs/logs/$tag.txt
   cp nets/v9_$tag/net-best.nnue nets/net-v9$tag.nnue
 done
 
 echo "=== 5. the epoch each run chose ==="
 {
   for spec in $RUNS; do
-    IFS=: read -r tag L S E <<<"$spec"
-    echo "== $tag (lambda $L, seed $S, $E epochs) =="
+    IFS=: read -r tag L S E LR <<<"$spec"
+    echo "== $tag (lambda $L, seed $S, $E epochs, lr $LR) =="
     grep -E "^epoch|best" runs/logs/$tag.txt | tail -8
     echo
   done
@@ -107,6 +113,6 @@ tar -czf ~/tetrarch-nets.tar.gz --transform='s,^,tetrarch-nets/,' \
   $(for spec in $RUNS; do echo "nets/net-v9${spec%%:*}.nnue"; done) runs/logs
 ls -lh ~/tetrarch-nets.tar.gz
 echo
-echo "NEXT: pull that tarball, commit the ten nets, then screen them on a"
+echo "NEXT: pull that tarball, commit the twelve nets, then screen them on a"
 echo "CPU box with scripts/screen-sweep.sh. Nothing left here needs a GPU."
 cat runs/logs/EPOCHS.txt
