@@ -1,10 +1,21 @@
 #!/usr/bin/env bash
-# Tetrarch GPU session: verify CUDA, retrain generation 9 at three lambdas,
-# screen all three, export. One cache serves every net -- lambda blends cp and
-# result at batch time and never touches the features.
+# Tetrarch GPU session -- TRAINING ONLY.
+#
+# Verify CUDA, build the generation-9 cache once, and train three nets from it
+# at lambda 0.5 / 0.7 / 0.85. Nothing here plays a game: match.py spawns engine
+# subprocesses that run the C core on the CPU and never touch the GPU, so
+# screening on a rented GPU box is paying GPU rates for CPU work on a machine
+# that usually has few cores. The screens live in scripts/screen-sweep.sh and
+# belong on something cheap and wide.
+#
+# One cache serves all three nets: lambda blends cp and result at batch time
+# and never touches the features.
+#
+# Out: ~/tetrarch-nets.tar.gz -- three nets and their epoch tables, ~6 MB, so
+# it comes off an expensive box in seconds.
 set -euo pipefail
 cd ~/Tetrarch
-mkdir -p runs/games runs/ab runs/cache
+mkdir -p runs/games runs/cache runs/logs
 
 echo "=== 0. sync and build ==="
 git fetch origin && git reset --hard origin/main && ./setup.sh
@@ -39,36 +50,33 @@ GATE
 
 echo "=== 3. the full cache, built once and reused by all three nets ==="
 python3 train.py --data runs/games/games_v9.jsonl --cache runs/cache/v9.npz \
-  --augment --cache-workers 0 --out /tmp/cacheonly --epochs 1 --device cuda
+  --augment --cache-workers 0 --out /tmp/cacheonly --epochs 1 --device cuda \
+  | tee runs/logs/cache.txt
 
 echo "=== 4. lambda sweep: three nets from one cache ==="
 for L in 0.5 0.7 0.85; do
   tag=$(echo "$L" | tr -d .)
   echo "--- lambda $L ---"
   python3 train.py --cache runs/cache/v9.npz --out nets/v9_l$tag \
-    --epochs 8 --lambda "$L" --device cuda
+    --epochs 8 --lambda "$L" --device cuda | tee runs/logs/lambda$tag.txt
   cp nets/v9_l$tag/net-best.nnue nets/net-v9l$tag.nnue
 done
 
-echo "=== 5. screen all three at fixed nodes against the current default ==="
-for tag in 05 07 085; do
-  python3 match.py 1250 --log runs/ab/v9l${tag}_nodes.jsonl --nodes 20000 \
-    --workers 0 --net-a nets/net-v9l$tag.nnue --net-b nets/net-v5.nnue
-done
-
-echo "=== 6. results ==="
+echo "=== 5. the epoch each lambda chose ==="
 {
   for tag in 05 07 085; do
-    echo "== lambda 0.${tag#0} vs net-v5, FIXED NODES =="
-    python3 match.py --summarise runs/ab/v9l${tag}_nodes.jsonl
+    echo "== lambda 0.${tag#0} =="
+    grep -E "^epoch|best" runs/logs/lambda$tag.txt | tail -12
     echo
   done
-} | tee runs/ab/SWEEP.txt
+} | tee runs/logs/EPOCHS.txt
 
-echo "=== 7. export ==="
-find runs nets -type f ! -name '*.npz' ! -name '*.jsonl.gz' \
-  ! -name 'games_v9.jsonl' -print0 \
-  | tar --null --transform='s,^,tetrarch-export/,' \
-        -czf ~/tetrarch-sweep.tar.gz --files-from=-
-ls -lh ~/tetrarch-sweep.tar.gz
-cat runs/ab/SWEEP.txt
+echo "=== 6. export just the nets -- tiny, so it leaves the box fast ==="
+tar -czf ~/tetrarch-nets.tar.gz \
+  --transform='s,^,tetrarch-nets/,' \
+  nets/net-v9l05.nnue nets/net-v9l07.nnue nets/net-v9l085.nnue runs/logs
+ls -lh ~/tetrarch-nets.tar.gz
+echo
+echo "NEXT: pull that tarball, commit the three nets, then screen them on a"
+echo "CPU box with scripts/screen-sweep.sh. Nothing left here needs a GPU."
+cat runs/logs/EPOCHS.txt
