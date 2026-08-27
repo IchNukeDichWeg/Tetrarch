@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Tetrarch GPU session -- TRAINING ONLY.
 #
-# Verify CUDA, build the generation-9 cache once, and train six nets from it:
-# lambda 0.5 / 0.7 / 0.85 / 1.0, plus lambda 0.7 twice more at different seeds
-# to measure the noise floor the others are read against.
+# Verify CUDA, build the generation-9 cache once, and train ten nets from it:
+# a lambda sweep, three seed replicates for the noise floor, and the same
+# three seeds again at 40 epochs to test 8-vs-40 as a paired comparison.
 #
 # Nothing here plays a game: match.py spawns engine
 # subprocesses that run the C core on the CPU and never touch the GPU, so
@@ -11,7 +11,7 @@
 # that usually has few cores. The screens live in scripts/screen-sweep.sh and
 # belong on something cheap and wide.
 #
-# One cache serves all six nets: lambda blends cp and result at batch time
+# One cache serves all ten nets: lambda blends cp and result at batch time
 # and never touches the features.
 #
 # Out: ~/tetrarch-nets.tar.gz -- three nets and their epoch tables, ~6 MB, so
@@ -51,49 +51,62 @@ if gap > 0.02:
 print("  cuda agrees with the trainer every shipped net came from.")
 GATE
 
-echo "=== 3. the full cache, built once and reused by all six nets ==="
+echo "=== 3. the full cache, built once and reused by all ten nets ==="
 python3 train.py --data runs/games/games_v9.jsonl --cache runs/cache/v9.npz \
   --augment --cache-workers 0 --out /tmp/cacheonly --epochs 1 --device cuda \
   | tee runs/logs/cache.txt
 
-# Six nets from the one cache. "tag lambda seed":
+# Ten nets from the one cache. "tag:lambda:seed:epochs".
 #
-#   l05  l07  l085  l10   -- the lambda sweep at seed 0. 1.0 is pure score,
-#                            the control that asks whether blending in the
-#                            game result does anything at all.
-#   s1  s2              -- lambda 0.7 again at seeds 1 and 2. THE NOISE FLOOR,
-#                            and the reason the rest is interpretable: if two
-#                            nets that differ only by initialisation land 20
-#                            Elo apart, then a lambda separated by 15 Elo has
-#                            said nothing. Without this the sweep cannot be
-#                            read, only believed.
-RUNS="l05:0.5:0 l07:0.7:0 l085:0.85:0 l10:1.0:0 s1:0.7:1 s2:0.7:2"
+# l05 l07 l085 l10 -- the lambda sweep at seed 0, 8 epochs. 1.0 is pure score,
+#     the control that asks whether blending the game result in does anything.
+#
+# s1 s2 s3 -- lambda 0.7 at seeds 1, 2, 3, 8 epochs. THE NOISE FLOOR, and the
+#     reason the rest is readable: if nets differing only by initialisation
+#     land 20 Elo apart, a lambda separated by 15 Elo has said nothing. Every
+#     net-vs-net number in docs/AB.md so far was read without knowing that
+#     spread.
+#
+# e40s1 e40s2 e40s3 -- the same three seeds at 40 epochs. Pygin trains 40 where
+#     this trains 8, and nobody has checked which is right here. Matched seeds
+#     make it PAIRED: e40s1 against s1 differs only in epochs, which is a much
+#     sharper test than comparing two pooled averages.
+#
+#     Half the answer is free. The runs select net-best on held-out loss, so if
+#     a 40-epoch run picks an epoch <= 8 then the extra 32 bought nothing and
+#     the epoch table says so before a single game is played. The FFA run
+#     peaked at epoch 2 of 8 and generation 9 was still improving at 2, so
+#     both outcomes are live.
+RUNS="l05:0.5:0:8 l07:0.7:0:8 l085:0.85:0:8 l10:1.0:0:8 \
+      s1:0.7:1:8 s2:0.7:2:8 s3:0.7:3:8 \
+      e40s1:0.7:1:40 e40s2:0.7:2:40 e40s3:0.7:3:40"
 
-echo "=== 4. six nets from one cache ==="
+echo "=== 4. ten nets from one cache ==="
 for spec in $RUNS; do
-  tag=${spec%%:*}; rest=${spec#*:}; L=${rest%%:*}; S=${rest##*:}
-  echo "--- $tag: lambda $L, seed $S ---"
+  IFS=: read -r tag L S E <<<"$spec"
+  echo "--- $tag: lambda $L, seed $S, $E epochs ---"
   python3 train.py --cache runs/cache/v9.npz --out nets/v9_$tag \
-    --epochs 8 --lambda "$L" --seed "$S" --device cuda | tee runs/logs/$tag.txt
+    --epochs "$E" --lambda "$L" --seed "$S" --device cuda | tee runs/logs/$tag.txt
   cp nets/v9_$tag/net-best.nnue nets/net-v9$tag.nnue
 done
 
 echo "=== 5. the epoch each run chose ==="
 {
   for spec in $RUNS; do
-    tag=${spec%%:*}; rest=${spec#*:}
-    echo "== $tag (lambda ${rest%%:*}, seed ${rest##*:}) =="
-    grep -E "^epoch|best" runs/logs/$tag.txt | tail -12
+    IFS=: read -r tag L S E <<<"$spec"
+    echo "== $tag (lambda $L, seed $S, $E epochs) =="
+    grep -E "^epoch|best" runs/logs/$tag.txt | tail -8
     echo
   done
+  echo "READ THIS FIRST: if e40s* picked an epoch <= 8, forty epochs bought"
+  echo "nothing on this data and the A/B only confirms what is already here."
 } | tee runs/logs/EPOCHS.txt
 
 echo "=== 6. export just the nets -- tiny, so it leaves the box fast ==="
 tar -czf ~/tetrarch-nets.tar.gz --transform='s,^,tetrarch-nets/,' \
-  nets/net-v9l05.nnue nets/net-v9l07.nnue nets/net-v9l085.nnue \
-  nets/net-v9l10.nnue nets/net-v9s1.nnue nets/net-v9s2.nnue runs/logs
+  $(for spec in $RUNS; do echo "nets/net-v9${spec%%:*}.nnue"; done) runs/logs
 ls -lh ~/tetrarch-nets.tar.gz
 echo
-echo "NEXT: pull that tarball, commit the six nets, then screen them on a"
+echo "NEXT: pull that tarball, commit the ten nets, then screen them on a"
 echo "CPU box with scripts/screen-sweep.sh. Nothing left here needs a GPU."
 cat runs/logs/EPOCHS.txt
