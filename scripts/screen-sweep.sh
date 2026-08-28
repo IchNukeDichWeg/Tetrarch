@@ -65,8 +65,11 @@ echo "=== 3. results ==="
 } | tee runs/ab/SCREENS.txt
 
 echo "=== 4. export ==="
-find runs/ab -type f -print0 \
+# runs/logs too: the per-run stdout is what diagnosed the last failure, and a
+# tarball that carries only the summaries cannot answer "why did it do that".
+find runs/ab runs/logs -type f -print0 2>/dev/null \
   | tar --null --transform='s,^,tetrarch-screens/,' \
         -czf ~/tetrarch-screens.tar.gz --files-from=-
 ls -lh ~/tetrarch-screens.tar.gz
+echo
 cat runs/ab/SCREENS.txt
