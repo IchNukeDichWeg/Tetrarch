@@ -17,10 +17,19 @@ THE ROTATION
         rotation 2  board turned 180 deg  A gets the ORIGINAL B+G armies
         rotation 3  board turned 270 deg  A gets the ORIGINAL B+G armies
 
-    What matters is which ORIGINAL armies an engine receives, not which seat
-    index it is handed. Rotating the board shifts every seat's colour, so
-    rotating the team assignment along with it cancels nothing -- see play_game.
-    A also moves first in exactly two of the four.
+    on an even-numbered opening, and the other way round on an odd one. What
+    matters is which ORIGINAL armies an engine receives, not which seat index
+    it is handed. Rotating the board shifts every seat's colour, so rotating
+    the team assignment along with it cancels nothing -- see play_game. A also
+    moves first in exactly two of the four.
+
+    The opening's parity is the second half of the cancellation. Holding the
+    table above fixed would cancel the army and the tempo but leave the board's
+    ORIENTATION aliased with the team assignment, and the engine is not
+    orientation-invariant, so a term worth about -2.6 Elo against A survived --
+    which is what the Teams null self-test was measuring. Alternating on the
+    opening gives A each original team at each orientation equally often over
+    any even opening count. Costs nothing and needs no extra games.
 
     Score sum per opening runs 0..4 in half-point steps, which is the
     nine-bucket distribution reported below -- NOT a pentanomial, which would
@@ -418,7 +427,22 @@ def play_game(job):
     # assignment together. That measured as +36 Elo in a null self-test.
     #
     # Pick the original team first, then work back to the rotated seat index.
-    original_team = (rotation >> 1) & 1
+    #
+    # The opening's parity is in there because the four rotations cancel the
+    # army and the tempo but NOT the board's orientation. Fixing which original
+    # team A holds at each rotation aliases the two: A held original team 0 at
+    # 0 and 90 degrees and team 1 at 180 and 270, so the expected rotation sum
+    # was 2 + [g(0)-g(180)] + [g(90)-g(270)] rather than 2. That bracket is the
+    # engine's own orientation asymmetry -- square indexing, hashing, ordering
+    # and the net's features are all indexed by square, and the engine differs
+    # at 0 against 180 in 100% of games and in the RESULT in 45-49% -- and it
+    # is what the Teams null self-test was reading: -2.26 +/- 14.35 at seed 11
+    # and -7.99 +/- 8.56 at seed 23, always against A, against the recorded
+    # -2.64 +/- 6.24. Flipping the pairing on odd openings gives A each team at
+    # each orientation equally often over any even opening count, which drives
+    # the term to zero for free. No toggle: a biased harness is not a
+    # configuration, so there is nothing to A/B against.
+    original_team = ((rotation >> 1) & 1) ^ (opening_seed & 1)
     a_team = original_team ^ (rotation & 1)
     engines = {}
     try:

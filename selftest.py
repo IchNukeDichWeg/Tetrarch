@@ -2692,10 +2692,13 @@ def test_match_rotation():
     # ORIGINAL team twice. Rotating the board and the team assignment together
     # cancels nothing -- that shipped, and measured +36 Elo in a null self-test
     # with the same engine on both sides.
+    def a_team_for(opening_seed, rotation):
+        original_team = ((rotation >> 1) & 1) ^ (opening_seed & 1)
+        return original_team ^ (rotation & 1)
+
     seen = {0: 0, 1: 0}
     for rotation in range(match.ROTATIONS):
-        original_team = (rotation >> 1) & 1
-        a_team = original_team ^ (rotation & 1)
+        a_team = a_team_for(0, rotation)
         seats = [s for s in range(4) if (s & 1) == a_team]
         armies = sorted(((s - rotation) & 3) for s in seats)
         check("rotation %d gives A a whole team" % rotation,
@@ -2705,6 +2708,28 @@ def test_match_rotation():
     check("A plays each original team exactly twice",
           seen[0] == seen[1] == match.ROTATIONS // 2,
           "team0 %d, team1 %d" % (seen[0], seen[1]))
+
+    # The four rotations cancel the army and the tempo, but ORIENTATION has to
+    # cancel too, and it only does across a pair of openings: fixing which team
+    # A holds at each rotation leaves [g(0)-g(180)] + [g(90)-g(270)] standing,
+    # which is what the Teams null was reading at about -2.6 Elo against A.
+    # Over any even opening count A must hold each original team at each
+    # orientation equally often.
+    grid = {}
+    for opening_seed in range(2):
+        for rotation in range(match.ROTATIONS):
+            a_team = a_team_for(opening_seed, rotation)
+            armies = sorted(((s - rotation) & 3)
+                            for s in range(4) if (s & 1) == a_team)
+            grid[(rotation, armies[0] & 1)] = grid.get((rotation, armies[0] & 1), 0) + 1
+    check("orientation and team assignment are not aliased",
+          len(grid) == 2 * match.ROTATIONS and set(grid.values()) == {1},
+          "%d (orientation, original team) cells, counts %s"
+          % (len(grid), sorted(set(grid.values()))))
+    for rotation in range(match.ROTATIONS):
+        check("orientation %d gives A each original team once over two openings"
+              % (90 * rotation),
+              grid.get((rotation, 0)) == grid.get((rotation, 1)) == 1)
 
     # And the four rotations must be four distinct games, or the sample is
     # half the size it claims.
