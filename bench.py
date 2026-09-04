@@ -208,10 +208,17 @@ def profile(depth, iters):
     once per interior node and `evaluate` at most once, both close enough to 1
     to use directly. Makes are counted for real, because that rate is the one
     that is not obvious.
+
+    This prices each component by calling it on one position hundreds of
+    thousands of times, which keeps its tables warm where a real search
+    scatters across them. It is NOT a substitute for `--sample`, and where the
+    two disagree the sampling profile is the one that measured the search that
+    actually runs. Read this for per-call cost and call rate; read `--sample`
+    for where the time goes.
     """
     nodes = makes = evals = gens = 0
     secs = 0.0
-    for _, mode, fen in POSITIONS:
+    for label, mode, fen in POSITIONS:
         b = Board.from_fen4(fen, mode)
         core.clear_hash()
         t = time.perf_counter()

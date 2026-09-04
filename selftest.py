@@ -3434,6 +3434,41 @@ def banner():
     print(" | ".join(bits))
 
 
+def test_bench_tooling():
+    section("bench.py instruments")
+    import subprocess
+
+    # --profile was dead for every commit between the FFA search landing and
+    # this check: `DEPTH_DELTA.get(label, 0)` went into a loop written
+    # `for _, mode, fen in POSITIONS`, so it raised UnboundLocalError before
+    # printing anything. Nothing ran it, so nothing noticed. The engine's
+    # highest-value track is NPS, and it spent that whole time with one of its
+    # two profilers throwing and the other one misparsing.
+    root = os.path.dirname(os.path.abspath(__file__))
+    run = subprocess.run([sys.executable, os.path.join(root, "bench.py"),
+                          "--profile", "--depth", "3", "--iters", "200"],
+                         cwd=root, capture_output=True, text=True)
+    check("bench.py --profile runs", run.returncode == 0,
+          (run.stderr.strip().splitlines() or ["no output"])[-1]
+          if run.returncode else "exit 0")
+    check("and reports a search line", "search:" in run.stdout,
+          "%d bytes of output" % len(run.stdout))
+
+    # The contract the loop variable carries: `profile` and `search_round`
+    # must search the same tree. If `profile` loses the label it cannot apply
+    # DEPTH_DELTA, so the FFA position runs three plies deeper and the totals
+    # diverge -- which is what the two functions disagreeing would mean.
+    import bench
+    core.clear_hash()
+    want, _, _ = bench.search_round(3)
+    _, got, _, _ = bench.profile(3, 200)
+    check("profile and search_round search the same tree",
+          got == want, "%d nodes vs %d" % (got, want))
+    check("DEPTH_DELTA only names real positions",
+          set(bench.DEPTH_DELTA) <= {label for label, _, _ in bench.POSITIONS},
+          "%s" % sorted(bench.DEPTH_DELTA))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",
@@ -3487,6 +3522,7 @@ def main():
     test_ffa_data()
     test_pgn4()
     test_js_replay()
+    test_bench_tooling()
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, workers, args.quiet)
     if args.perft_deep:
