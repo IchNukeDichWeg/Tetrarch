@@ -2481,6 +2481,78 @@ double tt_bench_eval(TtBoard *b, int iters)
     return t0;
 }
 
+/* nnue_eval_for, one stage at a time, as CUMULATIVE PREFIXES.
+ *
+ * `stage` runs the function up to and including that step and stops, so a
+ * stage's own cost is the difference between two runs. Measuring a stage
+ * alone would price it with a cache state it never sees in the real function;
+ * a prefix keeps the order and the residency the evaluation actually has.
+ *
+ *   0  accumulator only -- the refresh check and the pending flush
+ *   1  + crelu over L1 (256 values)
+ *   2  + nn_extras (7 values, reads points and alive)
+ *   3  + L2: 32 rows of a 256-wide dot, plus the 7-wide extras tail
+ *   4  + L3: 32 rows of a 32-wide dot
+ *   5  + output and shift  == the whole function
+ *
+ * A copy of the body rather than a flag inside it: the shipped path must not
+ * grow a branch per stage for the sake of being measured.
+ */
+double tt_bench_nnue_stage(TtBoard *b, int persp, int stage, int iters)
+{
+    double t0;
+    int i, j, k;
+    int64_t sink = 0;
+    int8_t x[NN_L1 + NN_EXTRA], h1[NN_L2], h2[NN_L3];
+    int32_t ex[NN_EXTRA];
+    const int32_t *acc;
+
+    if (!nn_loaded) return -1.0;
+    t0 = now_sec();
+    for (i = 0; i < iters; i++) {
+        if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
+        nn_flush(persp);
+        acc = nn_acc[persp];
+        sink += acc[0];
+        if (stage < 1) continue;
+
+        for (j = 0; j < NN_L1; j++) x[j] = (int8_t)nn_crelu(acc[j], NN_SHIFT1);
+        sink += x[0];
+        if (stage < 2) continue;
+
+        nn_extras(b, persp, ex);
+        for (j = 0; j < NN_EXTRA; j++) x[NN_L1 + j] = (int8_t)ex[j];
+        if (stage < 3) continue;
+
+        for (k = 0; k < NN_L2; k++) {
+            const int8_t *row = nn_w2 + (size_t)k * (NN_L1 + NN_EXTRA);
+            int32_t z = nn_b2[k] + nn_dot(x, row, NN_L1);
+            if (stage != 6)
+                for (j = NN_L1; j < NN_L1 + NN_EXTRA; j++) z += x[j] * row[j];
+            h1[k] = (int8_t)nn_crelu(z, NN_SHIFT2);
+        }
+        sink += h1[0];
+        /* 6 is 3 with the extras tail removed: 7 scalar multiply-adds per row,
+         * 32 rows, deliberately off the vector path. Stage 3 minus stage 6 is
+         * what that tail costs, which is the thing the "cached extras" item
+         * proposes to remove. */
+        if (stage == 6) continue;
+        if (stage < 4) continue;
+
+        for (k = 0; k < NN_L3; k++) {
+            const int8_t *row = nn_w3 + (size_t)k * NN_L2;
+            h2[k] = (int8_t)nn_crelu(nn_b3[k] + nn_dot(h1, row, NN_L2), NN_SHIFT2);
+        }
+        sink += h2[0];
+        if (stage < 5) continue;
+
+        sink += (nn_b4 + nn_dot(h2, nn_w4, NN_L3)) >> NN_SHIFT_OUT;
+    }
+    t0 = now_sec() - t0;
+    if (sink == 0x7FFFFFFFFFFFFFFFLL) t0 = -t0;
+    return t0;
+}
+
 double tt_bench_gen(TtBoard *b, int iters, int legal)
 {
     static uint32_t buf[MAX_MOVES];

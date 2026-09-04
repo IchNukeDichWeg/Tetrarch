@@ -47,6 +47,55 @@ Fixed by keying on the side as well.
 
 ## Results
 
+### Where nnue_eval_for actually spends its time
+
+The audit called this the highest-value unmeasured thing: 42.6% of the bench
+and 74.3% of an FFA search, three items touching it, and no breakdown. Here is
+one. `tt_bench_nnue_stage` runs the function truncated at each stage as a
+CUMULATIVE PREFIX, so a stage's own cost is the difference between two runs and
+every stage is priced with the cache state the real function gives it. The
+full prefix agrees with `tt_bench_eval` to 0.5% (102.1 against 101.5 ns), which
+is what says the copy is measuring the same thing.
+
+200,000 calls, best of 5, interleaved. Teams and FFA are within 0.2 ns of each
+other at every stage -- the evaluation does not know which mode it is in.
+
+```
+stage                      ns/call    share
+accumulator + flush            0.5     0.5%
+crelu over L1 (256)            0.5     0.4%
+nn_extras (7)                  0.3     0.2%
+L2: 32 rows x 256-dot         82.7    78.6%
+L3: 32 rows x 32-dot          18.3    17.4%
+output + shift                 3.0     2.8%
+TOTAL                        105.1   100.0%
+```
+
+**L2 is 78.6% and L3 is 17.4%. Everything else together is 1.1%.** Splitting L2
+further: the 256-wide dot is 73.1 ns (71.3% of the whole evaluation) and the
+seven-value scalar tail is 7.2 ns (7.0%).
+
+Three things follow, and they change the priority of filed items:
+
+**The extras tail is worth 7.0% of the evaluation, not a rounding error.** Seven
+scalar multiply-adds per row across 32 rows, deliberately off the vector path
+with a comment saying seven against 256 is not worth a second code path. At
+42.6% of the bench that tail is ~3.0% of a Teams search on its own.
+
+**Widening L1 to 512 is not "the 2 MB weight table gets bigger".** It doubles
+the input to L2, which is 78.6% of the evaluation and the only stage that
+scales with L1. The accumulator, crelu and extras that people picture when they
+think about L1 are jointly 1.1%. Price that item against 78.6%, not against
+the file size.
+
+**The accumulator costs nothing HERE, and that is not the same as costing
+nothing.** These calls repeat on one position, so `nn_acc_key == b->key`, no
+refresh fires and the pending queue is empty. The incremental upkeep is paid by
+nn_toggle inside tt_make, which this does not measure and which the lazy
+accumulator work (+63.37 +/- 4.68) was about. Read 0.5 ns as "the evaluation
+does not re-derive the accumulator", not as "accumulators are free".
+
+
 ### Epoch counts: Teams and FFA want opposite things
 
 Held-out loss only, no games. Both come from the generation-9 and FFA

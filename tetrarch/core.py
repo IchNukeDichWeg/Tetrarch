@@ -288,6 +288,10 @@ def load(path=None):
         lib.tt_search_gens.restype = ctypes.c_uint64
         lib.tt_bench_eval.restype = ctypes.c_double
         lib.tt_bench_eval.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int]
+        lib.tt_bench_nnue_stage.restype = ctypes.c_double
+        lib.tt_bench_nnue_stage.argtypes = [ctypes.POINTER(TtBoard),
+                                            ctypes.c_int, ctypes.c_int,
+                                            ctypes.c_int]
         lib.tt_bench_gen.restype = ctypes.c_double
         lib.tt_bench_gen.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
                                      ctypes.c_int]
@@ -653,6 +657,19 @@ def search_gens():
     node standing pat above beta returns before generating, and so does an
     alpha-beta node taking a transposition cutoff."""
     return int(load().tt_search_gens())
+
+
+def bench_nnue_stage(b, persp, stage, iters):
+    """Seconds for `iters` runs of nnue_eval_for truncated at `stage`.
+
+    Cumulative prefixes: a stage's own cost is the difference between two
+    stages, which prices it with the cache state the real function gives it.
+    Returns -1.0 with no net loaded.
+    """
+    lib = load()
+    cb = to_c(b)
+    return lib.tt_bench_nnue_stage(ctypes.byref(cb), int(persp),
+                                   int(stage), int(iters))
 
 
 def bench_component(b, what, iters):
