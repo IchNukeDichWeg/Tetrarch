@@ -44,6 +44,7 @@ class TtParams(ctypes.Structure):
         ("zob_ck", ctypes.c_uint64 * 4),
         ("zob_cq", ctypes.c_uint64 * 4),
         ("zob_alive", ctypes.c_uint64 * 4),
+        ("zob_points", ctypes.c_uint64 * 4),
         ("valid", ctypes.c_uint8 * NSQ),
         ("compact", ctypes.c_uint8 * NSQ),
         ("pc_color", ctypes.c_uint8 * NPIECE),
@@ -136,6 +137,7 @@ def build_params():
         p.zob_ck[c] = B.ZOB_CK[c]
         p.zob_cq[c] = B.ZOB_CQ[c]
         p.zob_alive[c] = B.ZOB_ALIVE[c]
+        p.zob_points[c] = B.ZOB_POINTS[c]
 
     for sq in range(NSQ):
         p.valid[sq] = B.VALID[sq]

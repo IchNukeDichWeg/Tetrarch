@@ -1205,6 +1205,20 @@ falls from 47,367,089 nodes to 24,268,215 -- and 2.2 sigma of Elo at fixed
 nodes. Both numbers matter: the node reduction is why an FFA A/B is affordable
 at all, and the Elo is why it stays on.
 
+**This was measured over a table that could answer across points standings.**
+The key was `b->key ^ zob_turn[root]`, and the FFA evaluation reads the points
+-- `nn_extras` feeds three points differences to the net -- so two positions
+alike on the squares but apart on points shared a slot and the search returned
+a score computed at the other standing. Demonstrated at depth 3 from the
+classic start: a table warmed at 0/0/0/0 answers a 90/0/0/0 position with 218
+where a cleared table returns 202. The standing now goes into `paranoid_key`.
+The +15.90 above **stands as a lower bound** -- it was won by games, over a
+handicap that has since been removed -- but its ceiling is unmeasured, and a
+re-run against `FFATT=false` is owed before the number is quoted as final.
+Teams is untouched: the term is inside the paranoid key, so all four Teams
+bench positions and every `SEARCH_PINS` entry are unmoved; only the FFA bench
+position changes, 190,967 -> 190,997, which is the poisoning going away.
+
 ### DEVIATION: the FFA confirm runs at movetime 100, not 200
 
 Declared before the run, not after it.

@@ -1855,6 +1855,40 @@ def test_ffa_search(workers=1):
           "%d of %d positions had a seat run out of moves"
           % (elim, FFA_POSITIONS))
 
+    # The FFA table must not hand back a score computed at another points
+    # standing. The evaluation reads the standing -- nnue.extra_inputs feeds
+    # three points differences -- so two boards alike on the squares but apart
+    # on points are different questions. They shared a slot until the standing
+    # went into the paranoid key, and a warm table answered the second from
+    # the first.
+    from tetrarch import nnue
+    import uci
+    core.load_net(nnue.Net.load(uci.DEFAULT_NET))
+    try:
+        b = start_board("classic")
+        b.mode = MODE_FFA
+        b.points = [0, 0, 0, 0]
+        b.recompute_key()
+        rich = b.copy()
+        rich.points = [90, 0, 0, 0]
+        rich.recompute_key()
+        check("points move the FFA evaluation at all",
+              core.evaluate(b) != core.evaluate(rich),
+              "%d vs %d" % (core.evaluate(b), core.evaluate(rich)))
+        check("and leave the repetition key alone",
+              b.key == rich.key, "points must stay out of key itself")
+
+        depth = 3
+        core.clear_hash()
+        alone = core.search(rich, depth).score
+        core.clear_hash()
+        core.search(b, depth)                   # fill the table at 0,0,0,0
+        warm = core.search(rich, depth).score   # same squares, other standing
+        check("a warm FFA table does not answer across a points standing",
+              warm == alone, "%d warm vs %d from a cleared table" % (warm, alone))
+    finally:
+        core.unload_net()
+
 
 def test_net_bundle():
     section("per-setup net bundle")

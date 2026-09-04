@@ -73,6 +73,9 @@ typedef struct {
     uint64_t zob_ck[4];
     uint64_t zob_cq[4];
     uint64_t zob_alive[4];
+    /* Points are unbounded, so unlike every other Zobrist term they cannot be
+     * a table. These are the per-seat odd multipliers the mixer below uses. */
+    uint64_t zob_points[4];
     uint8_t valid[NSQ];
     uint8_t compact[NSQ];
     uint8_t pc_color[NPIECE];
@@ -280,6 +283,42 @@ int tt_in_check(const TtBoard *b, int color)
     int k = b->kings[color];
     if (k < 0) return 0;
     return tt_is_attacked(b, k, color);
+}
+
+/* The points standing, hashed for the FFA transposition key.
+ *
+ * The FFA evaluation READS the points: nn_extras feeds three points
+ * differences into the net. So two positions identical on the board but
+ * standing at different points evaluate differently, and while the table was
+ * keyed on b->key alone they shared a slot -- the paranoid search stored a
+ * score computed at one standing and returned it at another. Standings diverge
+ * on identical placements routinely: 8.3 pays multi-check bonuses on quiet
+ * moves and 8.2 pays elimination to a path-dependent seat.
+ *
+ * This is deliberately NOT folded into b->key. That key is also the repetition
+ * key, and points are monotonic: including them there would mean no FFA
+ * position could ever repeat, silently disabling a shipped feature. The two
+ * consumers want different things, so only the table's key carries this.
+ *
+ * Absolute points per seat, not the differences the eval actually sees. Two
+ * standings differing by a constant then get separate entries even though the
+ * eval scores them alike -- that costs a table hit, never a wrong answer,
+ * which is the safe direction for a correctness fix.
+ * ponytail: key the three differences from seat 0 if the split ever measures.
+ *
+ * Splitmix64's finaliser after the multiply, because the low bits of a bare
+ * multiply barely move and the table indexes with the low bits. */
+static uint64_t points_hash(const TtBoard *b)
+{
+    uint64_t k = 0;
+    int c;
+    for (c = 0; c < 4; c++) {
+        uint64_t x = (uint64_t)(b->points[c] + 1u) * P.zob_points[c];
+        x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ull;
+        x ^= x >> 27; x *= 0x94D049BB133111EBull;
+        k ^= x ^ (x >> 31);
+    }
+    return k;
 }
 
 uint64_t tt_recompute_key(const TtBoard *b)
@@ -2577,10 +2616,15 @@ int tt_get_ffa_tt(void) { return use_ffa_tt; }
  * terms, so the position alone does not identify it: the same board searched
  * for a different root is a different question with a different answer. Mixing
  * the root in keeps FFA entries apart from each other and from Teams entries
- * sharing the table. */
+ * sharing the table.
+ *
+ * The points standing goes in here too, and only here: the evaluation reads
+ * it, so it is part of what identifies the position, but b->key doubles as the
+ * repetition key where a monotonic term would stop any position ever repeating
+ * (see points_hash). */
 static uint64_t paranoid_key(const TtBoard *b, int root)
 {
-    return b->key ^ P.zob_turn[root];
+    return b->key ^ P.zob_turn[root] ^ points_hash(b);
 }
 
 static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,

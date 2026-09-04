@@ -306,6 +306,12 @@ ZOB_CK = [_rng.getrandbits(64) for _ in range(4)]
 ZOB_CQ = [_rng.getrandbits(64) for _ in range(4)]
 ZOB_EP = [[_rng.getrandbits(64) for _ in range(NSQ)] for _ in range(4)]
 ZOB_ALIVE = [_rng.getrandbits(64) for _ in range(4)]
+# Drawn last so the tables above keep the stream they have always had -- an
+# insertion higher up would move every key in the project. Odd, because these
+# are multipliers rather than table entries: the FFA points standing is
+# unbounded and so cannot be a table. It is hashed into the FFA TRANSPOSITION
+# key only, never into `key` itself; see points_hash in the C core for why.
+ZOB_POINTS = [_rng.getrandbits(64) | 1 for _ in range(4)]
 del _rng
 
 
