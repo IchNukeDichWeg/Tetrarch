@@ -735,16 +735,41 @@ def main():
     if args.summarise:
         # Everything summarise() needs is in the log: it groups by opening and
         # sums the rotation, and both fields are written per game.
-        games, by_opening = [], {}
+        games, by_opening, headers = [], {}, []
         with open(args.summarise) as fh:
             for line in fh:
                 try:
                     g = json.loads(line)
                 except ValueError:
                     continue        # a run killed mid-write leaves one short
+                if g.get("header"):
+                    headers.append(g)
+                    continue
                 games.append(g)
                 if g.get("score") is not None:
                     by_opening.setdefault(g["opening"], []).append(g["score"])
+
+        # Different instruments cannot be pooled, and concatenating two
+        # tranches is the obvious thing to do with two log files. Without this
+        # the tool answered a mixed file with one confident Elo -- and a
+        # Teams+FFA mixture was reported entirely on the thirteen-bucket FFA
+        # scale, because the mode was inferred from the absence of a marker.
+        for field, what in (("go", "instrument"), ("mode", "mode"),
+                            ("book_sha256", "book")):
+            seen = {h.get(field) for h in headers}
+            if len(seen) > 1:
+                raise SystemExit(
+                    "%s pools two values of %s: %s.\nDifferent instruments "
+                    "cannot be pooled -- summarise each tranche separately."
+                    % (args.summarise, what,
+                       ", ".join(repr(v) for v in sorted(seen, key=str))))
+        if not headers:
+            print("warning: %s has no header line, so its instrument is "
+                  "unknown and a mixed file cannot be detected. Written "
+                  "before match.py recorded one." % args.summarise,
+                  file=sys.stderr)
+        elif headers[0].get("mode") == "ffa":
+            games = [dict(g, mode="ffa") for g in games]
         print(summarise(by_opening, games, 0.0))
         if args.book:
             import book as book_mod
@@ -822,6 +847,37 @@ def main():
     log = open(args.log, "w")
     pgn_out = open(args.pgn4, "w") if args.pgn4 else None
 
+    # First line of every log: what instrument this was. Until this existed a
+    # log recorded no go-string, no nets and no mode, so --summarise could not
+    # tell a fixed-nodes run from a fixed-time one -- and concatenating two
+    # tranches of a campaign, the obvious thing to do with two files, produced
+    # one confident Elo across two instruments. Doctrine's hardest line is that
+    # instruments cannot be pooled; this is the only place it can be enforced.
+    #
+    # `workers` is the capped value, not what was asked for: density is part of
+    # a timed instrument, so the number that matters is the one the run had.
+    log.write(json.dumps({
+        "header": 1,
+        "mode": args.mode,
+        "go": args.go_string,
+        "setup": args.setup,
+        "book": args.book,
+        "book_sha256": _book_digest(args.book),
+        "seed": args.seed,
+        "positions": args.positions,
+        "opening_plies": args.opening_plies,
+        "engine_a": args.engine_a,
+        "engine_b": args.engine_b,
+        "net_a": args.net_a,
+        "net_b": args.net_b,
+        "opt_a": list(args.opt_a),
+        "opt_b": list(args.opt_b),
+        "hash": args.hash,
+        "workers": nproc,
+        "tetrarch_git": _git_head(),
+    }) + "\n")
+    log.flush()
+
     # Named `record`, not `game`: this module imports tetrarch.game, and a
     # loop variable shadowing it is the kind of bug that only shows up in the
     # one branch that reaches for the module.
@@ -888,6 +944,36 @@ def main():
     if args.pgn4:
         print("pgn4: %s" % args.pgn4)
     return 0
+
+
+def _book_digest(path):
+    """sha256 of the opening book, so two logs can be shown to share one.
+
+    The book IS part of the instrument: the same engines over different
+    openings are not the same measurement.
+    """
+    if not path:
+        return None
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def _git_head():
+    """The commit under test, or None outside a checkout."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"],
+                             cwd=os.path.dirname(os.path.abspath(__file__)),
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or None if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def _free_path(path):

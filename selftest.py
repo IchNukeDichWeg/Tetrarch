@@ -3493,6 +3493,67 @@ def banner():
     print(" | ".join(bits))
 
 
+def test_match_log_header():
+    section("match.py log header (instrument pooling)")
+    import subprocess
+
+    root = os.path.dirname(os.path.abspath(__file__))
+
+    def log(path, go, mode, scores):
+        with open(path, "w") as fh:
+            fh.write(json.dumps({"header": 1, "go": go, "mode": mode,
+                                 "book_sha256": None}) + "\n")
+            for i, s in enumerate(scores):
+                rec = {"index": i, "opening": i // 4, "rotation": i % 4,
+                       "score": s, "reason": "checkmate", "plies": 40}
+                if mode == "ffa":
+                    rec["mode"] = "ffa"
+                fh.write(json.dumps(rec) + "\n")
+
+    def summarise(path):
+        return subprocess.run(
+            [sys.executable, os.path.join(root, "match.py"),
+             "--summarise", path],
+            cwd=root, capture_output=True, text=True)
+
+    with tempfile.TemporaryDirectory() as d:
+        nodes = os.path.join(d, "nodes.jsonl")
+        timed = os.path.join(d, "timed.jsonl")
+        ffa = os.path.join(d, "ffa.jsonl")
+        log(nodes, "go nodes 20000", "teams", [1.0, 0.0, 0.5, 0.5])
+        log(timed, "go movetime 200", "teams", [1.0, 0.0, 0.5, 0.5])
+        log(ffa, "go nodes 20000", "ffa", [0.5, 0.5, 0.5, 0.5])
+
+        check("a single-instrument log summarises",
+              summarise(nodes).returncode == 0)
+
+        # Doctrine's hardest line -- different instruments cannot be pooled --
+        # had no enforcement anywhere, and concatenating two tranches of one
+        # campaign is the obvious thing to do with two files. The tool used to
+        # answer the mixture with one confident Elo.
+        for name, a, b, what in (("instrument", nodes, timed, "movetime"),
+                                 ("mode", nodes, ffa, "ffa")):
+            mixed = os.path.join(d, "mixed_%s.jsonl" % name)
+            with open(mixed, "w") as fh:
+                for src in (a, b):
+                    fh.write(open(src).read())
+            run = summarise(mixed)
+            check("summarise refuses a log pooling two values of %s" % name,
+                  run.returncode != 0 and what in run.stderr,
+                  (run.stderr.strip().splitlines() or ["no message"])[0][:70])
+
+        # An old log has no header. It must still summarise -- there are real
+        # ones in docs/AB.md's campaigns -- and must say that it cannot be
+        # checked for a mixture.
+        legacy = os.path.join(d, "legacy.jsonl")
+        with open(legacy, "w") as fh:
+            fh.writelines(open(nodes).readlines()[1:])
+        run = summarise(legacy)
+        check("a headerless log still summarises", run.returncode == 0)
+        check("and says its instrument is unknown",
+              "no header line" in run.stderr)
+
+
 def test_bench_tooling():
     section("bench.py instruments")
     import subprocess
@@ -3614,6 +3675,7 @@ def main():
     test_ffa_data()
     test_pgn4()
     test_js_replay()
+    test_match_log_header()
     test_bench_tooling()
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, workers, args.quiet)
