@@ -3468,6 +3468,39 @@ def test_bench_tooling():
           set(bench.DEPTH_DELTA) <= {label for label, _, _ in bench.POSITIONS},
           "%s" % sorted(bench.DEPTH_DELTA))
 
+    # --sample used to parse the CALL GRAPH and print it as self time. The
+    # summary table is name-then-count, the call graph is count-then-name, so
+    # the old pattern matched none of the former and an arbitrary subset of
+    # the latter -- and inverted the ranking, reporting qsearch as the hot
+    # function when it is 3%. The fixture carries both tables, with a planted
+    # call-graph-only name that must NOT appear in the result.
+    fixture = "\n".join([
+        "Call graph:",
+        "    5000 Thread_1",
+        "      + 4000 qsearch  (in libtetrarch.so) + 12  [0x100]",
+        "      + ! : 2500 callgraph_only  (in libtetrarch.so) + 4  [0x200]",
+        "",
+        "Sort by top of stack, same collapsed (when >= 5):",
+        "        nnue_eval_for  (in libtetrarch.so)        2781",
+        "        tt_gen_pseudo  (in libtetrarch.so)        1381",
+        "        qsearch  (in libtetrarch.so)        206",
+        "        __bzero  (in libsystem_platform.dylib)        36",
+        "",
+        "Binary Images:",
+        "       0x100 -  0x200 libtetrarch.so",
+    ])
+    rows, lib_n, all_n = bench.parse_sample_selftime(fixture)
+    check("the sampler reads the self-time table, not the call graph",
+          rows == {"nnue_eval_for": 2781, "tt_gen_pseudo": 1381, "qsearch": 206},
+          "%s" % sorted(rows))
+    check("and never reports a call-graph-only frame",
+          "callgraph_only" not in rows)
+    check("and accounts for every sample it saw",
+          (lib_n, all_n) == (4368, 4404), "%d in lib of %d" % (lib_n, all_n))
+    check("and returns nothing rather than guessing without the table",
+          bench.parse_sample_selftime("Call graph:\n  10 x (in libtetrarch.so)")
+          == ({}, 0, 0))
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])

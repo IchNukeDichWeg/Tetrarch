@@ -639,6 +639,13 @@ and it buys back only the scans on moves that were going to be legal anyway.
 `tt_is_attacked` was 8.2% of a profile, so 3.9% is most of what was available.
 This is not the shape of change that pays like the accumulator did.
 
+**The 8.2% is stale and was read off a broken parse.** Re-measured on the
+repaired `--sample` (Apple M5 Pro, arm64), `tt_is_attacked` is **6.0% of Teams
+self time and 0.6% of FFA**, and its largest caller is the in-check test at the
+top of quiescence rather than the legality scan. The conclusion above survives
+-- 3.9% of a 6.0% budget is still most of what was there -- but anything sized
+against the 8.2% needs re-pricing.
+
 Verified: perft is exact over all five setups and gates `tt_gen_legal`
 directly; 120 full searches compared against a `-DNO_PIN_FASTPATH` build with
 identical nodes, scores, best moves and evaluations; and the two answers are
@@ -705,6 +712,20 @@ component by running it on one position hundreds of thousands of times, which
 kept the same few 512-byte rows of a 2 MB table resident; a real search scatters
 across it. Component timings taken in isolation do not merely have wide error
 bars, they can invert the ranking. Profile the real thing.
+
+**Correction: the sampling figures in that paragraph came from a defective
+parse.** `bench.py --sample` matched the call-graph table and printed the sum
+of an arbitrary subset of its frames as self time -- 1,112 samples of 6,534 on
+the run that found it -- so the 3.1% and 23.3% quoted above are not self time
+and cannot be checked now. **The result itself stands**: +63.37 +/- 4.68 over
+19,999 games and +59.8% NPS were measured by games and by nps, not by the
+profiler, and the change was right. What does not stand is the attribution.
+The rule survives in a narrower form -- a component timed in isolation keeps
+its tables warm and a real search does not, so the two instruments answer
+different questions -- but "sampling said otherwise" was not evidence here,
+because the sampler was not reporting what it claimed. On the repaired parse
+the mixed bench reads `nnue_eval_for` 42.6%, `tt_gen_pseudo` 21.1%, `qsearch`
+3.2%; the old tool reported those as 4.8%, 5.6% and 25.6%.
 
 A first attempt to fix it by vectorising the accumulator's widening add was
 **4% slower** and was dropped: the compiler already auto-vectorises that loop,

@@ -136,19 +136,63 @@ def search_round(depth):
     return nodes, time.perf_counter() - started, per_position
 
 
-def sample_profile(depth):
-    """Self-time per C function, from the platform sampling profiler.
+def parse_sample_selftime(text):
+    """Self time per function out of macOS `sample` output.
 
-    This is the method the project trusts, and until now it had no tooling
-    behind it -- which is how `--profile` came to report the evaluation at 26.7%
-    of a node when sampling said 3.1%. Timing a component in isolation keeps its
-    tables warm; a real search does not. Sampling measures the search that
-    actually runs.
+    Returns (rows, lib_samples, all_samples). `rows` maps a libtetrarch
+    function to its sample count.
 
-    macOS uses `sample`, Linux `perf record`. Only the macOS path has been run
-    here.
+    `sample` prints two tables. First a CALL GRAPH -- count first, indented,
+    one line per stack frame per position in the tree, so the same function
+    appears at many nodes with a partly-inclusive count each time. Then a self
+    time summary, "Sort by top of stack, same collapsed", which is name first
+    and count LAST, and is the only table that answers "where is the time".
+
+    This used to match `\\s*(\\d+)\\s+(\\S+)\\s+\\(in libtetrarch` against
+    everything before "Binary Images". That pattern needs count-then-name, so
+    it could never match one line of the summary; and because call-graph lines
+    carry a `+ ! : ` prefix at depth it caught only an arbitrary minority of
+    those too -- 1,112 samples of 6,534 on the run that found this. The sum of
+    an arbitrary subset of call-graph nodes is not self time, not total time,
+    and not a consistent subset of either. It reported qsearch at 25.6% (truly
+    3.2%) and nnue_eval_for at 4.8% (truly 42.6%): the ranking was inverted,
+    which is worse than a wrong number on a track where the whole point is
+    knowing which function to open.
     """
     import re
+    rows, all_samples = {}, 0
+    body = text.split("Sort by top of stack", 1)
+    if len(body) < 2:
+        return rows, 0, 0
+    for line in body[1].split("Binary Images")[0].splitlines()[1:]:
+        if not line.strip():
+            break                        # the summary ends at a blank line
+        m = re.match(r"\s+(\S+)\s+\(in ([^)]+)\)\s+(\d+)\s*$", line)
+        if not m:
+            continue
+        n = int(m.group(3))
+        all_samples += n
+        if m.group(2).startswith("libtetrarch"):
+            rows[m.group(1)] = rows.get(m.group(1), 0) + n
+    return rows, sum(rows.values()), all_samples
+
+
+def sample_profile(depth, only="all"):
+    """Self-time per C function, from the platform sampling profiler.
+
+    Sampling measures the search that actually runs, where `--profile` times a
+    component in isolation and keeps its tables warm. The two answer different
+    questions and neither replaces the other: read `--profile` for per-call
+    cost and call rate, and read this for where the time goes.
+
+    Sample the modes separately. They do not resemble each other -- evaluation
+    is 27.8% of a Teams search and 74.7% of an FFA one on the reference box --
+    so a mixed figure describes neither.
+
+    macOS uses `sample`, Linux `perf record`. Only the macOS path has been run
+    here; the perf branch reports self time already (`--no-children`) but is
+    unverified on this platform.
+    """
     import shutil
     import signal
     import subprocess
@@ -156,20 +200,18 @@ def sample_profile(depth):
     spin = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "bench.py")
     child = subprocess.Popen([sys.executable, spin, "--depth", str(depth),
-                              "--rounds", "99", "--quiet"],
+                              "--rounds", "99", "--only", only, "--quiet"],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
     time.sleep(2.0)                      # let it get past start-up
+    lib_n = all_n = 0
     try:
         if shutil.which("sample"):
             out = subprocess.run(["sample", str(child.pid), "8", "-mayDie"],
                                  capture_output=True, text=True).stdout
-            rows = {}
-            for line in out.split("Binary Images")[0].splitlines():
-                m = re.match(r"\s*(\d+)\s+(\S+)\s+\(in libtetrarch", line)
-                if m and int(m.group(1)):
-                    rows[m.group(2)] = rows.get(m.group(2), 0) + int(m.group(1))
+            rows, lib_n, all_n = parse_sample_selftime(out)
         elif shutil.which("perf"):
+            import re
             subprocess.run(["perf", "record", "-q", "-g", "-p", str(child.pid),
                             "--", "sleep", "8"], capture_output=True)
             out = subprocess.run(["perf", "report", "--stdio", "--no-children",
@@ -180,6 +222,7 @@ def sample_profile(depth):
                              line)
                 if m:
                     rows[m.group(2)] = rows.get(m.group(2), 0.0) + float(m.group(1))
+            lib_n = all_n = sum(rows.values())
         else:
             print("no sampling profiler found (need `sample` or `perf`)",
                   file=sys.stderr)
@@ -194,9 +237,15 @@ def sample_profile(depth):
         return 1
     total = sum(rows.values())
     print("machine: %s" % machine())
-    print("self time inside the C core, sampled from a running search:")
+    print("self time inside the C core (%s), sampled from a running search:"
+          % only)
     for name, n in sorted(rows.items(), key=lambda kv: -kv[1]):
         print("  %-18s %6.1f%%" % (name, 100.0 * n / total))
+    # A parse that silently drops most of its input must not be able to look
+    # healthy. The previous one accounted for 17% of the samples and read as
+    # a clean table.
+    print("  %-18s %6d samples in libtetrarch, %d sampled overall (%.0f%%)"
+          % ("--", lib_n, all_n, 100.0 * lib_n / all_n if all_n else 0.0))
     return 0
 
 
@@ -268,6 +317,13 @@ def main():
     ap.add_argument("--sample", action="store_true",
                     help="run the bench under the platform sampling profiler "
                          "and print the self-time table")
+    # Teams and FFA do not resemble each other under a profile: evaluation is
+    # 27.8% of a Teams search and 74.7% of an FFA one, so the mixed number
+    # describes neither mode. It stays the default because it is the signature
+    # every commit quotes.
+    ap.add_argument("--only", choices=("all", "teams", "ffa"), default="all",
+                    help="restrict to one mode's positions; changes the "
+                         "signature, so quote it with the mode named")
     ap.add_argument("--iters", type=int, default=200000,
                     help="calls per component under --profile")
     # The engine plays with a net, so benching without one measures a path it
@@ -286,6 +342,14 @@ def main():
         print("bench.py needs the C core: run ./setup.sh", file=sys.stderr)
         return 1
 
+    if args.only != "all":
+        want = MODE_FFA if args.only == "ffa" else MODE_TEAMS
+        POSITIONS[:] = [p for p in POSITIONS if p[1] == want]
+        if not POSITIONS:
+            print("no %s positions in the bench set" % args.only,
+                  file=sys.stderr)
+            return 1
+
     if args.net != "none":
         path = args.net
         if path == "default":
@@ -302,7 +366,7 @@ def main():
     print("net:     %s" % ("loaded" if core.net_loaded() else "none (hand eval)"))
 
     if args.sample:
-        return sample_profile(args.depth)
+        return sample_profile(args.depth, args.only)
 
     if args.profile:
         depth = args.depth
