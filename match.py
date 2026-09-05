@@ -127,6 +127,11 @@ ROTATIONS = 4
 #: it; this is the backstop.
 MAX_PLIES = 400
 RANDOM_ENGINE = "random"
+#: Every "+/-" this file prints is Z95 standard errors -- a 95% interval, not
+#: one sigma. So a sigma count is `Z95 * Elo / margin`, and dividing Elo by the
+#: margin understates it by exactly this factor. That slip put "0.9 sigma" next
+#: to the null that certified the fixed-nodes harness; it was 1.77.
+Z95 = 1.96
 
 
 # --- engine driver ----------------------------------------------------------
@@ -253,7 +258,7 @@ def per_setup(games, book):
         rate = sum(sums) / (ROTATIONS * len(sums))
         mean = sum(sums) / len(sums)
         var = sum((s - mean) ** 2 for s in sums) / max(len(sums) - 1, 1)
-        err = 1.96 * math.sqrt(var / len(sums)) / ROTATIONS
+        err = Z95 * math.sqrt(var / len(sums)) / ROTATIONS
         out.append("  %-9s %6d   %.4f   %+7.2f +/- %.2f"
                    % (setup, len(sums), rate, elo(rate),
                       (elo(min(rate + err, 0.9999))
@@ -533,6 +538,11 @@ def summarise(by_opening, games, elapsed):
     it sums to one of thirteen. The two distributions are not comparable and
     the runs cannot be pooled; the mode is read off the log rather than passed
     in, so --summarise on an old file still reports it correctly.
+
+    The printed "+/-" is Z95 = 1.96 standard errors, a 95% interval. Read a
+    sigma count as `1.96 * Elo / margin`; `Elo / margin` is the same number
+    1.96x too small, which is conservative for a confirm and wrong in the
+    dangerous direction for a null.
     """
     ffa = any(g.get("mode") == "ffa" for g in games)
     step = 3 if ffa else 2
@@ -555,7 +565,7 @@ def summarise(by_opening, games, elapsed):
         se_rate = math.sqrt(var / len(sums)) / ROTATIONS
         e = elo(rate)
         if 0.0 < rate < 1.0:
-            margin = 1.96 * se_rate * 400.0 / (math.log(10) * rate * (1 - rate))
+            margin = Z95 * se_rate * 400.0 / (math.log(10) * rate * (1 - rate))
         else:
             margin = float("inf")
         lines.append("Elo %+.2f +/- %.2f   (%d complete rotations)"

@@ -16,6 +16,15 @@ THIRTEEN. Different pairing, different scale, different distribution.
 
 Reference machine for these runs: 111-core Linux box, `--hash 256`.
 
+**How to read the margin.** The `+/-` `match.py` prints is `Z95 = 1.96`
+standard errors -- a 95% interval, **not** one sigma. A sigma count is
+therefore `1.96 * Elo / margin`. Most sigma figures written in this file were
+computed as `Elo / margin` and are exactly 1.96x too small; they are labelled
+below where they appear rather than rewritten, because the verdict each
+supports is unchanged. The direction of the error matters: for a confirm it is
+merely conservative, but for a **null** it flatters the harness, and the one
+place that changed a reading is corrected in the table above.
+
 ---
 
 ## Harness validity
@@ -27,7 +36,7 @@ bugs found by exactly that.
 | when | null result | verdict |
 |---|---|---|
 | before the rotation fix | **+36.26 ± 18.37** (2,000 games) | **BIASED** -- engine A received the original R+Y armies in all four rotations |
-| after the rotation fix | −13.21 ± 14.63 (2,000 games) | inside noise at 0.9σ, but A and B collapsed to one subprocess |
+| after the rotation fix | −13.21 ± 14.63 (2,000 games) | **1.77σ, p ≈ 0.08 -- marginal, not a clean pass**, and A and B had collapsed to one subprocess |
 | after the cache-key fix | **−2.64 ± 6.24** (10,000 games) | **PASSES** -- harness certified at this precision |
 
 **Bug 1 -- the rotation cancelled nothing.** `rotate(b, k)` shifts every seat's
@@ -274,7 +283,9 @@ back the depth it loses. It keeps well over half.
 
 **The instrument was certified first.** Every fixed-time result in this file
 rests on an instrument that had never had a null run on it. It has now:
-**-10.77 +/- 13.96** over 2,000 games, 1.5 sigma, inside noise. Weaker than the
+**-10.77 +/- 13.96** over 2,000 games, 1.5 sigma, inside noise. (That figure is
+already the corrected reading -- `1.96 * 10.77 / 13.96` -- unlike most sigma
+counts in this file. Do not "fix" it.) Weaker than the
 fixed-nodes null (-2.64 +/- 6.24) because it is a fifth of the games -- fixed
 time costs 5.6x the wall clock per game. Worth noting the sign: the null
 disadvantages engine A slightly, and every fixed-time result here is positive
@@ -378,7 +389,8 @@ corrupting its own accumulator. 149,986 games played by net v1 at 20,000 nodes,
 | net v1, its own teacher | **+93.95 +/- 14.81** | 2,000 |
 | hand eval | **+140.01 +/- 16.97** | 2,000 |
 
-About 6.3 and 8.3 sigma, against a null of -2.64 +/- 6.24.
+About 6.3 and 8.3 sigma as written -- `Elo / margin`, so 12.4 and 16.2 read
+correctly -- against a null of -2.64 +/- 6.24.
 
 **Phase 4's gate is met.** A net beats the evaluation it was written to
 replace, after v0 at -40.13 and v1 at -2.26. More than that, generation N+1
@@ -1210,7 +1222,8 @@ chess proportions.
 | Per setup | by +7.90, modern +3.04, byg -1.00, classic -1.88, rg -3.33, all +/- ~8 |
 
 `--opt-b Repetitions=false`, both sides the hand eval. Worth nothing at 0.25
-sigma, and no setup moves. Kept on anyway, and for the reason the Teams version
+sigma as written, 0.50 read correctly, and no setup moves. Kept on anyway, and
+for the reason the Teams version
 was: without it the search cannot score a draw it is walking into, which is a
 rules gap rather than a tuning choice. The toggle exists so the claim could be
 measured like any other, and now it has been.
@@ -1250,7 +1263,8 @@ one unconditionally, and the toggle exists so this could be measured rather
 than because off is a configuration anyone should use.
 
 Worth 1.95x on what the engine actually does -- iterative deepening to depth 7
-falls from 47,367,089 nodes to 24,268,215 -- and 2.2 sigma of Elo at fixed
+falls from 47,367,089 nodes to 24,268,215 -- and 2.2 sigma as written (4.3 read
+correctly) of Elo at fixed
 nodes. Both numbers matter: the node reduction is why an FFA A/B is affordable
 at all, and the Elo is why it stays on.
 
@@ -1345,7 +1359,8 @@ byg       +95.39 +/- 12.46
 modern    +94.33 +/- 11.84
 ```
 
-Strongest where it trained and 8-10 sigma everywhere, with 35 Elo between best
+Strongest where it trained and 8-10 sigma as written everywhere -- 16-20 read
+correctly -- with 35 Elo between best
 and worst. One net covers all five FFA setups; the Teams split that produced
 the two-net bundle does not repeat here.
 
@@ -1373,7 +1388,7 @@ Plies       | 250.8 mean              | 208.2 mean
 Decisive    | 67.9%                   | 88.9%
 ```
 
-Fixed nodes is a clear confirm at 6.5 sigma.
+Fixed nodes is a clear confirm at 6.5 sigma as written, 12.7 read correctly.
 
 **The fixed-time column is VOID.** It was taken before movetime was enforced
 mid-depth: the budget was checked only between iterative-deepening iterations,
@@ -1387,7 +1402,9 @@ number. Neither is the -26.60 above it.
 Two readings taken through it, for the record and not to be quoted: +18.30
 +/- 14.88 at movetime 200 over 1,571 games, and +75.71 +/- 17.21 at movetime
 100 over 1,066. They differ by 2.5 sigma on the same engines and the same book,
-which is itself the evidence that the instrument was not measuring a clock. Net v4 in Teams showed the same shape (+135.19 fixed
+which is itself the evidence that the instrument was not measuring a clock
+(2.5 sigma as written; 4.9 read correctly, so the disagreement is sharper than
+it looks). Net v4 in Teams showed the same shape (+135.19 fixed
 nodes against +76.79 fixed time) and cleared both. This one clears one.
 
 **The fixed-time number moved 45 Elo when the time management was fixed, and
@@ -1413,7 +1430,8 @@ Pts   | A 46.2 mean, B 40.9 per seat
 Games | 227.95 plies mean, 66.8% last-seat-standing
 ```
 
-Inside noise at 0.8 sigma, so **not a result** -- but it is not a kill either,
+Inside noise at 0.8 sigma as written, 1.6 read correctly -- so **not a result**,
+but it is not a kill either,
 and that is the thing worth knowing. The same screen run on net-v5, a Teams net
 handed to FFA, read -124.50 +/- 49.31. This one leans positive on every
 secondary reading: more firsts than the 57 a level engine expects, and 5.3

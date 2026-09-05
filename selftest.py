@@ -3087,6 +3087,30 @@ def test_match_ffa():
           len(text.split("Dist: ")[1].split("\n")[0].split(",")) == 9, text)
     check("a Teams summary reports no placement", "A placed" not in text)
 
+    # The printed margin is Z95 standard errors, and docs/AB.md reads sigma
+    # counts off it. Recompute it here from the rotation sums independently of
+    # match.py's own arithmetic, so a change to the multiplier -- 1.0, 2.0, or
+    # a "fix" that drops it -- fails rather than silently rescaling every
+    # verdict in the campaign log.
+    import math as _m
+    sums = [3.0, 2.5, 2.0, 2.5, 3.0, 1.5, 2.0, 2.5]
+    by_opening = {i: [s / match.ROTATIONS] * match.ROTATIONS
+                  for i, s in enumerate(sums)}
+    games = [{"score": 0.5, "opening": i, "plies": 10, "reason": "checkmate R"}
+             for i in range(len(sums)) for _ in range(match.ROTATIONS)]
+    text = match.summarise(by_opening, games, 0.0)
+    got = float(text.split("+/- ")[1].split()[0])
+
+    rate = sum(sums) / (match.ROTATIONS * len(sums))
+    mean = sum(sums) / len(sums)
+    var = sum((s - mean) ** 2 for s in sums) / (len(sums) - 1)
+    se = _m.sqrt(var / len(sums)) / match.ROTATIONS
+    want = match.Z95 * se * 400.0 / (_m.log(10) * rate * (1 - rate))
+    check("the printed margin is exactly Z95 standard errors",
+          abs(got - want) < 0.005, "printed %.4f, Z95*se gives %.4f" % (got, want))
+    check("Z95 is the 95% two-sided normal quantile, not one sigma",
+          abs(match.Z95 - 1.96) < 1e-9, "%r" % (match.Z95,))
+
 
 def test_js_replay():
     section("standalone viewer replayer (gui/viewer.html)")
