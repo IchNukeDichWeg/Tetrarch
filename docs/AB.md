@@ -30,14 +30,16 @@ place that changed a reading is corrected in the table above.
 ## Harness validity
 
 A fixed-nodes campaign is only worth running if a null self-test -- the same
-engine on both sides -- comes back inside noise. Both entries below are harness
-bugs found by exactly that.
+engine on both sides -- comes back inside noise. The first two bugs below were
+found by exactly that; the third was found by reading the pairing, and is why
+the certifying row was re-run.
 
 | when | null result | verdict |
 |---|---|---|
 | before the rotation fix | **+36.26 ± 18.37** (2,000 games) | **BIASED** -- engine A received the original R+Y armies in all four rotations |
 | after the rotation fix | −13.21 ± 14.63 (2,000 games) | **1.77σ, p ≈ 0.08 -- marginal, not a clean pass**, and A and B had collapsed to one subprocess |
-| after the cache-key fix | **−2.64 ± 6.24** (10,000 games) | **PASSES** -- harness certified at this precision |
+| after the cache-key fix | −2.64 ± 6.24 (10,000 games) | passed, but **superseded** -- taken through the orientation-aliased pairing (Bug 3) |
+| after the orientation fix | **−0.31 ± 6.58** (10,000 games) | **PASSES** at 0.09σ -- harness certified at this precision |
 
 **Bug 1 -- the rotation cancelled nothing.** `rotate(b, k)` shifts every seat's
 colour by +k, so rotated-frame team `t` holds the armies originally in team
@@ -51,6 +53,33 @@ returned the same subprocess for both sides: all four seats shared one
 transposition table. Every real A/B differs in a net or an option and so got
 two processes -- meaning the null was validating a setup no A/B ever used.
 Fixed by keying on the side as well.
+
+**Bug 3 -- the rotation left board orientation uncancelled** (`f294319`).
+`rotate(b, k)` moves the turn with the board, so army and tempo cancel over the
+four games but orientation did not: A held original team 0 at 0°/90° and team
+1 at 180°/270°, so a rotation summed to `2 + [g(0)-g(180)] + [g(90)-g(270)]`,
+the engine's own orientation asymmetry. Fixed by xoring the opening's parity
+into the team choice. The re-run:
+
+```
+Instrument  fixed nodes 20,000, hand eval both sides, classic Teams
+Elo         -0.31 +/- 6.58   (2,500 complete rotations)
+Games       10,000   score 4,995.50
+Dist        140, 13, 572, 47, 960, 40, 578, 15, 135
+Plies       77.78 mean, 51 median; checkmate 98.73%, adjudicated 1.12%
+Machine     Apple M5 Pro, 18 cores (6+12), 16 workers, tree b825b97
+```
+
+Symmetric bucket for bucket (140/135, 572/578, 13/15, 47/40). This does **not**
+size the bias the fix removed: the old −2.64 ± 6.24 was inside noise too, and
+0.09σ against 0.83σ is not a measurement of the difference. It certifies the
+fixed harness, which is what the row is for. It was also taken on the Mac, not
+the 111-core reference box -- fixed nodes is contention-immune, so it should
+travel, but that is the instrument's design claim rather than a second
+measurement.
+
+**Still owed:** the Teams fixed-time null (−0.00 ± 14.24, 25 Aug) was taken
+through the same aliased pairing and has not been re-run.
 
 ---
 
@@ -1234,6 +1263,10 @@ do differ. What it does show is that the FFA fixed-time harness carries no seat
 bias at this scale: A placed 2550/2463/2461/2526 against 2,500 expected.
 
 ### Teams null self-test at fixed time, after the movetime fix -- PASSES
+
+Taken before the orientation fix (`f294319`, Bug 3 under Harness validity), so
+through the aliased pairing. It read zero anyway, but a re-run is owed before
+it certifies the current harness.
 
 | | |
 |---|---|
