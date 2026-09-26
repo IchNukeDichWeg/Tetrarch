@@ -47,3 +47,4 @@ dist:
 
 clean:
 	rm -rf build __pycache__ */__pycache__
+	rm -f tetrarch-v*.tar.gz
