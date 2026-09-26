@@ -3656,8 +3656,8 @@ def main():
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",
                     help="random positions through both movegens (default 3000)")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--workers", type=int, default=4, metavar="N",
-                    help="worker processes (default 4); 0 means every core")
+    ap.add_argument("--workers", type=int, default=0, metavar="N",
+                    help="worker processes (0, the default, means every core)")
     ap.add_argument("--perft", type=int, default=4, metavar="D",
                     help="perft depth for the pinned check (default 4)")
     ap.add_argument("--perft-deep", action="store_true",
