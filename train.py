@@ -630,7 +630,10 @@ def main():
                     help="feature cache .npz; built from --data if absent")
     ap.add_argument("--out", metavar="DIR",
                     help="checkpoint directory; required, no default")
-    ap.add_argument("--epochs", type=int, default=8)
+    ap.add_argument("--epochs", type=int, default=8,
+                    help="0 builds the feature cache and exits 0, with no "
+                         "--out needed. Building a cache and training are two "
+                         "phases and this is how you ask for only the first")
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--device", default="numpy",
                     choices=("numpy", "cpu", "mps", "cuda"),
@@ -659,8 +662,16 @@ def main():
         return 0
     # Checked here rather than by argparse so --self-check needs neither. Both
     # stay mandatory otherwise: no output path in this repo has a default.
-    if not args.cache or not args.out:
-        ap.error("--cache and --out are required")
+    # --out is required only when there is something to write into it:
+    # `--epochs 0` is the documented "just build the cache" call, and the two
+    # GPU scripts used to spell it `--epochs 1 --out /tmp/cacheonly`, training
+    # a full epoch of a 37.7M-row cache on rented time and discarding it.
+    if not args.cache:
+        ap.error("--cache is required")
+    if args.epochs > 0 and not args.out:
+        ap.error("--out is required unless --epochs is 0")
+    if args.epochs < 0:
+        ap.error("--epochs cannot be negative")
 
     if os.path.exists(args.cache):
         print("loading cache %s" % args.cache)
@@ -671,7 +682,8 @@ def main():
         data = build_cache(args.data, args.cache, args.games, args.augment,
                            args.quiet, args.cache_workers)
 
-    os.makedirs(args.out, exist_ok=True)
+    if args.out:
+        os.makedirs(args.out, exist_ok=True)
     n = len(data["cp"])
     print("%d positions, %d features wide, batch %d, lambda %.2f"
           % (n, MAX_FEATURES, args.batch, args.blend))
@@ -692,6 +704,13 @@ def main():
     train_index = np.nonzero(~is_val)[0]
     print("holding out %d of %d games (%d of %d positions)"
           % (len(held), len(ids), len(val_index), n))
+
+    # Building a cache and training are two phases. Asking for only the first
+    # is a legitimate call and must exit 0: under `set -euo pipefail` a
+    # non-zero exit from it aborts the whole GPU script.
+    if args.epochs == 0:
+        print("cache only (--epochs 0): %s, %d rows" % (args.cache, n))
+        return 0
 
     # --device numpy is the trainer every shipped net came from and stays the
     # default. Anything else runs the same net through torch, which is only

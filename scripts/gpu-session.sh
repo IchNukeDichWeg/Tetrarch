@@ -53,7 +53,7 @@ GATE
 
 echo "=== 3. the full cache, built once and reused by all twelve nets ==="
 python3 train.py --data runs/games/games_v9.jsonl --cache runs/cache/v9.npz \
-  --augment --cache-workers 0 --out /tmp/cacheonly --epochs 1 --device cuda \
+  --augment --cache-workers 0 --epochs 0 \
   | tee runs/logs/cache.txt
 
 # Ten nets from the one cache. "tag:lambda:seed:epochs".

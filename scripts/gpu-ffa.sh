@@ -62,7 +62,7 @@ echo "=== 2. cache, built once ==="
 # No --augment: train.py refuses it for FFA anyway, since only the seat that
 # moved has a label.
 python3 train.py --data runs/games/games_ffa1.jsonl --cache runs/cache/ffa1.npz \
-  --cache-workers 0 --out /tmp/ffacache --epochs 1 --device cuda \
+  --cache-workers 0 --epochs 0 \
   | tee runs/logs/ffa-cache.txt
 
 # "tag:lambda:seed:epochs". net-ffa1 was 0.7 / 8 and picked epoch 2, so the
