@@ -552,6 +552,14 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
                 break;
             }
         }
+        /* An en-passant flag with NO live offer is not an en-passant move.
+         * The generator only emits F_EP for a square in ep_offers, so this
+         * cannot be reached through the search -- but the exported ctypes
+         * surface the test suite drives can hand one in, and the block below
+         * then wrote b->sq[-1], which lands on points[3]'s high byte. One
+         * guard here and the matching one in tt_unmake degenerate it to the
+         * plain move it actually describes. */
+        if (victim_sq < 0) flag = 0;
     }
 
     u->captured = captured;
@@ -690,6 +698,10 @@ void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
 {
     int frm = MV_FROM(m), to = MV_TO(m), flag = MV_FLAG(m), promo = MV_PROMO(m);
     int mover = u->mover;
+
+    /* The matching half of tt_make's guard: make degenerated an en-passant
+     * flag with no live offer to a plain move, so undo the plain move. */
+    if (flag == F_EP && u->victim_sq < 0) flag = 0;
 
     b->points[mover] = (uint16_t)(b->points[mover] - u->scored);
 

@@ -3879,6 +3879,30 @@ def test_protocol_contracts():
           got == str(want), "Python %d vs C %r" % (want, got or run.stderr[-120:]))
 
 
+    # --- an en-passant flag with no live offer -----------------------------
+    # tt_make wrote b->sq[-1] -- an out-of-bounds write landing on points[3]'s
+    # high byte. Unreachable through the generator, reachable through the
+    # exported ctypes surface this suite itself drives.
+    # Points above 255 on purpose: sq[-1] is points[3]'s HIGH byte, so the
+    # damage is invisible while every seat is under 256. The whole struct is
+    # compared rather than a field, so the check does not depend on layout.
+    from tetrarch.board import F_EP
+    b = start_board("classic", MODE_FFA)
+    b.points = [300, 301, 302, 303]
+    bogus = make_move(sq_of(7, 1), sq_of(7, 2), F_EP, 0)
+    cb = core.CBoard(b)
+    before = bytes(cb.b)
+    try:
+        cb.make(bogus)
+        cb.unmake(bogus)
+        ok = bytes(cb.b) == before
+        why = "points now %s" % ([cb.b.points[c] for c in range(4)],)
+    except Exception as exc:                                 # noqa: BLE001
+        ok, why = False, repr(exc)
+    check("an en-passant flag with no offer leaves the board untouched",
+          ok, why)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",
