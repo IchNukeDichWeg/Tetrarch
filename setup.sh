@@ -211,6 +211,11 @@ for src in "$ROOT"/src/c/*.c; do
     name=$(basename "$src" .c)
     out="$BUILD/$LIB_PREFIX$name$LIB_EXT"
     say "cc        $name.c -> build/$LIB_PREFIX$name$LIB_EXT"
+    # Drop the previous library FIRST. cc writes no output when it fails, so
+    # without this a compile error leaves the last good build in place and the
+    # next `python3 selftest.py` silently measures code that is no longer in
+    # src/c/. Better to have nothing than to have yesterday's engine.
+    rm -f "$out"
     # shellcheck disable=SC2086
     "$CC" $CFLAGS_COMMON $ARCHFLAG "$src" -o "$out" -lm
     built=$((built + 1))
