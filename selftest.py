@@ -3744,6 +3744,26 @@ def test_protocol_contracts():
         check("match.py %s 0 is rejected, not dispatched" % flag, ok, why)
 
 
+    # --- the FFA evaluation counter ----------------------------------------
+    # The counter lived only in tt_eval_bounded, which the FFA leaf never
+    # calls, so every FFA search reported 0 evaluations while evaluating at
+    # nearly every node -- 32% of the frozen bench sample divided by zero.
+    import bench
+    ffa = [(label, mode, fen) for label, mode, fen in bench.POSITIONS
+           if mode == MODE_FFA]
+    check("the bench still carries an FFA position to count", bool(ffa))
+    for label, mode, fen in ffa:
+        b = Board.from_fen4(fen, mode)
+        core.clear_hash()
+        r = core.search(b, 4)
+        evals = core.search_evals()
+        check("%s reports a non-zero evaluation count" % label, evals > 0,
+              "%d evals over %d nodes" % (evals, r.nodes))
+        check("and it is a plausible rate for a search with no quiescence",
+              r.nodes // 2 <= evals <= r.nodes,
+              "%d evals over %d nodes" % (evals, r.nodes))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",

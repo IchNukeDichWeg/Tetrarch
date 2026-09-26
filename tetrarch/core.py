@@ -646,8 +646,11 @@ def search_makes():
 def search_evals():
     """Evaluations performed by the last tt_search. Reset per search.
 
-    Far below one per node: interior nodes recurse instead of evaluating, so
-    this is essentially the quiescence leaves.
+    In TEAMS, far below one per node: interior nodes recurse instead of
+    evaluating, so it is essentially the quiescence leaves. In FFA it is close
+    to one per node -- the paranoid leaf evaluates directly and there is no
+    quiescence -- and it used to report 0 there, because the counter sat in
+    tt_eval_bounded, which that path never calls.
     """
     return int(load().tt_search_evals())
 

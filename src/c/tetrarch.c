@@ -1760,10 +1760,19 @@ static int32_t lazy_margin(void)
     return margin;
 }
 
+/* How many evaluations the last search paid for. Counted in the three
+ * functions that actually evaluate, not at their call sites: it lived only in
+ * tt_eval_bounded, which the FFA leaf never reaches, so every FFA search
+ * reported exactly 0 while evaluating at nearly every node -- 32% of the
+ * frozen bench sample divided by a meaningless zero. Nothing here calls
+ * anything else here, so there is no double count. */
+static uint64_t search_evals;
+
 /* One binary, two evals: a net is loaded or it is not. That is what makes the
  * NNUE-vs-hand A/B a single setoption apart rather than two builds. */
 int32_t tt_eval(const TtBoard *b)
 {
+    search_evals++;
     return nn_loaded ? nnue_eval(b) : hand_eval(b);
 }
 
@@ -1772,13 +1781,12 @@ int32_t tt_eval(const TtBoard *b)
  * a machine with a net loaded, and no test would have said so. */
 static int32_t eval_for(const TtBoard *b, int persp)
 {
+    search_evals++;
     return nn_loaded ? nnue_eval_for(b, persp) : hand_eval_for(b, persp);
 }
 
 /* Same value as tt_eval unless the lazy toggle is on and the bound is already
  * settled. NNUE has no cheap/expensive split, so it is unaffected. */
-static uint64_t search_evals;
-
 static inline int32_t tt_eval_bounded(const TtBoard *b, int32_t alpha,
                                       int32_t beta)
 {
