@@ -155,10 +155,23 @@ command -v "$CC" >/dev/null 2>&1 || die \
     "no C compiler. On macOS run: xcode-select --install"
 say "cc:       $($CC --version 2>&1 | head -1)"
 
-# Apple clang on arm64 historically rejects -march=native; GCC and clang on x86
-# want it. Probe rather than assume, and carry on unoptimised if neither works.
+# Probe rather than assume, and carry on unoptimised if neither works. ORDER
+# MATTERS and differs by architecture:
+#
+#   arm64: clang now ACCEPTS -march=native instead of rejecting it, and resolves
+#   it to -target-cpu apple-m1 -- the same CPU it picks with no flag at all.
+#   Only -mcpu=native names the real core (verified with `cc -### -c`: apple-m1
+#   vs apple-m4 on an M4). A probe that tries -march first therefore succeeds
+#   and silently tunes for the wrong chip.
+#
+#   x86: -mcpu=native is the deprecated spelling of -mtune=native and selects
+#   NO instruction set, so -march must stay first there.
+case "$(uname -m)" in
+    arm64|aarch64) ARCH_PROBE="-mcpu=native -march=native" ;;
+    *)             ARCH_PROBE="-march=native -mcpu=native" ;;
+esac
 ARCHFLAG=""
-for flag in -march=native -mcpu=native; do
+for flag in $ARCH_PROBE; do
     if echo 'int main(void){return 0;}' \
         | "$CC" $flag -x c - -o /dev/null 2>/dev/null; then
         ARCHFLAG=$flag
