@@ -691,7 +691,15 @@ class Board:
         if self.mode == MODE_FFA:
             self.points = list(self.points)
             king = self.kings[seat]
-            if king < 0 or not self._checked(seat):
+            # A seat with NO king is not stalemated, so it is not paid the
+            # stalemate bonus. Folding king < 0 into that branch scored the
+            # elimination backwards on any FEN4 that simply omits a king.
+            # Nobody is paid: who should be is §14 item 9's question, and
+            # inventing an answer would put points in a game that awarded
+            # none. Mirrors ffa_award_elimination in src/c/tetrarch.c.
+            if king < 0:
+                pass
+            elif not self._checked(seat):
                 self.points[seat] += ELIM_POINTS
             else:
                 for back in (3, 2, 1):

@@ -2653,7 +2653,13 @@ static void ffa_award_elimination(TtBoard *b, int seat)
 {
     int king = b->kings[seat], c, t;
     if (b->mode != MODE_FFA) return;
-    if (king < 0 || !tt_is_attacked(b, king, seat)) {
+    /* A seat with no king is NOT stalemated, so it is not paid the stalemate
+     * bonus. Folding king < 0 into the stalemate branch scored that seat's
+     * elimination backwards on any FEN4 that simply omits a king. Nobody is
+     * paid here: who should be is §14 item 9's question, and inventing an
+     * answer would put points in a game that awarded none. */
+    if (king < 0) return;
+    if (!tt_is_attacked(b, king, seat)) {
         b->points[seat] = (uint16_t)(b->points[seat] + FFA_ELIM_POINTS);
         return;
     }
