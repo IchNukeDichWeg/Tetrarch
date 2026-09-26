@@ -372,6 +372,55 @@ static int ep_offers(const TtBoard *b, int me, int *targets, int *victims)
     return n;
 }
 
+/* Per-seat occupancy over the 256-slot mailbox, four uint64 per seat.
+ *
+ * tt_gen_pseudo used to walk all 256 padded slots to find the mover's ~16
+ * pieces: 240 of 256 iterations were pure test-and-skip.
+ *
+ * A file-static with a validity key rather than a TtBoard field -- the field
+ * grows the struct by 128 bytes and forces a matching core.py layout change,
+ * where a static with the same key-token discipline nn_acc already uses needs
+ * neither, and degrades to a rebuild rather than to a wrong answer when a
+ * board arrives from outside C (a fresh position, the next A/B game).
+ *
+ * NODE-IDENTITY: the words are visited low to high and __builtin_ctzll takes
+ * the low bit first, so squares come out in ascending `sq` order -- exactly
+ * the order the 0..NSQ scan produced. The move list is therefore identical
+ * element for element, not merely equivalent, which is what keeps the bench
+ * signature fixed.
+ *
+ * ponytail: four words over the 256-slot mailbox, not three over the 160
+ * compact squares. The compact map would save one word per iteration but
+ * needs an inverse table and makes the ascending-order argument depend on
+ * compact[] being monotonic in sq. Indexing by sq keeps node-identity
+ * self-evident. Switch to 160 bits if this ever shows up hot again. */
+static uint64_t occ[4][4];
+static uint64_t occ_key;
+static int occ_ok = 0;
+
+static inline void occ_set(int seat, int sq)
+{
+    occ[seat][sq >> 6] |= 1ULL << (sq & 63);
+}
+static inline void occ_clr(int seat, int sq)
+{
+    occ[seat][sq >> 6] &= ~(1ULL << (sq & 63));
+}
+
+static void occ_rebuild(const TtBoard *b)
+{
+    int sq;
+    memset(occ, 0, sizeof(occ));
+    for (sq = 0; sq < NSQ; sq++) {
+        uint8_t p;
+        if (!P.valid[sq]) continue;
+        p = b->sq[sq];
+        if (p) occ_set(P.pc_color[p], sq);
+    }
+    occ_key = b->key;
+    occ_ok = 1;
+}
+
 /* Counted for the profile, like makes: the rate is not one per node and
  * assuming it was made the tool contradict its own output. */
 static uint64_t search_gens;
@@ -379,7 +428,8 @@ static uint64_t search_gens;
 int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
 {
     search_gens++;
-    int me = b->turn, n = 0, sq, i, j;
+    int me = b->turn, n = 0, sq, i, j, wi;
+    uint64_t w;
     int promo_coord = P.promo_coord[b->mode];
     int nchoice = P.n_promo_choices[b->mode];
     const int32_t *choices = P.promo_choices[b->mode];
@@ -388,13 +438,15 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
     int ep_target[4], ep_victim[4];
     int n_offers = ep_offers(b, me, ep_target, ep_victim);
 
-    for (sq = 0; sq < NSQ; sq++) {
+    if (!occ_ok || occ_key != b->key) occ_rebuild(b);
+
+    for (wi = 0; wi < 4; wi++)
+    for (w = occ[me][wi]; w; w &= w - 1) {
         uint8_t p;
         int ptype, sliding, nd;
         const int32_t *deltas;
-        if (!P.valid[sq]) continue;
+        sq = (wi << 6) + __builtin_ctzll(w);
         p = b->sq[sq];
-        if (!p || P.pc_color[p] != me) continue;
         ptype = P.pc_type[p];
 
         if (ptype == PAWN) {
@@ -540,6 +592,11 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
     int victim_sq = -1;
     uint8_t victim = 0;
     int nn = nn_delta_on_for(b->key);
+    /* Same continuity test the accumulator uses, and for the same reason: a
+     * board we did not walk here ourselves must not have deltas applied to a
+     * bitboard describing some other position. Decided once, up front, before
+     * b->key moves. */
+    int oc = occ_ok && occ_key == b->key;
 
     if (flag == F_EP) {
         /* The pawn removed sits on the recorded victim square, not the square
@@ -591,8 +648,10 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
 
     if (captured) key ^= P.zob_piece[captured][to];
     if (nn && captured) nn_toggle(captured, to, -1);
+    if (oc && captured) occ_clr(P.pc_color[captured], to);
     key ^= P.zob_piece[piece][frm];
     if (nn) nn_toggle(piece, frm, -1);
+    if (oc) occ_clr(mover, frm);
     b->sq[frm] = 0;
 
     placed = promo ? (uint8_t)(1 + mover * NTYPE + promo) : piece;
@@ -600,6 +659,7 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
     if (flag == F_EP) {
         key ^= P.zob_piece[victim][victim_sq];
         if (nn) nn_toggle(victim, victim_sq, -1);
+        if (oc) occ_clr(P.pc_color[victim], victim_sq);
         b->sq[victim_sq] = 0;
         for (c = 0; c < 4; c++) {
             if (b->ep_target[c] >= 0 && b->ep_victim[c] == victim_sq) {
@@ -611,10 +671,12 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
         b->sq[to] = placed;
         key ^= P.zob_piece[placed][to];
         if (nn) nn_toggle(placed, to, +1);
+        if (oc) occ_set(mover, to);
     } else {
         b->sq[to] = placed;
         key ^= P.zob_piece[placed][to];
         if (nn) nn_toggle(placed, to, +1);
+        if (oc) occ_set(mover, to);
         if (flag == F_DOUBLE) {
             int target = (frm + to) / 2;
             b->ep_target[mover] = (int16_t)target;
@@ -630,6 +692,10 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
             if (nn) {
                 nn_toggle(r, g[C_ROOK_FROM], -1);
                 nn_toggle(r, g[C_ROOK_TO], +1);
+            }
+            if (oc) {
+                occ_clr(mover, g[C_ROOK_FROM]);
+                occ_set(mover, g[C_ROOK_TO]);
             }
         }
     }
@@ -681,6 +747,7 @@ void tt_make(TtBoard *b, uint32_t m, TtUndo *u)
     key ^= P.zob_turn[b->turn];
     b->key = key;
     if (nn) nn_acc_set_key(key);
+    if (oc) occ_key = key;
 
     /* Last, not with the capture award at the top: 8.3 asks what the moved
      * piece attacks FROM ITS NEW SQUARE, over the occupancy the move leaves
@@ -698,6 +765,7 @@ void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
 {
     int frm = MV_FROM(m), to = MV_TO(m), flag = MV_FLAG(m), promo = MV_PROMO(m);
     int mover = u->mover;
+    int oc = occ_ok && occ_key == b->key;
 
     /* The matching half of tt_make's guard: make degenerated an en-passant
      * flag with no live offer to a plain move, so undo the plain move. */
@@ -729,14 +797,27 @@ void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
     if (promo) b->sq[frm] = (uint8_t)(1 + mover * NTYPE + PAWN);
     else b->sq[frm] = b->sq[to];
     b->sq[to] = u->captured;
+    if (oc) {
+        /* Exactly make's toggles run backwards. The mover leaves `to` and
+         * returns to `frm`; a captured piece comes back on `to` under its own
+         * seat, which is why the clear and the set are not a single move. */
+        occ_clr(mover, to);
+        occ_set(mover, frm);
+        if (u->captured) occ_set(P.pc_color[u->captured], to);
+    }
 
     if (flag == F_EP) {
         b->sq[u->victim_sq] = u->victim;
+        if (oc) occ_set(P.pc_color[u->victim], u->victim_sq);
     } else if (flag == F_CASTLE_SHORT || flag == F_CASTLE_LONG) {
         int home = (P.king_home[mover][0] == frm) ? 0 : 1;
         const int32_t *g = P.castle[mover][home][flag == F_CASTLE_SHORT ? 0 : 1];
         b->sq[g[C_ROOK_FROM]] = b->sq[g[C_ROOK_TO]];
         b->sq[g[C_ROOK_TO]] = 0;
+        if (oc) {
+            occ_clr(mover, g[C_ROOK_TO]);
+            occ_set(mover, g[C_ROOK_FROM]);
+        }
     }
 
     memcpy(b->ep_target, u->ep_target, sizeof(b->ep_target));
@@ -747,6 +828,7 @@ void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
     b->halfmove = u->halfmove;
     b->turn = u->mover;
     b->key = u->key;
+    if (oc) occ_key = u->key;
 }
 
 /* --- pins, and the legality fast path -------------------------------------
@@ -2704,6 +2786,11 @@ static void ffa_eliminate(TtBoard *b, int seat, FfaUndo *u)
      * key the accumulator currently claims, so it goes AFTER the key is
      * final and reads u->key. */
     if (nn_delta_on_for(u->key)) nn_acc_set_key(b->key);
+    /* Elimination moves no pieces (section 9.1), so the occupancy bitboard is
+     * still correct -- only the key it is tagged with moved. Without this the
+     * whole subtree below an elimination rebuilds by scanning on every
+     * generation, which is worse than the scan it replaced. */
+    if (occ_ok && occ_key == u->key) occ_key = b->key;
 }
 
 static void ffa_restore(TtBoard *b, int seat, const FfaUndo *u)
@@ -2711,6 +2798,7 @@ static void ffa_restore(TtBoard *b, int seat, const FfaUndo *u)
     /* Symmetric, and FIRST: b->key is about to be overwritten, and the test
      * has to read the key the accumulator currently claims. */
     if (nn_delta_on_for(b->key)) nn_acc_set_key(u->key);
+    if (occ_ok && occ_key == b->key) occ_key = u->key;
     b->alive[seat] = 1;
     b->turn = (uint8_t)seat;
     b->key = u->key;
