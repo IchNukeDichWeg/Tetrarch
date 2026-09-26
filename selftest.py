@@ -3662,50 +3662,72 @@ def main():
                     help="perft depth for the pinned check (default 4)")
     ap.add_argument("--perft-deep", action="store_true",
                     help="perft 5 for every setup and mode; takes minutes")
+    ap.add_argument("--only", metavar="SUBSTR",
+                    help="comma-separated substrings; run only the test "
+                         "functions whose name contains one (e.g. "
+                         "--only c_core,perft). A FILTERED RUN IS NOT THE "
+                         "GATE -- run the whole ladder before committing")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
     started = time.time()
     workers = (os.cpu_count() or 1) if args.workers == 0 else max(1, args.workers)
+
+    # The three slowest sections (repetition, search, uci replay) are ~75% of
+    # the wall clock, and an edit to src/c/ needs none of them to hear that the
+    # C core disagrees with the reference. --only is the inner loop; `make
+    # test` stays the gate.
+    only = [s for s in (args.only or "").split(",") if s]
+    selected = []
+
+    def run(fn, *a):
+        if only and not any(s in fn.__name__ for s in only):
+            return
+        selected.append(fn.__name__)
+        fn(*a)
+
+    if only:
+        args.crosscheck = 0
+
     banner()
-    test_geometry()
-    test_setups()
-    test_fen4()
-    test_make_unmake()
-    test_pawn_directions()
-    test_en_passant()
-    test_ep_phantom_victim()
-    test_multi_check()
-    test_dead_seats()
-    test_castling()
-    test_perft(args.perft, workers)
-    test_c_core(args.perft_deep)
-    test_rotation()
-    test_eval()
-    test_search(workers)
-    test_ffa_search(workers)
-    test_ffa_points()
-    test_ffa_multipv_info()
-    test_ffa_elimination()
-    test_ffa_multicheck()
-    test_net_bundle()
-    test_net_versions()
-    test_repetition()
-    test_see()
-    test_book()
-    test_nnue()
-    test_pgn4_named_start()
-    test_resume()
-    test_match_rotation()
-    test_uci_ffa_replay()
-    test_uci_incremental_position()
-    test_pgn4_ffa_elimination()
-    test_match_ffa()
-    test_ffa_data()
-    test_pgn4()
-    test_js_replay()
-    test_match_log_header()
-    test_bench_tooling()
+    run(test_geometry)
+    run(test_setups)
+    run(test_fen4)
+    run(test_make_unmake)
+    run(test_pawn_directions)
+    run(test_en_passant)
+    run(test_ep_phantom_victim)
+    run(test_multi_check)
+    run(test_dead_seats)
+    run(test_castling)
+    run(test_perft, args.perft, workers)
+    run(test_c_core, args.perft_deep)
+    run(test_rotation)
+    run(test_eval)
+    run(test_search, workers)
+    run(test_ffa_search, workers)
+    run(test_ffa_points)
+    run(test_ffa_multipv_info)
+    run(test_ffa_elimination)
+    run(test_ffa_multicheck)
+    run(test_net_bundle)
+    run(test_net_versions)
+    run(test_repetition)
+    run(test_see)
+    run(test_book)
+    run(test_nnue)
+    run(test_pgn4_named_start)
+    run(test_resume)
+    run(test_match_rotation)
+    run(test_uci_ffa_replay)
+    run(test_uci_incremental_position)
+    run(test_pgn4_ffa_elimination)
+    run(test_match_ffa)
+    run(test_ffa_data)
+    run(test_pgn4)
+    run(test_js_replay)
+    run(test_match_log_header)
+    run(test_bench_tooling)
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, workers, args.quiet)
     if args.perft_deep:
@@ -3719,6 +3741,18 @@ def main():
                  + (" and %d more" % (len(FAILURES) - 6) if len(FAILURES) > 6
                     else "")))
         return 1
+    if only and not selected:
+        # Otherwise a typo'd --only prints "ALL CHECKS PASSED (0 checks)",
+        # which is the most dangerous green there is.
+        print("\n== NOTHING RAN ==  --only %s matched no test function"
+              % ",".join(only))
+        return 2
+    if only:
+        print("\n== FILTERED RUN, NOT THE GATE ==  (%d checks, %.1fs, "
+              "%d workers; %d of the ladder's sections: %s)"
+              % (CHECKS[0], elapsed, workers, len(selected),
+                 ", ".join(selected)))
+        return 0
     print("\n== ALL CHECKS PASSED ==  (%d checks, %.1fs, %d workers)"
           % (CHECKS[0], elapsed, workers))
     return 0
