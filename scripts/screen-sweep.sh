@@ -17,16 +17,30 @@ set -euo pipefail
 cd ~/Tetrarch
 mkdir -p runs/ab
 
-TEAMS="l05 l07 l085"
-FFA="f05 f07 f085 f10 fs1 fs2"
+# These two lists MUST stay equal to the RUNS tags in scripts/gpu-session.sh
+# and scripts/gpu-ffa.sh. They did not: those scripts train twelve Teams nets
+# and seven FFA nets, this screened three and six. Nine GPU-trained nets --
+# including every seed replicate, i.e. the noise floor that makes the rest
+# readable -- were paid for and never measured.
+TEAMS="l05 l07 l085 l10 s1 s2 s3 e40s1 e40s2 e40s3 lr3e4 lr3e3"
+FFA="f05 f07 f085 f10 fs1 fs2 f40s1"
 
 echo "=== 0. sync and build ==="
 git fetch origin && git reset --hard origin/main && ./setup.sh
 
-for t in $TEAMS; do [ -f "nets/net-v9$t.nnue" ] || { echo "MISSING nets/net-v9$t.nnue"; exit 1; }; done
-for t in $FFA;   do [ -f "nets/net-$t.nnue"   ] || { echo "MISSING nets/net-$t.nnue";   exit 1; }; done
+# BEFORE the expensive part. Nineteen matches at 1,250 games is many hours of
+# rented cores, and discovering a missing net at hour four costs all of it.
+missing=""
+for t in $TEAMS; do [ -f "nets/net-v9$t.nnue" ] || missing="$missing nets/net-v9$t.nnue"; done
+for t in $FFA;   do [ -f "nets/net-$t.nnue"   ] || missing="$missing nets/net-$t.nnue"; done
+for f in nets/net-v5.nnue nets/net-ffa1.nnue books/book-ffa20k.txt; do
+  [ -f "$f" ] || missing="$missing $f"
+done
+if [ -n "$missing" ]; then
+  echo "MISSING, nothing run:"; for f in $missing; do echo "     $f"; done; exit 1
+fi
 
-echo "=== 1. Teams lambda sweep vs net-v5, fixed nodes ==="
+echo "=== 1. Teams sweep vs net-v5, fixed nodes ==="
 for t in $TEAMS; do
   echo "--- $t ---"
   python3 match.py 1250 --log runs/ab/v9${t}_nodes.jsonl --nodes 20000 \
@@ -47,10 +61,12 @@ echo "=== 3. results ==="
   for t in $TEAMS; do
     echo "== $t =="; python3 match.py --summarise runs/ab/v9${t}_nodes.jsonl; echo
   done
-  echo "  NO NOISE FLOOR FOR TEAMS. The seed replicates never ran, so a"
-  echo "  difference between these three cannot be separated from the spread"
-  echo "  two identical recipes would show anyway. Read them as direction, not"
-  echo "  as magnitude, until s1/s2/s3 exist."
+  echo "  l07, s1, s2 and s3 are ONE recipe (lambda 0.7, 8 epochs) at seeds 0,"
+  echo "  1, 2 and 3. The spread across those four is the TEAMS NOISE FLOOR."
+  echo "  Read it first: l05, l085 or l10 beating l07 by less than that spread"
+  echo "  has not been shown to differ from it. e40s1/2/3 are paired against"
+  echo "  s1/2/3 and differ only in epochs; lr3e4 and lr3e3 are paired"
+  echo "  against s1 and differ only in learning rate."
   echo
   echo "### FFA -- vs net-ffa1, fixed nodes 20,000"
   for t in $FFA; do
