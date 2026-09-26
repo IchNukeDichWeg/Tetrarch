@@ -3934,6 +3934,26 @@ def test_protocol_contracts():
 
 
 
+    # --- the GUI answers bad input with 400, never 500 ---------------------
+    try:
+        sys.path.insert(0, os.path.join(root, "gui"))
+        import importlib
+        gui_app = importlib.import_module("app")
+        client = gui_app.app.test_client()
+        codes = []
+        for route, body in (
+                ("/api/eval", {"mode": "teams", "depth": 2,
+                               "fen4": DEAD_SEAT_FEN4}),
+                ("/api/play/engine", {"mode": "teams", "movetime": 50,
+                                      "fen4": DEAD_SEAT_FEN4})):
+            codes.append((route, client.post(route, json=body).status_code))
+        check_all("a Teams position with a dead seat is a 400, not a 500",
+                  [("%s -> %d" % (r, c), c == 400) for r, c in codes])
+    except ImportError as exc:                               # noqa: BLE001
+        check("flask available for the GUI checks", False, repr(exc))
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",

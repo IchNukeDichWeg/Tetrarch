@@ -210,7 +210,13 @@ def api_play_engine():
     with ENGINE_LOCK:
         note = _select_net(want_net)
         core.clear_hash()
-        result = search(board, Limits(movetime=movetime))
+        # A Teams position carrying a dead seat is bad input, not a server
+        # fault: search refuses it (§7) and this used to be the only shape in
+        # the whole API that came back 500 instead of 400.
+        try:
+            result = search(board, Limits(movetime=movetime))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
     if not result.best:
         return jsonify({"error": "no move found"}), 500
     played = move_str(result.best)
@@ -429,7 +435,11 @@ def api_eval():
         # this the viewer would analyse with whatever the play page left behind.
         note = _select_net("" if want in (None, "none") else want)
         core.clear_hash()
-        results = search_multi(board, Limits(depth=depth), lines)
+        # Same shape as /api/play/engine: a refused position is a 400.
+        try:
+            results = search_multi(board, Limits(depth=depth), lines)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
     if not results:
         return jsonify({"error": "no move found"}), 500
     top = results[0]
