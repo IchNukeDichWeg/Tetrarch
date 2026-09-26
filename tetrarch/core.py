@@ -736,8 +736,12 @@ def to_c(b):
     cb.turn = b.turn
     cb.mode = b.mode
     cb.pawn_base_rank = b.pawn_base_rank
-    for i in range(NSQ):
-        cb.sq[i] = b.sq[i]
+    # One memmove, not 256 ctypes item assignments. `to_c` is 89% of every
+    # Python->C crossing and this loop was 90% of `to_c`: measured 93.1 us
+    # per call against 9.0 us (10.4x), best of 7 interleaved runs of 20,000
+    # calls, M-series Mac. `b.sq` is a bytearray, which memmove will not take
+    # as a source, so it is copied to bytes first -- still far cheaper.
+    ctypes.memmove(cb.sq, bytes(b.sq), NSQ)
     for c in range(4):
         cb.alive[c] = 1 if b.alive[c] else 0
         cb.ck[c] = 1 if b.ck[c] else 0
