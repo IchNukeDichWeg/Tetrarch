@@ -25,7 +25,7 @@ git fetch origin && git reset --hard origin/main && ./setup.sh
 
 echo "=== 1. dataset ==="
 [ -f runs/games/games_v9.jsonl ] || {
-  curl -L -o runs/games/games_v9.jsonl.gz \
+  curl -fL --retry 3 --retry-delay 5 -C - -o runs/games/games_v9.jsonl.gz \
     https://github.com/IchNukeDichWeg/Tetrarch/releases/download/dataset-teams-gen9/games_v9.jsonl.gz
   gunzip -f runs/games/games_v9.jsonl.gz
 }

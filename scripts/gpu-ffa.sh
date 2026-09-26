@@ -21,8 +21,12 @@ echo "=== 0. sync and build ==="
 git fetch origin && git reset --hard origin/main && ./setup.sh
 
 echo "=== 1. dataset ==="
+# -f so an HTTP error is an error rather than an error page written to disk
+# under the dataset's name, --retry because a rented box's network is not the
+# thing being tested, and -C - so a re-run resumes a multi-GB download instead
+# of starting it again on the clock.
 [ -f runs/games/games_ffa1.jsonl ] || {
-  curl -L -o runs/games/games_ffa1.jsonl.gz \
+  curl -fL --retry 3 --retry-delay 5 -C - -o runs/games/games_ffa1.jsonl.gz \
     https://github.com/IchNukeDichWeg/Tetrarch/releases/download/dataset-ffa-gen1/games_ffa1.jsonl.gz
   gunzip -f runs/games/games_ffa1.jsonl.gz
 }
