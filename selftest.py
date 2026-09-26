@@ -757,7 +757,12 @@ def test_perft(depth=4, workers=1):
     jobs = []
     for setup in SETUPS:
         pins = PERFT_PINS[setup]
-        for d in range(1, min(depth, len(pins) - 1) + 1):
+        # Depth 3 is enqueued whatever --perft says: the FFA-vs-Teams and
+        # slow-vs-fast checks below both read the depth-3 fast Teams count, so
+        # leaving it out of the job list turned `--perft 1` and `--perft 2`
+        # into a KeyError instead of a shorter run.
+        depths = sorted({3} | set(range(1, min(depth, len(pins) - 1) + 1)))
+        for d in depths:
             jobs.append((setup, MODE_TEAMS, d, "fast"))
         jobs.append((setup, MODE_FFA, 3, "fast"))
         jobs.append((setup, MODE_TEAMS, 3, "slow"))
