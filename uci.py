@@ -463,22 +463,31 @@ class Engine:
                      int(r.elapsed * 1000),
                      " ".join(move_str(m) for m in moves)))
 
-        if self.multipv > 1:
-            def report(rs):
-                for rank, r in enumerate(rs, 1):
-                    line(r, rank)
-                sys.stdout.flush()
+        # One guard where the two arms converge, so the print below always
+        # runs. A refused position falls back to the first legal move, which
+        # is at least playable; with no legal move at all it is "0000".
+        try:
+            if self.multipv > 1:
+                def report(rs):
+                    for rank, r in enumerate(rs, 1):
+                        line(r, rank)
+                    sys.stdout.flush()
 
-            results = search_multi(self.board, limits, self.multipv,
-                                   report, self.history)
-            best = results[0].best if results else None
-        else:
-            def report(r):
-                line(r)
-                sys.stdout.flush()
+                results = search_multi(self.board, limits, self.multipv,
+                                       report, self.history)
+                best = results[0].best if results else None
+            else:
+                def report(r):
+                    line(r)
+                    sys.stdout.flush()
 
-            best = search(self.board, limits, report,
-                          self.history).best
+                best = search(self.board, limits, report,
+                              self.history).best
+        except Exception as exc:                                # noqa: BLE001
+            print("info string search failed: %s: %s"
+                  % (type(exc).__name__, exc))
+            legal = gen.gen_legal(self.board)
+            best = legal[0] if legal else None
         print("bestmove %s" % (move_str(best) if best else "0000"))
 
     def cmd_stop(self, _args):

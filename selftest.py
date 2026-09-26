@@ -3651,6 +3651,43 @@ def test_bench_tooling():
           == ({}, 0, 0))
 
 
+#: A Teams FEN4 carrying a DEAD seat. `position fen4` accepts it (the dead
+#: field is the second) and game.resolve passes it through untouched, because
+#: the seat to move still has legal moves -- so it reaches search(), which
+#: refuses it on the Teams all-alive invariant (§7). One command, and it used
+#: to leave the host with no `bestmove` at all.
+DEAD_SEAT_FEN4 = (
+    "R-0,0,0,1-1,1,1,1-1,1,1,1-0,0,0,0-0-"
+    "3,yR,yN,yB,yK,yQ,yB,yN,yR,3/3,yP,yP,yP,yP,yP,yP,yP,yP,3/14/"
+    "bR,bP,10,gP,gR/bN,bP,10,gP,gN/bB,bP,10,gP,gB/bK,bP,10,gP,gQ/"
+    "bQ,bP,10,gP,gK/bB,bP,10,gP,gB/bN,bP,10,gP,gN/bR,bP,10,gP,gR/14/"
+    "3,rP,rP,rP,rP,rP,rP,rP,rP,3/3,rR,rN,rB,rQ,rK,rB,rN,rR,3")
+
+
+
+
+def test_protocol_contracts():
+    """The contracts a host relies on and nothing asserted: `go` always
+    answering, the two spellings of `position startpos` agreeing, 0 not
+    meaning "unlimited", and the FFA evaluation counter not reading zero."""
+    section("protocol and instrument contracts")
+    import subprocess
+    from tetrarch import pgn4
+
+    root = os.path.dirname(os.path.abspath(__file__))
+
+    def uci(lines):
+        return subprocess.run([sys.executable, os.path.join(root, "uci.py")],
+                              cwd=root, input="\n".join(lines) + "\nquit\n",
+                              capture_output=True, text=True, timeout=120)
+
+    # --- go always answers -------------------------------------------------
+    out = uci(["position fen4 " + DEAD_SEAT_FEN4, "go depth 2"]).stdout
+    check("go answers with a bestmove on a position the search refuses",
+          "bestmove " in out, out.strip().splitlines()[-1:] or ["no output"])
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",
@@ -3727,6 +3764,7 @@ def main():
     run(test_pgn4)
     run(test_js_replay)
     run(test_match_log_header)
+    run(test_protocol_contracts)
     run(test_bench_tooling)
     if args.crosscheck:
         crosscheck(args.crosscheck, args.seed, workers, args.quiet)
