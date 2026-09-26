@@ -69,6 +69,8 @@ book*.txt
 # on that box is the one mistake that cannot be fixed with a follow-up commit.
 .env
 .env.*
+*.env
+*secret*
 .netrc
 *.pem
 *.key
