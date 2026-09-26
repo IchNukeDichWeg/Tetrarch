@@ -3688,6 +3688,30 @@ def test_protocol_contracts():
 
 
 
+    # --- the two spellings of one command ----------------------------------
+    # `position startpos modern` used to build a modern board and keep the
+    # PREVIOUS setup's net, so it played modern with net-v5 where `position
+    # modern` played it with net-v7 -- +22.15 +/- 10.81 apart by bundle.txt.
+    pair = {}
+    for spelling in ("position startpos modern", "position modern"):
+        lines = uci([spelling, "go depth 1"]).stdout.splitlines()
+        # nps and time are wall-clock, so only the score and the pv are
+        # compared -- those are what the net changes.
+        pair[spelling] = ([l for l in lines if " -> " in l][-1:],
+                          [l.split(" nodes ")[0] + l[l.index(" pv "):]
+                           for l in lines if l.startswith("info depth")])
+    check("position startpos <setup> loads the same net as position <setup>",
+          pair["position startpos modern"][0]
+          == pair["position modern"][0],
+          "%s vs %s" % (pair["position startpos modern"][0],
+                        pair["position modern"][0]))
+    check("and returns the same score",
+          pair["position startpos modern"][1]
+          == pair["position modern"][1],
+          "%s vs %s" % (pair["position startpos modern"][1],
+                        pair["position modern"][1]))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",

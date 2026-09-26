@@ -362,16 +362,29 @@ class Engine:
             fresh = moves[len(prior[1]):]
             applied = list(prior[1])
         else:
+            # `position startpos <setup>` and `position <setup>` are two
+            # spellings of one command, so the setup name is normalised out
+            # here and ONE body runs. They used to be separate arms and the
+            # startpos one never assigned self.setup or reloaded the net, so
+            # `position startpos modern` played modern with the previous
+            # setup's evaluation -- net-v5 rather than net-v7, a net the bundle
+            # records at -22.15 +/- 10.81 on that setup.
+            named = None
             if not args or args[0] == "startpos":
-                setup = args[1] if len(args) > 1 else self.setup
-                self.board = start_board(setup, self.mode)
-            elif args[0] in ("fen4", "fen"):
-                self.board = Board.from_fen4(" ".join(args[1:]), self.mode)
+                named = args[1] if len(args) > 1 else self.setup
             elif args[0] in SETUPS:
-                self.setup = args[0]
+                named = args[0]
+            if named is not None:
+                if named not in SETUPS:
+                    print("info string unrecognised setup %r" % named)
+                    self._replayed = None
+                    return
+                self.setup = named
                 self.board = start_board(self.setup, self.mode)
                 self._use_net_for_setup()
                 spec = (tuple(args), self.setup, self.mode)
+            elif args[0] in ("fen4", "fen"):
+                self.board = Board.from_fen4(" ".join(args[1:]), self.mode)
             else:
                 print("info string unrecognised position %r" % args[0])
                 self._replayed = None
