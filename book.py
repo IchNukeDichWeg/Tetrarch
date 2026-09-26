@@ -100,7 +100,7 @@ def candidate(job):
         board.make(rng.choice(legal))
         if mode == MODE_FFA:
             game_rules.resolve(board)
-    if not gen.gen_legal(board):
+    if not gen.has_legal(board):
         return None
 
     if mode == MODE_FFA:
@@ -114,7 +114,7 @@ def candidate(job):
             view = board.copy()
             view.turn = seat
             view.recompute_key()
-            if not gen.gen_legal(view):
+            if not gen.has_legal(view):
                 return None
             core.clear_hash()
             result = core.search(view, depth)

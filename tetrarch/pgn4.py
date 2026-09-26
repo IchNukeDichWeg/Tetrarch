@@ -320,7 +320,7 @@ def move_token(board, move):
     checked = [c for c in range(4)
                if after.alive[c] and gen.in_check(after, c)]
     if checked:
-        mated = all(not gen.gen_legal(_at_turn(after, c)) for c in checked)
+        mated = all(not gen.has_legal(_at_turn(after, c)) for c in checked)
         token += "#" if mated else "+"
     return token
 

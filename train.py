@@ -40,7 +40,7 @@ import time
 
 import numpy as np
 
-from tetrarch.board import Board, MODE_TEAMS, MODE_FFA, move_str
+from tetrarch.board import Board, MODE_TEAMS, MODE_FFA
 from tetrarch import game as game_rules
 from tetrarch import movegen as gen
 from tetrarch import nnue
@@ -199,8 +199,7 @@ def _cache_chunk(job):
                     cps.append(-cp if flip else cp)
                     results.append(1.0 - result if flip else result)
                 games.append(game_id)
-            move = next((m for m in gen.gen_legal(board)
-                         if move_str(m) == token), None)
+            move = gen.find_legal(board, token)
             if move is None:
                 break                          # corrupt line; drop the rest
             board.make(move)

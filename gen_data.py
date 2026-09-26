@@ -99,7 +99,7 @@ def play_one(job):
             if not legal:
                 return None
             board.make(rng.choice(legal))
-    if not gen.gen_legal(board):
+    if not gen.has_legal(board):
         return None
 
     start_fen4 = board.to_fen4().replace("\n", "")

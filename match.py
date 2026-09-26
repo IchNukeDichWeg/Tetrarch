@@ -275,7 +275,7 @@ def make_opening(setup, mode, plies, seed):
         if not legal:
             return None
         b.make(rng.choice(legal))
-    if not gen.gen_legal(b):
+    if not gen.has_legal(b):
         return None
     return b
 

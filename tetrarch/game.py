@@ -34,7 +34,7 @@ def eliminate_stuck(board):
     """
     if board.mode == MODE_TEAMS or sum(board.alive) <= 1:
         return None
-    if gen.gen_legal(board):
+    if gen.has_legal(board):
         return None
     checked = gen.in_check(board, board.turn)
     board.eliminate(board.turn)
@@ -63,7 +63,7 @@ def resolve(board):
                             else "%s wins on %d points"
                                  % (SEAT_NAMES[winner], board.points[winner])}
 
-        if gen.gen_legal(board):
+        if gen.has_legal(board):
             return None
 
         if board.mode == MODE_TEAMS:
@@ -88,12 +88,12 @@ def play_token(board, token):
     caller. It was copied three times and one copy left the resolve out, so
     no FFA game that finished could be exported from the GUI.
     """
-    for m in gen.gen_legal(board):
-        if move_str(m) == token:
-            board.make(m)
-            resolve(board)
-            return m
-    return None
+    m = gen.find_legal(board, token)
+    if m is None:
+        return None
+    board.make(m)
+    resolve(board)
+    return m
 
 
 def award_draw(board):
