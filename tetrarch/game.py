@@ -13,7 +13,7 @@ the rest play on until one seat is left.
 Section references (§n) are to docs/RULES.md.
 """
 
-from .board import MODE_TEAMS, SEAT_NAMES
+from .board import MODE_TEAMS, SEAT_NAMES, move_str
 from . import movegen as gen
 
 #: A draw pays every seat still in the game +10 (§8.2): threefold repetition,
@@ -73,6 +73,27 @@ def resolve(board):
                     "text": "%s %s" % (over, SEAT_NAMES[board.turn])}
 
         eliminate_stuck(board)
+
+
+def play_token(board, token):
+    """Apply a from-to move token and settle the position. Returns the move.
+
+    Returns None and leaves the board untouched when no legal move matches.
+
+    A move list does not encode eliminations, so a receiver replaying one has
+    to apply the same rule the sender did: in FFA a seat with no legal moves
+    leaves the game and the turn passes over it (§7). Without the resolve,
+    every token from the first elimination onward is matched against the
+    wrong seat's move list -- which is why this lives here and not in each
+    caller. It was copied three times and one copy left the resolve out, so
+    no FFA game that finished could be exported from the GUI.
+    """
+    for m in gen.gen_legal(board):
+        if move_str(m) == token:
+            board.make(m)
+            resolve(board)
+            return m
+    return None
 
 
 def award_draw(board):

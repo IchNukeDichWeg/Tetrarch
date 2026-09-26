@@ -417,20 +417,22 @@ class Engine:
     def play(self, token):
         """Apply a move given as from-to plus an optional promotion letter.
 
-        The move list does not encode eliminations, so the receiver has to
-        apply the same rule the sender did: in FFA a seat with no legal moves
-        leaves the game and the turn passes over it (§7). Without this the
-        engine's idea of whose turn it is diverges from the caller's at the
-        first mate, and every later search answers for the wrong seat.
+        game.play_token, not a copy of it: the elimination rule it applies
+        (§7) is the thing that must not exist three times.
         """
-        for m in gen.gen_legal(self.board):
-            if move_str(m) == token:
-                self.board.make(m)
-                game.resolve(self.board)
-                return True
-        return False
+        return game.play_token(self.board, token) is not None
 
     def cmd_go(self, args):
+        """`go` always answers with a `bestmove`, even on a position the
+        search refuses.
+
+        A UCI host blocks until it sees that line. Any exception in here used
+        to be caught by main's dispatch guard, which prints an `info string`
+        and reads the next command -- so `go` returned with no `bestmove` at
+        all and the session hung. Reachable in one command: a Teams FEN4
+        carrying a dead seat, which `position fen4` accepts and `game.resolve`
+        passes through, and which `search()` then refuses (§7).
+        """
         limits = Limits()
         seat = self.board.turn
         i = 0

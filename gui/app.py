@@ -176,11 +176,9 @@ def api_play_move():
     except Exception as exc:                                    # noqa: BLE001
         return jsonify({"error": str(exc)}), 400
     token = payload.get("move", "")
-    for m in gen.gen_legal(board):
-        if move_str(m) == token:
-            board.make(m)
-            return jsonify(_render_state(board))
-    return jsonify({"error": "illegal move %r" % token}), 400
+    if game.play_token(board, token) is None:
+        return jsonify({"error": "illegal move %r" % token}), 400
+    return jsonify(_render_state(board))
 
 
 @app.route("/api/play/engine", methods=["POST"])
@@ -273,13 +271,18 @@ def api_play_pgn():
     board = start_board(setup, mode)
     moves = []
     for token in payload.get("moves", []):
-        found = next((m for m in gen.gen_legal(board)
-                      if move_str(m) == token), None)
+        # game.play_token, not a local copy: this loop had no resolve between
+        # moves, so from the first elimination onward every token was matched
+        # against the wrong seat's move list and the endpoint returned 400 for
+        # a game the client legitimately played -- meaning NO FFA game that
+        # finished could be exported, since the mode ends by eliminating three
+        # seats. pgn4.write three lines below applies the cascade, so the two
+        # halves of this one function disagreed about the rules.
+        found = game.play_token(board, token)
         if found is None:
             return jsonify({"error": "illegal move %r at ply %d"
                             % (token, len(moves))}), 400
         moves.append(found)
-        board.make(found)
     # Only CurrentMove: pgn4.write supplies Variant, RuleVariants and the
     # named StartFen4 itself, and it knows the FFA rule list differs.
     text = pgn4.write(start_board(setup, mode), moves,

@@ -3903,6 +3903,37 @@ def test_protocol_contracts():
           ok, why)
 
 
+    # --- one copy of "apply this token" ------------------------------------
+    # The rule is §7: a seat with no legal moves leaves the game and the turn
+    # passes over it. It existed three times -- uci.Engine.play, the GUI's
+    # /api/play/move and its /api/play/pgn -- and the last copy left the
+    # resolve out, so from the first elimination every token was matched
+    # against the wrong seat and NO finished FFA game could be exported.
+    # Blue owns nothing here, so Blue is stuck the moment the turn reaches it.
+    no_blue = ("R-0,0,0,0-0,0,0,0-0,0,0,0-0,0,0,0-0-"
+               "3,yR,yN,yB,yK,yQ,yB,yN,yR,3/3,yP,yP,yP,yP,yP,yP,yP,yP,3/14/"
+               "12,gP,gR/12,gP,gN/12,gP,gB/12,gP,gQ/12,gP,gK/12,gP,gB/"
+               "12,gP,gN/12,gP,gR/14/3,rP,rP,rP,rP,rP,rP,rP,rP,3/"
+               "3,rR,rN,rB,rQ,rK,rB,rN,rR,3")
+    b = Board.from_fen4(no_blue, MODE_FFA)
+    check("the fixture really does leave Blue with no move",
+          b.turn == 0 and b.alive[1], SEAT_NAMES[b.turn])
+    played = game.play_token(b, "h2h3")
+    check("game.play_token settles the eliminations the token implies",
+          played is not None and b.turn == 2 and not b.alive[1],
+          "turn %s, alive %s" % (SEAT_NAMES[b.turn], list(b.alive)))
+    # uci.Engine.play is the second caller: same rule, same function.
+    eng = __import__("uci").Engine()
+    eng.cmd_setoption("name Mode value ffa".split())
+    eng.cmd_position(["fen4"] + no_blue.split())
+    check("uci.Engine.play applies the same rule",
+          eng.play("h2h3") and eng.board.turn == 2
+          and not eng.board.alive[1],
+          "turn %s, alive %s" % (SEAT_NAMES[eng.board.turn],
+                                 list(eng.board.alive)))
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",
