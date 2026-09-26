@@ -32,6 +32,32 @@ echo "=== 1. dataset ==="
 }
 echo "  games: $(wc -l < runs/games/games_ffa1.jsonl)"
 
+echo "=== 1b. CUDA pre-flight -- a GATE, not a formality ==="
+# The Teams arm has had this since the first GPU box was rented; this arm never
+# did, so seven nets could come off a card whose arithmetic nobody had compared
+# against the trainer every shipped net came from. A silently wrong CUDA does
+# not crash -- it produces plausible nets that lose Elo, and you find out on
+# the CPU screen hours and two rentals later. Two minutes against seven runs.
+python3 train.py --data runs/games/games_ffa1.jsonl --cache /tmp/pre_ffa.npz \
+  --games 4000 --cache-workers 0 --out /tmp/pre_ffa_np --epochs 2 --quiet \
+  | tee /tmp/pre_ffa_np.txt
+python3 train.py --cache /tmp/pre_ffa.npz --out /tmp/pre_ffa_cu --epochs 2 \
+  --device cuda --quiet | tee /tmp/pre_ffa_cu.txt
+python3 - <<'GATE'
+import re
+def loss(path):
+    hits = re.findall(r"^epoch 2\s+train\s+([\d.]+)", open(path).read(), re.M)
+    return float(hits[0]) if hits else None
+a, b = loss("/tmp/pre_ffa_np.txt"), loss("/tmp/pre_ffa_cu.txt")
+if a is None or b is None:
+    raise SystemExit("PRE-FLIGHT FAILED: no epoch-2 line (numpy=%r cuda=%r)" % (a, b))
+gap = abs(a - b) / a
+print("  numpy %.5f | cuda %.5f | %.2f%% apart" % (a, b, 100 * gap))
+if gap > 0.02:
+    raise SystemExit("PRE-FLIGHT FAILED: cuda disagrees with numpy by over 2%. STOP.")
+print("  cuda agrees with the trainer every shipped net came from.")
+GATE
+
 echo "=== 2. cache, built once ==="
 # No --augment: train.py refuses it for FFA anyway, since only the seat that
 # moved has a label.
