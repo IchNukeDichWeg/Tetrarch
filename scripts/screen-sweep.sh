@@ -40,11 +40,28 @@ if [ -n "$missing" ]; then
   echo "MISSING, nothing run:"; for f in $missing; do echo "     $f"; done; exit 1
 fi
 
+TOTAL=$(( $(echo $TEAMS | wc -w) + $(echo $FFA | wc -w) ))
+START=$(date +%s)
+DONE=0
+# A silent nineteen-match script is indistinguishable from a hung one, and the
+# box bills either way. Count, rate, elapsed and ETA after every match.
+progress() {
+  DONE=$((DONE + 1))
+  local el=$(( $(date +%s) - START ))
+  local eta=$(( el * (TOTAL - DONE) / DONE ))
+  printf '>>> %d/%d (%d%%)  elapsed %dh%02dm  %.1f min/match  ETA %dh%02dm\n' \
+    "$DONE" "$TOTAL" $((100 * DONE / TOTAL)) \
+    $((el / 3600)) $((el % 3600 / 60)) \
+    "$(echo "$el $DONE" | awk '{printf "%.1f", $1/60/$2}')" \
+    $((eta / 3600)) $((eta % 3600 / 60))
+}
+
 echo "=== 1. Teams sweep vs net-v5, fixed nodes ==="
 for t in $TEAMS; do
   echo "--- $t ---"
   python3 match.py 1250 --log runs/ab/v9${t}_nodes.jsonl --nodes 20000 \
     --workers 0 --net-a nets/net-v9$t.nnue --net-b nets/net-v5.nnue
+  progress
 done
 
 echo "=== 2. FFA sweep vs net-ffa1, fixed nodes ==="
@@ -53,6 +70,7 @@ for t in $FFA; do
   python3 match.py 1250 --mode ffa --book books/book-ffa20k.txt \
     --log runs/ab/${t}_nodes.jsonl --nodes 20000 \
     --workers 0 --net-a nets/net-$t.nnue --net-b nets/net-ffa1.nnue
+  progress
 done
 
 echo "=== 3. results ==="
