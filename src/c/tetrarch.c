@@ -2695,10 +2695,22 @@ static void ffa_eliminate(TtBoard *b, int seat, FfaUndo *u)
     }
     b->turn = (uint8_t)t;
     b->key ^= P.zob_turn[t];
+    /* Nothing moved, so the accumulator still describes this position exactly
+     * -- but the key it is tagged with does not, which would make
+     * nn_delta_on_for false for the whole subtree, stop tt_make maintaining
+     * the accumulator, and cost a full 160-square x 4-perspective nn_refresh
+     * at the first evaluation below (and a second one on the way out).
+     * Carrying the tag across keeps maintenance alive. The test must read the
+     * key the accumulator currently claims, so it goes AFTER the key is
+     * final and reads u->key. */
+    if (nn_delta_on_for(u->key)) nn_acc_set_key(b->key);
 }
 
 static void ffa_restore(TtBoard *b, int seat, const FfaUndo *u)
 {
+    /* Symmetric, and FIRST: b->key is about to be overwritten, and the test
+     * has to read the key the accumulator currently claims. */
+    if (nn_delta_on_for(b->key)) nn_acc_set_key(u->key);
     b->alive[seat] = 1;
     b->turn = (uint8_t)seat;
     b->key = u->key;
