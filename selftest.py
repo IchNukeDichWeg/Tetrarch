@@ -3712,6 +3712,38 @@ def test_protocol_contracts():
                         pair["position modern"][1]))
 
 
+    # --- 0 is not "unlimited" ----------------------------------------------
+    # Limits(depth=0) read through `limits.depth or limits.max_depth` searched
+    # to depth 48: an overnight run with no output, no error and no progress.
+    # Asserted through the production path, not by re-typing the expression:
+    # search() itself must not turn depth 0 into a 48-ply search. A timeout is
+    # the bug, so it is caught and reported rather than killing the section.
+    try:
+        run = subprocess.run(
+            [sys.executable, os.path.join(root, "uci.py")], cwd=root,
+            input="position startpos\ngo depth 0\nquit\n",
+            capture_output=True, text=True, timeout=30)
+        ok, why = "bestmove " in run.stdout, run.stdout.strip()[-60:]
+    except subprocess.TimeoutExpired:
+        ok, why = False, "still searching after 30s"
+    check("go depth 0 returns instead of searching to depth 48", ok, why)
+    for flag in ("--nodes", "--depth", "--movetime"):
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                run = subprocess.run(
+                    [sys.executable, os.path.join(root, "match.py"), "1",
+                     "--log", os.path.join(d, "x.jsonl"), flag, "0"],
+                    cwd=root, capture_output=True, text=True, timeout=30)
+                ok = run.returncode != 0 and "0 is not" in run.stderr
+                why = (run.stderr.strip().splitlines()[-1:]
+                       or ["exit %d" % run.returncode])
+            except subprocess.TimeoutExpired:
+                # `--depth 0` is the shape that costs a box: it does not
+                # crash, it runs, silently, to depth 48 a move.
+                ok, why = False, ["still running after 30s"]
+        check("match.py %s 0 is rejected, not dispatched" % flag, ok, why)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",

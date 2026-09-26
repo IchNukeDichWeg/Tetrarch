@@ -789,17 +789,23 @@ def main():
     if args.positions is None or not args.log:
         ap.error("positions and --log are required")
 
-    instruments = [x for x in (args.nodes, args.movetime, args.depth)
-                   if x is not None]
+    # The VALUE is validated, not just its presence, and the dispatch reads
+    # the same list the check did. The old form tested `is not None` here and
+    # truthiness below, so 0 passed validation and then fell through every
+    # arm: `--nodes 0` died in "go depth %d" % None, and `--depth 0` reached
+    # Limits(depth=0), which `limits.depth or limits.max_depth` reads as "no
+    # limit" -- an overnight run silently searching to depth 48 per move.
+    instruments = [(name, value) for name, value in
+                   (("nodes", args.nodes), ("movetime", args.movetime),
+                    ("depth", args.depth)) if value is not None]
     if len(instruments) != 1:
         ap.error("choose exactly one instrument: --nodes, --movetime or "
                  "--depth. Mixing them inside one campaign invalidates it.")
-    if args.nodes:
-        args.go_string = "go nodes %d" % args.nodes
-    elif args.movetime:
-        args.go_string = "go movetime %d" % args.movetime
-    else:
-        args.go_string = "go depth %d" % args.depth
+    (instrument, value), = instruments
+    if value < 1:
+        ap.error("--%s %d: 0 is not 'unlimited'. Every instrument needs a "
+                 "value of at least 1." % (instrument, value))
+    args.go_string = "go %s %d" % (instrument, value)
 
     for path in (args.log, args.pgn4):
         if path:

@@ -120,7 +120,10 @@ def search(board, limits, info=None, repetitions=()):
         return out
     out.best = legal[0]
 
-    max_depth = limits.depth or limits.max_depth
+    # `or` read a depth of 0 as "no limit" and searched to 48. 0 is a
+    # caller error, not a synonym for unlimited; the CLI rejects it.
+    max_depth = limits.depth if limits.depth is not None \
+        else limits.max_depth
     for depth in range(1, max_depth + 1):
         remaining_nodes = 0
         if limits.nodes:
@@ -211,7 +214,10 @@ def search_multi(board, limits, lines=1, info=None, repetitions=()):
     lines = min(lines, len(legal))
     started = time.perf_counter()
     budget = limits.budget_ms()
-    max_depth = limits.depth or limits.max_depth
+    # `or` read a depth of 0 as "no limit" and searched to 48. 0 is a
+    # caller error, not a synonym for unlimited; the CLI rejects it.
+    max_depth = limits.depth if limits.depth is not None \
+        else limits.max_depth
     nodes = 0
     out = []
     # Each line is searched from the child, so the root itself joins the played
