@@ -256,7 +256,26 @@ def replay(game, limit=None):
                 board.recompute_key()
             frames.append(_frame(board, None, token, ply + 1))
             continue
-        move = resolve(board, token)
+        # A FOREIGN export need not write the terminator -- chess.com does not
+        # -- and the start it names can already hold a stuck seat. Rather than
+        # refuse the next move for a seat that has no move list at all, apply
+        # §7 here, which is exactly what the missing token would have said.
+        # No frame is appended: nothing happened that the file recorded.
+        while not gen.gen_legal(board):
+            seat = board.turn
+            why = game_rules.eliminate_stuck(board)
+            if why is None:
+                break
+            terminations.append({"ply": ply, "seat": SEAT_NAMES[seat],
+                                 "reason": why, "implied": True})
+        try:
+            move = resolve(board, token)
+        except Pgn4Error as exc:
+            # The ply slot this class has always carried, finally populated:
+            # the viewer can replay `limit=exc.ply` and show exactly the part
+            # that was good, rather than guessing with a second replayer.
+            exc.ply = ply
+            raise
         board.make(move)
         frames.append(_frame(board, move, token, ply + 1))
 
@@ -354,20 +373,34 @@ def write(start, moves, tags=None):
 
     board = start.copy()
     tokens = []
-    for move in moves:
-        tokens.append(move_token(board, move))
-        board.make(move)
-        # An FFA seat with no legal moves leaves the game, and the file has to
-        # SAY so: readers advance past it on a standalone terminator token and
-        # have no other way to know (§7). Without one, a replay plays the next
-        # move for the wrong seat -- and so did this loop, so every token it
-        # wrote after the first elimination was resolved from the wrong turn.
-        # A cascade is possible, hence the loop.
+
+    def cascade():
+        """Write a terminator for every seat that is stuck right now.
+
+        An FFA seat with no legal moves leaves the game, and the file has to
+        SAY so: readers advance past it on a standalone terminator token and
+        have no other way to know (§7). Without one, a replay plays the next
+        move for the wrong seat. A cascade is possible, hence the loop, and
+        `eliminate_stuck` refuses to remove the last seat standing, so a
+        one-seat position is a no-op.
+        """
         while True:
             why = game_rules.eliminate_stuck(board)
             if why is None:
-                break
+                return
             tokens.append("#" if why == "checkmate" else "S")
+
+    # Once BEFORE the loop as well as after every make. A STARTING position
+    # can already hold a stuck seat -- a book FEN4, a resumed position,
+    # anything that is not a fresh start_board -- and the cascade used to run
+    # only inside the loop, so the file lost its leading terminator: StartFen4
+    # said the stuck seat was to move while the first token was the seat that
+    # actually moved, and replay refused the game.
+    cascade()
+    for move in moves:
+        tokens.append(move_token(board, move))
+        board.make(move)
+        cascade()
     # Four slots to a round, terminators included: a reader consumes tokens in
     # order and each one advances the turn, so the grouping is unchanged.
     for i in range(0, len(tokens), 4):

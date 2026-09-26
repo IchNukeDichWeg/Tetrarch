@@ -3764,6 +3764,72 @@ def test_protocol_contracts():
               "%d evals over %d nodes" % (evals, r.nodes))
 
 
+    # --- pgn4.write on a start that already holds a stuck seat -------------
+    # The elimination cascade ran only INSIDE the move loop, so a start
+    # carrying a stuck seat lost its leading terminator: StartFen4 said the
+    # stuck seat was to move while the first token belonged to the seat that
+    # actually moved, and replay refused the game.
+    stuck_start = (
+        "R-0,0,0,0-0,0,0,0-0,0,0,0-0,0,0,0-0-"
+        "3,yR,yN,yB,yK,yQ,yB,yN,yR,3/3,yP,yP,yP,yP,yP,yP,yP,yP,3/14/"
+        "bR,bP,10,gP,gR/bN,bP,10,gP,gN/bB,bP,10,gP,gB/bK,bP,10,gP,gQ/"
+        "bQ,bP,10,gP,gK/bB,bP,10,gP,gB/bN,bP,10,gP,gN/bR,bP,10,gP,gR/"
+        "14/14/14")
+    start = Board.from_fen4(stuck_start, MODE_FFA)
+    check("the fixture really does start with a stuck seat",
+          not fast.gen_legal(start))
+    played = start.copy()
+    game.resolve(played)
+    moves = []
+    for _ in range(3):
+        legal = fast.gen_legal(played)
+        moves.append(legal[0])
+        played.make(legal[0])
+        game.resolve(played)
+    text = pgn4.write(start, moves, {"Variant": "FFA"})
+    check("pgn4.write emits the leading terminator for a stuck start",
+          pgn4.parse(text).tokens[0] in pgn4.TERMINATORS,
+          pgn4.parse(text).tokens[:2])
+    try:
+        frames, _ = pgn4.replay(pgn4.parse(text))
+        ok, why = len(frames) == len(pgn4.parse(text).tokens) + 1, ""
+    except pgn4.Pgn4Error as exc:
+        ok, why = False, str(exc)
+    check("and the game it wrote replays", ok, why)
+
+    # A FOREIGN export omits the leading terminator -- chess.com does not
+    # write one -- so replay has to apply §7 itself rather than refuse.
+    foreign = "\n".join(
+        l for l in text.splitlines()
+        if not l.startswith("1. ")) + "\n1. " + " .. ".join(
+            t for t in pgn4.parse(text).tokens if t not in pgn4.TERMINATORS)
+    try:
+        pgn4.replay(pgn4.parse(foreign))
+        ok, why = True, ""
+    except pgn4.Pgn4Error as exc:
+        ok, why = False, str(exc)
+    check("and an export with no leading terminator replays too", ok, why)
+
+    # --- Pgn4Error carries the ply it broke at -----------------------------
+    # The GUI used a second walk of the game to find it, which applied a
+    # different elimination rule and read a bare "#" as a move.
+    broken = text.rstrip("\n") + " .. a1-a2\n"
+    tokens = pgn4.parse(broken).tokens
+    try:
+        pgn4.replay(pgn4.parse(broken))
+        ply = None
+    except pgn4.Pgn4Error as exc:
+        ply = exc.ply
+    check("Pgn4Error names the ply that actually failed",
+          ply == len(tokens) - 1, "ply %r of %d tokens" % (ply, len(tokens)))
+    try:
+        kept = len(pgn4.replay(pgn4.parse(broken), limit=ply)[0])
+        ok, why = kept == len(tokens), "%d frames" % kept
+    except pgn4.Pgn4Error as exc:
+        ok, why = False, str(exc)
+    check("and replaying to that limit keeps everything before it", ok, why)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crosscheck", type=int, default=3000, metavar="N",

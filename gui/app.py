@@ -377,7 +377,14 @@ def api_parse():
     except pgn4.Pgn4Error as exc:
         # Replay as far as it got, so a game that breaks at move 40 still shows
         # the first 39. Silently truncating would be worse than saying so.
-        frames, terminations = pgn4.replay(game, limit=_last_good(game))
+        #
+        # The ply comes from the replayer that actually failed. It used to
+        # come from a second walk of the game in here, which applied a
+        # DIFFERENT elimination rule (alive[turn] = False rather than
+        # eliminate, and no recompute_key) and read a bare "#" as a move,
+        # because "#".rstrip("+#") is "" -- so the viewer was truncated at the
+        # checkmate instead of at the real error.
+        frames, terminations = pgn4.replay(game, limit=exc.ply)
         error = str(exc)
     except Exception as exc:                                    # noqa: BLE001
         return jsonify({"error": "replay failed: %s" % exc}), 400
@@ -391,22 +398,6 @@ def api_parse():
         "tokens": game.tokens,
         "error": error,
     })
-
-
-def _last_good(game):
-    """How many tokens replay cleanly, for partial display after a bad move."""
-    board = game.start.copy()
-    for i, token in enumerate(game.tokens):
-        stripped = token.rstrip("+#")
-        try:
-            if stripped in pgn4.TERMINATORS:
-                board.alive[board.turn] = False
-                board.turn = board.next_turn()
-                continue
-            board.make(pgn4.resolve(board, token))
-        except Exception:                                       # noqa: BLE001
-            return i
-    return len(game.tokens)
 
 
 @app.route("/api/eval", methods=["POST"])
