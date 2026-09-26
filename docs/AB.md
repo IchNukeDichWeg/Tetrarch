@@ -85,6 +85,51 @@ through the same aliased pairing and has not been re-run.
 
 ## Results
 
+### Bit-exact speedups, 26 Sep -- three shipped, one CLOSED PRE-A/B
+
+Four items from the audit's speed section, each bit-exact: every bench
+position's node count unchanged (49806 / 189492 / 111487 / 190997 / 56151,
+signature 597,933), perft 5 over the bench positions unchanged at 93,846,865,
+selftest green. No A/B is needed for correctness; the Elo is the audit's
+exchange-rate estimate, not a measurement.
+
+Instrument: CPU seconds per bench round, not wall clock. The bench does a fixed
+node count, so preemption inflates wall time but not CPU time; interpreter
+start-up cancels as the slope between 3 and 18 rounds; minimum over 5 reps;
+**variant order rotated every rep**. Each run carries a null, a byte-identical
+copy of the baseline built separately. Apple M-series, 18 cores (6+12), load ~7.
+
+| item | Teams | FFA | mixed | verdict |
+|---|---:|---:|---:|---|
+| null (baseline copy) | +0.10% | +1.42% | +0.62% | |
+| FFA accumulator carry across elimination | -- | +2.43% | +0.37% | SHIPPED, within noise here |
+| per-seat occupancy bitboard in tt_gen_pseudo | **+14.27%** | +1.66% | **+10.75%** | SHIPPED |
+| NNUE L2 stride split | +2.25% | **+6.80%** | +2.92% | SHIPPED |
+| all three together | **+17.92%** | **+9.36%** | **+19.38%** | |
+| NNUE extras cache | -- | -1.7 to -4.4% | ~0 to -3% | **CLOSED PRE-A/B** |
+
+The extras-cache figure is the building subagent's, on two rotated runs with
+nulls of +0.06% and -4.16%; a build of all three shipped items plus the cache
+was 2% slower than the three alone on the same interleaved run. It is slower
+because the tail it removes was free (see the correction below) and the cache
+adds a tag check plus a dependent load on the accumulation's critical path, and
+in FFA `points[]` moves on every capture so the tag misses constantly. That is
+an Apple NEON result: on a core where the scalar tail does not issue under the
+dot, the cache could pay. Re-measure before generalising it.
+
+**Why the order rotation is in the instrument.** The first harness ran the
+variants in a fixed order each rep. The first process of a rep pays cold caches
+and the frequency ramp, so a byte-identical copy of the baseline, run second,
+measured **+9.44%** purely for its slot. Every number taken that way is biased
+toward whichever variant is not first, and the prior prototype figures for
+these items were taken under that class of error at load 16. With rotation the
+nulls fall to the table's +0.1 to +1.4%.
+
+The occupancy bitboard is node-identical by construction: words are walked low
+to high and ctz takes the low bit first, so squares come out in the old scan's
+ascending order and the move list is identical element for element. It does not
+need pick_move's tie-break fixed to hold.
+
 ### Where nnue_eval_for actually spends its time
 
 The audit called this the highest-value unmeasured thing: 42.6% of the bench
@@ -115,10 +160,14 @@ seven-value scalar tail is 7.2 ns (7.0%).
 
 Three things follow, and they change the priority of filed items:
 
-**The extras tail is worth 7.0% of the evaluation, not a rounding error.** Seven
-scalar multiply-adds per row across 32 rows, deliberately off the vector path
-with a comment saying seven against 256 is not worth a second code path. At
-42.6% of the bench that tail is ~3.0% of a Teams search on its own.
+**CORRECTED (26 Sep): the extras tail's 7.0% did not convert.** This paragraph
+originally read the tail as ~3.0% of a Teams search and recommended caching it
+first. Caching it was then built and measured (below) and came out 1.7 to 4.4%
+SLOWER in FFA. The stage table measures a truncated function, so it counts a
+stage's issue slots, not its place on the critical path: in the real loop the
+seven scalar multiply-adds are independent of the 256-wide dot and issue
+underneath it for free. Read every share in the table above as an upper bound
+on what removing that stage can buy, not as the saving.
 
 **Widening L1 to 512 is not "the 2 MB weight table gets bigger".** It doubles
 the input to L2, which is 78.6% of the evaluation and the only stage that
