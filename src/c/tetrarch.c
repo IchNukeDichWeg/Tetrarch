@@ -1334,7 +1334,16 @@ typedef struct {
 
 static int16_t *nn_w1;
 static int32_t nn_b1[NN_L1];
-static int8_t nn_w2[NN_L2 * (NN_L1 + NN_EXTRA)];
+/* L2 rows, split out of the single (NN_L1 + NN_EXTRA)-stride block the .nnue
+ * file and tetrarch/nnue.py still ship. The packed stride is 263 bytes -- not
+ * a multiple of 16 -- so every one of the 32 rows starts at a different
+ * misalignment and every vector load in nn_dot straddles a cache line across
+ * the whole 8,416-byte block. Splitting gives nn_w2main a 256-byte stride off
+ * a 64-byte-aligned base, so every row is aligned and the extras stop being
+ * interleaved into the hot scan. tt_load_net does the split; the FILE FORMAT
+ * AND THE BINDING DO NOT CHANGE. */
+static int8_t nn_w2main[NN_L2 * NN_L1] __attribute__((aligned(64)));
+static int8_t nn_w2extra[NN_L2 * NN_EXTRA];
 static int32_t nn_b2[NN_L2];
 static int8_t nn_w3[NN_L3 * NN_L2];
 static int32_t nn_b3[NN_L3];
@@ -1508,7 +1517,15 @@ int tt_load_net(const TtNetView *v)
     }
     memcpy(nn_w1, v->w1, (size_t)NN_FEATURES * NN_L1 * sizeof(int16_t));
     memcpy(nn_b1, v->b1, sizeof(nn_b1));
-    memcpy(nn_w2, v->w2, sizeof(nn_w2));
+    {   /* One packed 263-wide row in, one aligned 256-wide row plus a 7-wide
+         * extras row out. Nothing upstream of here is aware of the split. */
+        int k;
+        for (k = 0; k < NN_L2; k++) {
+            const int8_t *src = v->w2 + (size_t)k * (NN_L1 + NN_EXTRA);
+            memcpy(nn_w2main + (size_t)k * NN_L1, src, NN_L1);
+            memcpy(nn_w2extra + (size_t)k * NN_EXTRA, src + NN_L1, NN_EXTRA);
+        }
+    }
     memcpy(nn_b2, v->b2, sizeof(nn_b2));
     memcpy(nn_w3, v->w3, sizeof(nn_w3));
     memcpy(nn_b3, v->b3, sizeof(nn_b3));
@@ -1639,11 +1656,14 @@ static int32_t nnue_eval_for(const TtBoard *b, int persp)
     for (j = 0; j < NN_EXTRA; j++) x[NN_L1 + j] = (int8_t)ex[j];
 
     for (k = 0; k < NN_L2; k++) {
-        const int8_t *row = nn_w2 + (size_t)k * (NN_L1 + NN_EXTRA);
-        int32_t z = nn_b2[k] + nn_dot(x, row, NN_L1);
+        const int8_t *erow = nn_w2extra + (size_t)k * NN_EXTRA;
+        int32_t z = nn_b2[k] + nn_dot(x, nn_w2main + (size_t)k * NN_L1, NN_L1);
         /* The extras run negative, so they stay off the vector path. Seven
-         * values against 256 is not worth a second code path. */
-        for (j = NN_L1; j < NN_L1 + NN_EXTRA; j++) z += x[j] * row[j];
+         * values against 256 is not worth a second code path -- and CACHING
+         * this tail was built and measured, and REJECTED: -1.7 to -4.4% in
+         * FFA. The tail already hides under the 256-wide dot, so a cache only
+         * adds a tag check and a dependent load. See docs/AB.md. */
+        for (j = 0; j < NN_EXTRA; j++) z += x[NN_L1 + j] * erow[j];
         h1[k] = (int8_t)nn_crelu(z, NN_SHIFT2);
     }
     for (k = 0; k < NN_L3; k++) {
@@ -2633,10 +2653,11 @@ double tt_bench_nnue_stage(TtBoard *b, int persp, int stage, int iters)
         if (stage < 3) continue;
 
         for (k = 0; k < NN_L2; k++) {
-            const int8_t *row = nn_w2 + (size_t)k * (NN_L1 + NN_EXTRA);
-            int32_t z = nn_b2[k] + nn_dot(x, row, NN_L1);
+            const int8_t *erow = nn_w2extra + (size_t)k * NN_EXTRA;
+            int32_t z = nn_b2[k]
+                      + nn_dot(x, nn_w2main + (size_t)k * NN_L1, NN_L1);
             if (stage != 6)
-                for (j = NN_L1; j < NN_L1 + NN_EXTRA; j++) z += x[j] * row[j];
+                for (j = 0; j < NN_EXTRA; j++) z += x[NN_L1 + j] * erow[j];
             h1[k] = (int8_t)nn_crelu(z, NN_SHIFT2);
         }
         sink += h1[0];
