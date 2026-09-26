@@ -70,8 +70,16 @@ KNIGHT_DELTAS = (2 * N + E, 2 * N + W, 2 * S + E, 2 * S + W,
                  N + 2 * E, N + 2 * W, S + 2 * E, S + 2 * W)
 
 
+#: Square names are a 256-entry table, not two calls and a concatenation.
+#: `move_str` runs it twice per move and the UCI move-list scan runs `move_str`
+#: over a whole pseudo-legal list; measured 529k calls in one selftest section.
+#: Off-board files (14, 15) hold None so a bad square still fails loudly.
+_SQ_NAMES = tuple(FILE_NAMES[sq & 15] + str((sq >> 4) + 1) if (sq & 15) < NFILE
+                  else None for sq in range(NSQ))
+
+
 def name_of(sq):
-    return FILE_NAMES[file_of(sq)] + str(rank_of(sq) + 1)
+    return _SQ_NAMES[sq]
 
 
 def sq_from_name(text):
@@ -284,7 +292,7 @@ def mv_promo(m):
 
 
 def move_str(m):
-    s = name_of(mv_from(m)) + name_of(mv_to(m))
+    s = _SQ_NAMES[m & 255] + _SQ_NAMES[(m >> 8) & 255]
     promo = (m >> 20) & 7
     if promo:
         s += TYPE_CHARS[promo].lower()
@@ -748,13 +756,14 @@ class Board:
         """
         if self.mode != MODE_FFA:
             return 0
-        from . import movegen
+        from . import movegen          # circular at import time; cached here
+        attacks_from = movegen.attacks_from
         checked = 0
         for seat in range(4):
             king = self.kings[seat]
             if seat == mover or not self.alive[seat] or king < 0:
                 continue
-            if movegen.attacks_from(self, to, king):
+            if attacks_from(self, to, king):
                 checked += 1
         if checked < 2:
             return 0

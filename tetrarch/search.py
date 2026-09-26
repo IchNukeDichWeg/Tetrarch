@@ -24,7 +24,7 @@ Section references (§n) are to docs/RULES.md.
 
 import time
 
-from .board import MODE_TEAMS, move_str
+from .board import MODE_TEAMS, ZOB_TURN, move_str
 from . import core
 from . import movegen as gen
 from .eval_hand import evaluate
@@ -402,7 +402,10 @@ def _eval_for(board, persp):
         return core.evaluate(board)
     c = board.copy()
     c.turn = persp
-    c.recompute_key()
+    # The turn is the only Zobrist term that changed, so xor it across rather
+    # than rescanning 256 squares. `recompute_key` starts from ZOB_TURN[turn]
+    # and xors everything else, so this is the identical key by construction.
+    c.key = board.key ^ ZOB_TURN[board.turn] ^ ZOB_TURN[persp]
     return core.evaluate(c)
 
 

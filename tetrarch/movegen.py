@@ -89,6 +89,15 @@ def is_attacked(b, sq, me):
     return False
 
 
+#: The hop deltas as residues mod 256. `((src + d) & 255) == dst` for some d
+#: is exactly `((dst - src) & 255) in <the set>`, so the three hop cases below
+#: become one set lookup instead of a generator over four or eight deltas --
+#: 4.4M generator steps in one selftest section at HEAD.
+_KNIGHT_HOPS = frozenset(d & 255 for d in KNIGHT_DELTAS)
+_KING_HOPS = frozenset(d & 255 for d in QUEEN_DIRS)
+_PAWN_HOPS = tuple(frozenset(d & 255 for d in takes) for takes in PAWN_TAKES)
+
+
 def attacks_from(b, src, dst):
     """Does the piece standing on `src` attack `dst`?
 
@@ -101,13 +110,14 @@ def attacks_from(b, src, dst):
         return False
     ptype = PC_TYPE[p]
 
+    hop = (dst - src) & 255
     if ptype == KNIGHT:
-        return any(((src + d) & 255) == dst for d in KNIGHT_DELTAS)
+        return hop in _KNIGHT_HOPS
     if ptype == PAWN:
         # The push is not an attack, and the capture deltas are per seat (§4.1).
-        return any(((src + d) & 255) == dst for d in PAWN_TAKES[PC_COLOR[p]])
+        return hop in _PAWN_HOPS[PC_COLOR[p]]
     if ptype == KING:
-        return any(((src + d) & 255) == dst for d in QUEEN_DIRS)
+        return hop in _KING_HOPS
 
     dirs = ORTHO if ptype == ROOK else DIAG if ptype == BISHOP else QUEEN_DIRS
     for d in dirs:
