@@ -3666,6 +3666,18 @@ DEAD_SEAT_FEN4 = (
 
 
 
+#: Red knight on g7 in TEAMS. Its eight destinations are f9 h9 e8 i8 e6 i6 f5
+#: h5; Yellow's rook (Red's PARTNER) sits on f9 and Blue's rook (an opponent)
+#: on h9, so exactly seven are reachable. A knight and not a slider, because
+#: the term caps at MOBILITY_CAP and an open rook reaches the cap before the
+#: distinction can show.
+MOBILITY_FEN4 = ("R-0,0,0,0-0,0,0,0-0,0,0,0-0,0,0,0-0-"
+                 "10,yK,3/14/14/14/14/5,yR,1,bR,6/14/bK,5,rN,6,gK/14/14/14/"
+                 "14/14/3,rK,10")
+
+
+
+
 def test_protocol_contracts():
     """The contracts a host relies on and nothing asserted: `go` always
     answering, the two spellings of `position startpos` agreeing, 0 not
@@ -3828,6 +3840,43 @@ def test_protocol_contracts():
     except pgn4.Pgn4Error as exc:
         ok, why = False, str(exc)
     check("and replaying to that limit keeps everything before it", ok, why)
+
+
+    # --- mobility screens a teammate's square ------------------------------
+    # In Teams a partner's piece has a different pc_color and is NOT
+    # capturable, so "a different colour" counted moving onto it and counted
+    # the ray as stopping there with a square earned. C and Python shared the
+    # bug, so the bit-for-bit comparison passed -- this asserts the VALUE.
+    #
+    # A KNIGHT, not a slider: the term caps at MOBILITY_CAP and an open rook
+    # reaches the cap before the distinction can show. Red knight on g7; its
+    # eight destinations are f9 h9 e8 i8 e6 i6 f5 h5. Yellow's rook (Red's
+    # PARTNER in Teams) sits on f9 and Blue's rook (an opponent) on h9, so
+    # exactly seven of the eight are reachable. The old rule counted eight.
+    b = Board.from_fen4(MOBILITY_FEN4, MODE_TEAMS)
+    sq = sq_of(6, 6)
+    got = eval_hand.piece_mobility(b, sq, b.sq[sq])
+    check("piece_mobility does not count a teammate's square", got == 7,
+          "%d squares, expected 7 (the partner on f9 is not capturable)" % got)
+    # In a SUBPROCESS: core.evaluate dispatches on whether a net is loaded,
+    # and by this point in the run one is. A clean interpreter has the hand
+    # eval, which is the copy the C side of this term lives in.
+    eval_hand.USE_MOBILITY = True
+    try:
+        want = eval_hand.evaluate(b)
+    finally:
+        eval_hand.USE_MOBILITY = False
+    run = subprocess.run(
+        [sys.executable, "-c",
+         "import selftest, tetrarch.core as core, tetrarch.eval_hand as eh;"
+         "from tetrarch.board import Board, MODE_TEAMS;"
+         "core.set_mobility(True);"
+         "print(core.evaluate("
+         "Board.from_fen4(selftest.MOBILITY_FEN4, MODE_TEAMS)))"],
+        cwd=root, capture_output=True, text=True, timeout=120)
+    got = run.stdout.strip()
+    check("and C agrees with Python on the position it is measured on",
+          got == str(want), "Python %d vs C %r" % (want, got or run.stderr[-120:]))
 
 
 def main():

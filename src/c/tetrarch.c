@@ -1649,7 +1649,13 @@ static int32_t piece_mobility(const TtBoard *b, int sq, uint8_t piece)
             if (!P.valid[t]) break;
             other = b->sq[t];
             if (other) {
-                if (P.pc_color[other] != mine) count++;
+                /* is_enemy, not "a different colour": in Teams a partner's
+                 * piece has a different pc_color and is NOT capturable, so
+                 * the plain colour test counted moving onto a teammate and
+                 * over-counted by one square per partner-blocked direction.
+                 * This is the rule the generator uses, which is what the
+                 * docstring already claimed. */
+                if (is_enemy(b, other, mine)) count++;
                 break;
             }
             count++;

@@ -64,9 +64,10 @@ MOBILITY_DIRS = {
 def piece_mobility(b, sq, piece):
     """Squares this piece could move to, ignoring pins and check, capped.
 
-    A square counts when it is empty or holds something this seat does not own
-    -- the same rule the generator uses, so the number means what a player
-    would mean by it.
+    A square counts when it is empty or holds something this seat could
+    CAPTURE -- the same rule the generator uses, so the number means what a
+    player would mean by it. In Teams that is not the same as "a different
+    colour": a partner's piece blocks the ray and cannot be taken.
     """
     entry = MOBILITY_DIRS.get(PC_TYPE[piece])
     if entry is None:
@@ -82,7 +83,13 @@ def piece_mobility(b, sq, piece):
                 break
             other = b.sq[t]
             if other:
-                if PC_COLOR[other] != mine:
+                # is_enemy, not "a different colour": in Teams a partner's
+                # piece has a different PC_COLOR and is NOT capturable, so the
+                # plain colour test counted moving onto a teammate and
+                # over-counted by one square per partner-blocked direction.
+                # Must stay bit-identical to the C copy (selftest compares
+                # them), so both change in the same commit.
+                if b.is_enemy(other, mine):
                     count += 1
                 break
             count += 1
