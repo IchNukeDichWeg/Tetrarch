@@ -62,3 +62,16 @@ book*.txt
 # Scratch notes and review documents: drafts about the engine, not part
 # of it. Anything with `improvement` in the name stays out of the tree.
 *improvement*
+
+# Credentials. Nothing here needs any, and every rule above is about size or
+# noise -- none of them would stop a token. A rented box gets an SSH key and a
+# GitHub token dropped into it by hand, and `git add` from the wrong directory
+# on that box is the one mistake that cannot be fixed with a follow-up commit.
+.env
+.env.*
+.netrc
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+credentials*
