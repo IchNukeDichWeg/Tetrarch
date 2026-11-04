@@ -175,6 +175,7 @@ static int ph_ok = 0;              /* points_hash's memo is valid; see there */
 static int  nn_delta_on_for(uint64_t key);
 static inline void nn_toggle(uint8_t piece, int sq, int sign);
 static void build_ray_steps(void);
+static void build_attack_tables(void);
 static void nn_acc_set_key(uint64_t key);
 static void nn_build_tables(void);
 
@@ -190,6 +191,7 @@ void tt_init(const TtParams *p)
     build_ray_steps();
     ph_ok = 0;                     /* points_hash's memo used the old zobrist */
     nn_build_tables();
+    build_attack_tables();
     initialised = 1;
 }
 
@@ -221,62 +223,108 @@ static inline int hostile(const TtBoard *b, uint8_t piece, int me)
 
 static inline int queenish(int t) { return t == QUEEN || t == PQUEEN; }
 
+/* What tt_is_attacked needs to know about a piece, in two table loads
+ * instead of a type compare chain plus hostile()'s three tests. Built once in
+ * tt_init from the pushed-in piece encoding; piece 0 (empty) has neither, so
+ * the empty square fails both tests without a separate branch.
+ *
+ * att_cbit is 1 << colour, so DEAD_UNKNOWN (colour 4) lands on bit 4, which
+ * no hostile mask ever sets -- exactly hostile()'s `c < 4`. */
+#define AC_KNIGHT 1
+#define AC_KING   2
+#define AC_PAWN   4
+#define AC_ORTHO  8              /* rook, queen, promoted queen */
+#define AC_DIAG   16             /* bishop, queen, promoted queen */
+static uint8_t att_class[NPIECE];
+static uint8_t att_cbit[NPIECE];
+static uint8_t att_dir_class[8];  /* AC_ORTHO or AC_DIAG for queen_dirs[i] */
+/* The on-board knight jumps from each square, in knight_deltas order. The
+ * order is irrelevant to the answer; it is kept so nobody has to argue it. */
+static uint8_t kn_to[NSQ][8];
+static uint8_t kn_n[NSQ];
+
+static void build_attack_tables(void)
+{
+    int p, i, sq;
+    for (p = 0; p < NPIECE; p++) {
+        int t = P.pc_type[p];
+        att_class[p] = (uint8_t)(t == KNIGHT ? AC_KNIGHT
+                       : t == KING ? AC_KING
+                       : t == PAWN ? AC_PAWN
+                       : t == ROOK ? AC_ORTHO
+                       : t == BISHOP ? AC_DIAG
+                       : (t == QUEEN || t == PQUEEN) ? (AC_ORTHO | AC_DIAG) : 0);
+        att_cbit[p] = (uint8_t)(1u << P.pc_color[p]);
+    }
+    att_class[0] = att_cbit[0] = 0;
+    for (i = 0; i < 8; i++) {
+        int d = P.queen_dirs[i], j, diag = 0;
+        for (j = 0; j < 4; j++) if (P.diag[j] == d) diag = 1;
+        att_dir_class[i] = diag ? AC_DIAG : AC_ORTHO;
+    }
+    for (sq = 0; sq < NSQ; sq++) {
+        kn_n[sq] = 0;
+        if (!P.valid[sq]) continue;
+        for (i = 0; i < 8; i++) {
+            int t = (sq + P.knight_deltas[i]) & 255;
+            if (P.valid[t]) kn_to[sq][kn_n[sq]++] = (uint8_t)t;
+        }
+    }
+}
+
+/* A pure predicate, so the order of the probes is free to change: only speed
+ * depends on it. Two things make this cheaper than the five separate loops it
+ * replaced (knights, kings, pawns, rook lines, bishop lines):
+ *
+ * - Hostility is decided once per call, as a mask over colours, rather than
+ *   per piece found. A seat is hostile when alive and not on `me`'s side,
+ *   which is what hostile() asks of a piece's colour.
+ * - The king and pawn probes read the same eight neighbours the ray walks
+ *   start on, so they are folded into the first step of each ray instead of
+ *   being two more passes over those squares. A pawn on sq+d attacks sq when
+ *   -d is one of its seat's capture deltas; those are all diagonal, so the
+ *   test fails by itself on an orthogonal neighbour.
+ *
+ * ponytail: per-seat occupancy (occ[]) could reject a whole ray with no
+ * hostile piece on it, but it is only valid when occ_key matches, and a ray
+ * from a king usually ends on the first square at our own piece anyway. */
 int tt_is_attacked(const TtBoard *b, int sq, int me)
 {
-    int i, t;
-    uint8_t p;
+    unsigned hm = 0;
+    int c, i, n;
 
-    for (i = 0; i < 8; i++) {
-        t = (sq + P.knight_deltas[i]) & 255;
-        if (P.valid[t]) {
-            p = b->sq[t];
-            if (p && P.pc_type[p] == KNIGHT && hostile(b, p, me)) return 1;
-        }
+    for (c = 0; c < 4; c++)
+        if (b->alive[c] && !same_team(b->mode, c, me)) hm |= 1u << c;
+    if (!hm) return 0;               /* nothing on the board can attack us */
+
+    n = kn_n[sq];
+    for (i = 0; i < n; i++) {
+        uint8_t p = b->sq[kn_to[sq][i]];
+        if ((att_class[p] & AC_KNIGHT) && (att_cbit[p] & hm)) return 1;
     }
     for (i = 0; i < 8; i++) {
-        t = (sq + P.queen_dirs[i]) & 255;
-        if (P.valid[t]) {
-            p = b->sq[t];
-            if (p && P.pc_type[p] == KING && hostile(b, p, me)) return 1;
-        }
-    }
-    /* A pawn on sq-d attacks sq exactly when d is one of that seat's own
-     * capture deltas, which differ per seat (§4.1). All are diagonal. */
-    for (i = 0; i < 4; i++) {
-        int d = P.diag[i];
-        t = (sq - d) & 255;
-        if (P.valid[t]) {
-            p = b->sq[t];
-            if (p && P.pc_type[p] == PAWN && hostile(b, p, me)) {
-                int c = P.pc_color[p];
-                if (P.pawn_takes[c][0] == d || P.pawn_takes[c][1] == d) return 1;
+        int d = P.queen_dirs[i], t = (sq + d) & 255;
+        unsigned want = att_dir_class[i];
+        uint8_t p;
+        if (!P.valid[t]) continue;
+        p = b->sq[t];
+        if (p) {
+            if (att_cbit[p] & hm) {
+                unsigned cl = att_class[p];
+                if (cl & (want | AC_KING)) return 1;
+                if (cl & AC_PAWN) {
+                    const int32_t *tk = P.pawn_takes[P.pc_color[p]];
+                    if (tk[0] == -d || tk[1] == -d) return 1;
+                }
             }
+            continue;
         }
-    }
-    for (i = 0; i < 4; i++) {
-        int d = P.ortho[i];
-        t = (sq + d) & 255;
-        while (P.valid[t]) {
+        for (t = (t + d) & 255; P.valid[t]; t = (t + d) & 255) {
             p = b->sq[t];
             if (p) {
-                int pt = P.pc_type[p];
-                if ((pt == ROOK || queenish(pt)) && hostile(b, p, me)) return 1;
+                if ((att_class[p] & want) && (att_cbit[p] & hm)) return 1;
                 break;
             }
-            t = (t + d) & 255;
-        }
-    }
-    for (i = 0; i < 4; i++) {
-        int d = P.diag[i];
-        t = (sq + d) & 255;
-        while (P.valid[t]) {
-            p = b->sq[t];
-            if (p) {
-                int pt = P.pc_type[p];
-                if ((pt == BISHOP || queenish(pt)) && hostile(b, p, me)) return 1;
-                break;
-            }
-            t = (t + d) & 255;
         }
     }
     return 0;
@@ -993,10 +1041,15 @@ typedef struct { int16_t sq; int16_t dir; } Pin;
  * it if they moved off the line. At most one per direction, so at most 8. */
 static int compute_pins(const TtBoard *b, int me, int king, Pin *pins)
 {
-    int i, n = 0;
+    int i, n = 0, c;
+    unsigned hm = 0;
     if (king < 0) return 0;
+    /* hostile() as a colour mask, decided once: see tt_is_attacked. */
+    for (c = 0; c < 4; c++)
+        if (b->alive[c] && !same_team(b->mode, c, me)) hm |= 1u << c;
     for (i = 0; i < 8; i++) {
-        int d = P.queen_dirs[i], diag = is_diag(d);
+        int d = P.queen_dirs[i];
+        unsigned want = att_dir_class[i];
         int t = (king + d) & 255, own = -1;
         while (P.valid[t]) {
             uint8_t p = b->sq[t];
@@ -1007,9 +1060,7 @@ static int compute_pins(const TtBoard *b, int me, int king, Pin *pins)
                     if (P.pc_color[p] != me) break;
                     own = t;
                 } else {
-                    int pt = P.pc_type[p];
-                    if (hostile(b, p, me)
-                        && (queenish(pt) || (diag ? pt == BISHOP : pt == ROOK))) {
+                    if ((att_class[p] & want) && (att_cbit[p] & hm)) {
                         pins[n].sq = (int16_t)own;
                         pins[n].dir = (int16_t)d;
                         n++;
