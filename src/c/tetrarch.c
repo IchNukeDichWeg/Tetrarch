@@ -168,6 +168,7 @@ typedef struct {
 
 static TtParams P;
 static int initialised = 0;
+static int ph_ok = 0;              /* points_hash's memo is valid; see there */
 
 /* NNUE accumulator hooks. The net itself is defined further down; the deltas
  * are applied here, where the board actually changes. */
@@ -186,6 +187,7 @@ void tt_init(const TtParams *p)
 {
     memcpy(&P, p, sizeof(TtParams));
     build_ray_steps();
+    ph_ok = 0;                     /* points_hash's memo used the old zobrist */
     initialised = 1;
 }
 
@@ -307,17 +309,32 @@ int tt_in_check(const TtBoard *b, int color)
  * ponytail: key the three differences from seat 0 if the split ever measures.
  *
  * Splitmix64's finaliser after the multiply, because the low bits of a bare
- * multiply barely move and the table indexes with the low bits. */
+ * multiply barely move and the table indexes with the low bits.
+ *
+ * Memoised on the last standing it hashed, packed whole into one word. Every
+ * paranoid node probes, so this ran once per node -- twelve multiplies -- yet
+ * the standing only moves on a capture, a multi-check or an elimination: a
+ * quiet move hands its child the standing its parent hashed, and the probes
+ * arrive in exactly that order. The tag is all four points, so a hit returns
+ * what the computation would have, never an approximation of it. tt_init
+ * drops the memo because zob_points may change under it. */
+static uint64_t ph_tag, ph_val;
+
 static uint64_t points_hash(const TtBoard *b)
 {
-    uint64_t k = 0;
+    uint64_t k = 0, tag;
     int c;
+    memcpy(&tag, b->points, sizeof(tag));
+    if (ph_ok && tag == ph_tag) return ph_val;
     for (c = 0; c < 4; c++) {
         uint64_t x = (uint64_t)(b->points[c] + 1u) * P.zob_points[c];
         x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ull;
         x ^= x >> 27; x *= 0x94D049BB133111EBull;
         k ^= x ^ (x >> 31);
     }
+    ph_tag = tag;
+    ph_val = k;
+    ph_ok = 1;
     return k;
 }
 
