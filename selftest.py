@@ -1937,6 +1937,28 @@ def test_ffa_search(workers=1):
     finally:
         core.unload_net()
 
+    # Nor across roots. The paranoid key mixed the root in as zob_turn[root],
+    # which cancels the zob_turn[turn] already in b->key whenever the root is
+    # to move, so Red's root-to-move nodes and Blue's shared keys. Searching a
+    # placement for Red and then the same squares with Blue to move gave Blue
+    # Red's scores at ply 4 (modern depth 5: -8488 warm, -8500 cold). The
+    # table always replaces, so with no cross-root hit the warm search is the
+    # cold one exactly: score, move AND nodes.
+    red = start_board("modern", MODE_FFA)
+    blue = red.copy()
+    blue.turn = BLUE
+    blue.recompute_key()
+    core.clear_hash()
+    cold = core.search(blue, 5)
+    core.clear_hash()
+    core.search(red, 5)
+    warm = core.search(blue, 5)
+    check("a warm FFA table does not answer for another root",
+          (warm.score, warm.best, warm.nodes)
+          == (cold.score, cold.best, cold.nodes),
+          "warm %d/%d nodes, cold %d/%d" % (warm.score, warm.nodes,
+                                            cold.score, cold.nodes))
+
 
 def test_net_bundle():
     section("per-setup net bundle")

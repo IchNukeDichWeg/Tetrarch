@@ -3444,10 +3444,24 @@ int tt_get_ffa_tt(void) { return use_ffa_tt; }
  * The points standing goes in here too, and only here: the evaluation reads
  * it, so it is part of what identifies the position, but b->key doubles as the
  * repetition key where a monotonic term would stop any position ever repeating
- * (see points_hash). */
+ * (see points_hash).
+ *
+ * zob_turn[root] alone did NOT keep roots apart. b->key already carries
+ * zob_turn[b->turn], so the two cancel whenever the root is to move -- every
+ * root-to-move node of every root mapped to one key -- and (turn t, root r)
+ * collided with (turn r, root t). Searching a placement for Red and then the
+ * same placement with Blue to move for Blue handed the second search Red's
+ * scores at ply 4: modern depth 5 came back -8488 where a cleared table says
+ * -8500, and classic depth 5 changed its move. The root is therefore also
+ * tagged in the top two bits. Those bits are above any tt_mask, so within one
+ * search -- one root -- every index and every key equality is exactly what
+ * it was, and only cross-root hits change. Replacing zob_turn[root] with a
+ * fresh table was the other fix; it moves every FFA index and so every FFA
+ * node count, for no gain over this. */
 static uint64_t paranoid_key(const TtBoard *b, int root)
 {
-    return b->key ^ P.zob_turn[root] ^ points_hash(b);
+    return (b->key ^ P.zob_turn[root] ^ points_hash(b))
+           ^ ((uint64_t)root << 62);
 }
 
 /* pick_move, plus one fact carried between calls at the same node: whether
