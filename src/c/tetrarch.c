@@ -1375,6 +1375,17 @@ static int8_t nn_w2main[NN_L2 * NN_L1] __attribute__((aligned(64)));
 static int8_t nn_w2extra[NN_L2 * NN_EXTRA];
 static int32_t nn_b2[NN_L2];
 static int8_t nn_w3[NN_L3 * NN_L2];
+/* The same L2 and L3 weights again, COLUMN-BLOCKED for the x86 path (see
+ * nn_sums_run): block c holds input bytes 4c..4c+3 of every output row, row
+ * after row, so one 32-byte load is those four inputs' weights for eight
+ * outputs. nn_w2excol is the extras the same way, as int16 pairs padded
+ * with a zero weight, because they are signed. Built by tt_load_net
+ * alongside the row copies, which the scalar and NEON paths still read. */
+#define NN_EXPAIRS ((NN_EXTRA + 1) / 2)
+_Static_assert(NN_EXPAIRS == 4, "nn_l2 broadcasts four extras pairs");
+static int8_t nn_w2col[NN_L1 * NN_L2] __attribute__((aligned(64)));
+static int16_t nn_w2excol[NN_EXPAIRS * NN_L2 * 2] __attribute__((aligned(64)));
+static int8_t nn_w3col[NN_L2 * NN_L3] __attribute__((aligned(64)));
 static int32_t nn_b3[NN_L3];
 static int8_t nn_w4[NN_L3];
 static int32_t nn_b4;
@@ -1614,6 +1625,23 @@ int tt_load_net(const TtNetView *v)
             memcpy(nn_w2extra + (size_t)k * NN_EXTRA, src + NN_L1, NN_EXTRA);
         }
     }
+    {   /* The column-blocked copies: element (row k, input j) goes to block
+         * j/4, slot k, byte j%4. */
+        int k, j;
+        for (k = 0; k < NN_L2; k++)
+            for (j = 0; j < NN_L1; j++)
+                nn_w2col[(j / 4) * (NN_L2 * 4) + k * 4 + j % 4] =
+                    v->w2[(size_t)k * (NN_L1 + NN_EXTRA) + j];
+        for (k = 0; k < NN_L2; k++)
+            for (j = 0; j < NN_EXPAIRS * 2; j++)
+                nn_w2excol[(j / 2) * (NN_L2 * 2) + k * 2 + j % 2] = (int16_t)(
+                    j < NN_EXTRA ? v->w2[(size_t)k * (NN_L1 + NN_EXTRA)
+                                         + NN_L1 + j] : 0);
+        for (k = 0; k < NN_L3; k++)
+            for (j = 0; j < NN_L2; j++)
+                nn_w3col[(j / 4) * (NN_L3 * 4) + k * 4 + j % 4] =
+                    v->w3[(size_t)k * NN_L2 + j];
+    }
     memcpy(nn_b2, v->b2, sizeof(nn_b2));
     memcpy(nn_w3, v->w3, sizeof(nn_w3));
     memcpy(nn_b3, v->b3, sizeof(nn_b3));
@@ -1635,13 +1663,6 @@ void tt_unload_net(void)
 }
 
 int tt_net_loaded(void) { return nn_loaded; }
-
-static inline int32_t nn_crelu(int32_t x, int shift)
-{
-    x >>= shift;
-    if (x < 0) return 0;
-    return x > NN_CRELU ? NN_CRELU : x;
-}
 
 /* The seven values that bypass the accumulator, rotated to `persp`. */
 static void nn_extras(const TtBoard *b, int persp, int32_t *out)
@@ -1688,28 +1709,132 @@ static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
 }
 #elif !defined(NN_SCALAR) && defined(__AVX2__)
 #include <immintrin.h>
+/* x86 runs L2 and L3 column-blocked (nn_sums_run, below); NEON and the scalar
+ * reference keep the row-at-a-time loop. */
+#define NN_COLUMNS 1
+
+/* acc + four adjacent u8 x s8 products per int32 lane.
+ *
+ * maddubs sums two products into one int16 WITH saturation. The widest pair
+ * is 127 * -128 * 2 = -32,512 against a -32,768 floor (127 * 127 * 2 = 32,258
+ * on the other side), so it cannot saturate -- but the margin is under 1%, so
+ * it is a real constraint on the quantisation rather than a comfortable one.
+ * Raising NN_CRELU past 127 would break this path silently. */
+static inline __m256i nn_dpbusd(__m256i acc, __m256i a, __m256i b)
+{
+    return _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(a, b),
+                                                   _mm256_set1_epi16(1)));
+}
+
 static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
 {
-    /* maddubs sums two products into one int16 with saturation. The widest
-     * pair here is 127*127 + 127*127 = 32,258 against a 32,767 ceiling, so it
-     * cannot saturate -- but the margin is 1.6%, so it is a real constraint on
-     * the quantisation rather than a comfortable one. Raising NN_CRELU past
-     * 127 would break this path silently. */
     __m256i acc = _mm256_setzero_si256();
-    const __m256i ones = _mm256_set1_epi16(1);
     __m128i lo;
     int i;
-    for (i = 0; i < n; i += 32) {
-        __m256i va = _mm256_loadu_si256((const __m256i *)(a + i));
-        __m256i vb = _mm256_loadu_si256((const __m256i *)(b + i));
-        acc = _mm256_add_epi32(
-            acc, _mm256_madd_epi16(_mm256_maddubs_epi16(va, vb), ones));
-    }
+    for (i = 0; i < n; i += 32)
+        acc = nn_dpbusd(acc, _mm256_loadu_si256((const __m256i *)(a + i)),
+                        _mm256_loadu_si256((const __m256i *)(b + i)));
     lo = _mm_add_epi32(_mm256_castsi256_si128(acc),
                        _mm256_extracti128_si256(acc, 1));
     lo = _mm_hadd_epi32(lo, lo);
     lo = _mm_hadd_epi32(lo, lo);
     return _mm_cvtsi128_si32(lo);
+}
+
+_Static_assert(NN_L2 == 32 && NN_L3 == 32,
+               "nn_sums_run computes exactly 32 outputs");
+
+/* `n` unsigned input bytes against the column-blocked weights `w`, into four
+ * ymm of eight int32 sums, outputs 0..31 in order, starting from `bias`.
+ *
+ * No horizontal reduction anywhere: a block of four inputs is broadcast to
+ * every lane and each lane is one output, so the 32 sums come out already in
+ * vector form. The row-at-a-time loop this replaced paid a full 8-to-1
+ * reduction and a scalar crelu per output, 32 times per layer. */
+static inline void nn_sums_run(const int8_t *x, int n, const int8_t *w,
+                               const int32_t *bias, __m256i *s)
+{
+    int c, r;
+    for (r = 0; r < 4; r++)
+        s[r] = _mm256_loadu_si256((const __m256i *)(bias + 8 * r));
+    for (c = 0; c < n / 4; c++) {
+        int32_t four;
+        __m256i xb;
+        const int8_t *wc = w + (size_t)c * 128;
+        memcpy(&four, x + 4 * c, 4);
+        xb = _mm256_set1_epi32(four);
+        for (r = 0; r < 4; r++)
+            s[r] = nn_dpbusd(s[r], xb,
+                             _mm256_load_si256((const __m256i *)(wc + 32 * r)));
+    }
+}
+
+/* Four vectors of eight int32, outputs 0..31 in order, to crelu(v >> shift)
+ * as 32 int8. The two saturating packs then max(0) are exactly
+ * clamp(v, 0, 127): saturation is monotone and both of its bounds lie outside
+ * [0, 127]. The packs interleave the 128-bit lanes, which the final permute
+ * undoes. */
+static inline void nn_crelu32(__m256i a, __m256i b, __m256i c, __m256i d,
+                              int shift, int8_t *out)
+{
+    __m256i p = _mm256_packs_epi16(
+        _mm256_packs_epi32(_mm256_srai_epi32(a, shift),
+                           _mm256_srai_epi32(b, shift)),
+        _mm256_packs_epi32(_mm256_srai_epi32(c, shift),
+                           _mm256_srai_epi32(d, shift)));
+    p = _mm256_max_epi8(p, _mm256_setzero_si256());
+    p = _mm256_permutevar8x32_epi32(p, _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7));
+    _mm256_storeu_si256((__m256i *)out, p);
+}
+
+/* The accumulator to L2's input bytes. */
+static inline void nn_l1(const int32_t *acc, int8_t *x)
+{
+    int j;
+    for (j = 0; j < NN_L1; j += 32)
+        nn_crelu32(_mm256_loadu_si256((const __m256i *)(acc + j)),
+                   _mm256_loadu_si256((const __m256i *)(acc + j + 8)),
+                   _mm256_loadu_si256((const __m256i *)(acc + j + 16)),
+                   _mm256_loadu_si256((const __m256i *)(acc + j + 24)),
+                   NN_SHIFT1, x + j);
+}
+
+/* L2. `x` is NN_L1 crelu bytes, then the extras as int8, then one zero.
+ *
+ * The extras run negative, so they cannot be maddubs's unsigned operand. They
+ * go through madd_epi16 instead, as int16 pairs against int16 weights, which
+ * is exact: |product pair| <= 2 * 127 * 128. This replaces a scalar tail per
+ * row; see docs/AB.md for why CACHING that tail was rejected -- this does not
+ * cache, it stops doing it seven multiplies at a time.
+ *
+ * `extras` 0 drops the tail for tt_bench_nnue_stage. */
+static inline void nn_l2(const int8_t *x, int8_t *h1, int extras)
+{
+    __m256i s[4];
+    nn_sums_run(x, NN_L1, nn_w2col, nn_b2, s);
+    if (extras) {
+        __m256i xe = _mm256_broadcastsi128_si256(_mm_cvtepi8_epi16(
+            _mm_loadl_epi64((const __m128i *)(x + NN_L1))));
+        __m256i xp[4];
+        int p, r;
+        xp[0] = _mm256_shuffle_epi32(xe, 0x00);
+        xp[1] = _mm256_shuffle_epi32(xe, 0x55);
+        xp[2] = _mm256_shuffle_epi32(xe, 0xAA);
+        xp[3] = _mm256_shuffle_epi32(xe, 0xFF);
+        for (r = 0; r < 4; r++)
+            for (p = 0; p < NN_EXPAIRS; p++)
+                s[r] = _mm256_add_epi32(s[r], _mm256_madd_epi16(xp[p],
+                    _mm256_load_si256((const __m256i *)
+                        (nn_w2excol + p * NN_L2 * 2 + r * 16))));
+    }
+    nn_crelu32(s[0], s[1], s[2], s[3], NN_SHIFT2, h1);
+}
+
+static inline void nn_l3(const int8_t *h1, int8_t *h2)
+{
+    __m256i s[4];
+    nn_sums_run(h1, NN_L2, nn_w3col, nn_b3, s);
+    nn_crelu32(s[0], s[1], s[2], s[3], NN_SHIFT2, h2);
 }
 #else
 static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
@@ -1721,28 +1846,24 @@ static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
 }
 #endif
 
-/* The net has always been perspective-relative -- the accumulator is kept for
- * all four seats and the features rotate -- so evaluating from a seat other
- * than the mover costs nothing but the argument. The paranoid FFA search needs
- * exactly that: every node scored in the root seat's terms. */
-static int32_t nnue_eval_for(const TtBoard *b, int persp)
+#ifndef NN_COLUMNS
+/* The row-at-a-time layers, for NEON and the scalar reference. */
+static inline int32_t nn_crelu(int32_t x, int shift)
 {
-    const int32_t *acc;
-    int8_t x[NN_L1 + NN_EXTRA], h1[NN_L2], h2[NN_L3];
-    int32_t ex[NN_EXTRA];
-    int32_t out;
-    int j, k;
+    x >>= shift;
+    if (x < 0) return 0;
+    return x > NN_CRELU ? NN_CRELU : x;
+}
 
-    if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
-    nn_flush(persp);
-    acc = nn_acc[persp];
-
-    /* crelu bounds these to [0,127] and the extras to [-127,127], so the whole
-     * propagation is int8 by construction. */
+static inline void nn_l1(const int32_t *acc, int8_t *x)
+{
+    int j;
     for (j = 0; j < NN_L1; j++) x[j] = (int8_t)nn_crelu(acc[j], NN_SHIFT1);
-    nn_extras(b, persp, ex);
-    for (j = 0; j < NN_EXTRA; j++) x[NN_L1 + j] = (int8_t)ex[j];
+}
 
+static inline void nn_l2(const int8_t *x, int8_t *h1, int extras)
+{
+    int j, k;
     for (k = 0; k < NN_L2; k++) {
         const int8_t *erow = nn_w2extra + (size_t)k * NN_EXTRA;
         int32_t z = nn_b2[k] + nn_dot(x, nn_w2main + (size_t)k * NN_L1, NN_L1);
@@ -1751,13 +1872,50 @@ static int32_t nnue_eval_for(const TtBoard *b, int persp)
          * this tail was built and measured, and REJECTED: -1.7 to -4.4% in
          * FFA. The tail already hides under the 256-wide dot, so a cache only
          * adds a tag check and a dependent load. See docs/AB.md. */
-        for (j = 0; j < NN_EXTRA; j++) z += x[NN_L1 + j] * erow[j];
+        if (extras)
+            for (j = 0; j < NN_EXTRA; j++) z += x[NN_L1 + j] * erow[j];
         h1[k] = (int8_t)nn_crelu(z, NN_SHIFT2);
     }
+}
+
+static inline void nn_l3(const int8_t *h1, int8_t *h2)
+{
+    int k;
     for (k = 0; k < NN_L3; k++) {
         const int8_t *row = nn_w3 + (size_t)k * NN_L2;
         h2[k] = (int8_t)nn_crelu(nn_b3[k] + nn_dot(h1, row, NN_L2), NN_SHIFT2);
     }
+}
+#endif
+
+/* The net has always been perspective-relative -- the accumulator is kept for
+ * all four seats and the features rotate -- so evaluating from a seat other
+ * than the mover costs nothing but the argument. The paranoid FFA search needs
+ * exactly that: every node scored in the root seat's terms. */
+static int32_t nnue_eval_for(const TtBoard *b, int persp)
+{
+    const int32_t *acc;
+    /* x carries one zero past the extras so they pad to int16 pairs. */
+    int8_t x[NN_L1 + 2 * NN_EXPAIRS] __attribute__((aligned(32)));
+    int8_t h1[NN_L2] __attribute__((aligned(32)));
+    int8_t h2[NN_L3] __attribute__((aligned(32)));
+    int32_t ex[NN_EXTRA];
+    int32_t out;
+    int j;
+
+    if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
+    nn_flush(persp);
+    acc = nn_acc[persp];
+
+    /* crelu bounds these to [0,127] and the extras to [-127,127], so the whole
+     * propagation is int8 by construction. */
+    nn_l1(acc, x);
+    nn_extras(b, persp, ex);
+    for (j = 0; j < NN_EXTRA; j++) x[NN_L1 + j] = (int8_t)ex[j];
+    for (j = NN_L1 + NN_EXTRA; j < (int)sizeof(x); j++) x[j] = 0;
+
+    nn_l2(x, h1, 1);
+    nn_l3(h1, h2);
     out = nn_b4 + nn_dot(h2, nn_w4, NN_L3);
     return out >> NN_SHIFT_OUT;
 }
@@ -2717,9 +2875,11 @@ double tt_bench_eval(TtBoard *b, int iters)
 double tt_bench_nnue_stage(TtBoard *b, int persp, int stage, int iters)
 {
     double t0;
-    int i, j, k;
+    int i, j;
     int64_t sink = 0;
-    int8_t x[NN_L1 + NN_EXTRA], h1[NN_L2], h2[NN_L3];
+    int8_t x[NN_L1 + 2 * NN_EXPAIRS] __attribute__((aligned(32)));
+    int8_t h1[NN_L2] __attribute__((aligned(32)));
+    int8_t h2[NN_L3] __attribute__((aligned(32)));
     int32_t ex[NN_EXTRA];
     const int32_t *acc;
 
@@ -2732,34 +2892,24 @@ double tt_bench_nnue_stage(TtBoard *b, int persp, int stage, int iters)
         sink += acc[0];
         if (stage < 1) continue;
 
-        for (j = 0; j < NN_L1; j++) x[j] = (int8_t)nn_crelu(acc[j], NN_SHIFT1);
+        nn_l1(acc, x);
         sink += x[0];
         if (stage < 2) continue;
 
         nn_extras(b, persp, ex);
         for (j = 0; j < NN_EXTRA; j++) x[NN_L1 + j] = (int8_t)ex[j];
+        for (j = NN_L1 + NN_EXTRA; j < (int)sizeof(x); j++) x[j] = 0;
         if (stage < 3) continue;
 
-        for (k = 0; k < NN_L2; k++) {
-            const int8_t *erow = nn_w2extra + (size_t)k * NN_EXTRA;
-            int32_t z = nn_b2[k]
-                      + nn_dot(x, nn_w2main + (size_t)k * NN_L1, NN_L1);
-            if (stage != 6)
-                for (j = 0; j < NN_EXTRA; j++) z += x[NN_L1 + j] * erow[j];
-            h1[k] = (int8_t)nn_crelu(z, NN_SHIFT2);
-        }
+        /* 6 is 3 with the extras tail removed. Stage 3 minus stage 6 is what
+         * that tail costs, which is the thing the "cached extras" item
+         * proposed to remove. */
+        nn_l2(x, h1, stage != 6);
         sink += h1[0];
-        /* 6 is 3 with the extras tail removed: 7 scalar multiply-adds per row,
-         * 32 rows, deliberately off the vector path. Stage 3 minus stage 6 is
-         * what that tail costs, which is the thing the "cached extras" item
-         * proposes to remove. */
         if (stage == 6) continue;
         if (stage < 4) continue;
 
-        for (k = 0; k < NN_L3; k++) {
-            const int8_t *row = nn_w3 + (size_t)k * NN_L2;
-            h2[k] = (int8_t)nn_crelu(nn_b3[k] + nn_dot(h1, row, NN_L2), NN_SHIFT2);
-        }
+        nn_l3(h1, h2);
         sink += h2[0];
         if (stage < 5) continue;
 
