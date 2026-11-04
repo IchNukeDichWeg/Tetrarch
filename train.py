@@ -167,13 +167,23 @@ def _cache_chunk(job):
     whatever --cache-workers is set to."""
     lines, augment = job
     feats, extras, cps, results, games = [], [], [], [], []
+    skipped = 0
     for game_id, line in enumerate(lines):
-        record = json.loads(line)
-        ffa = record.get("mode") == "ffa"
-        mode = MODE_FFA if ffa else MODE_TEAMS
-        board = Board.from_fen4(record["fen4"], mode)
-        result = record["result"]      # team 0's score, or a per-seat vector
-        for token, cp in zip(record["moves"].split(), record["scores"]):
+        # A line that does not read is skipped and counted, never fatal. A
+        # hard-killed gen_data run leaves a fragment as its last line -- the
+        # very case --resume exists for -- and json.loads raising here, inside
+        # a pool worker, took the whole cache build down with it.
+        try:
+            record = json.loads(line)
+            ffa = record.get("mode") == "ffa"
+            mode = MODE_FFA if ffa else MODE_TEAMS
+            board = Board.from_fen4(record["fen4"], mode)
+            result = record["result"]  # team 0's score, or a per-seat vector
+            pairs = list(zip(record["moves"].split(), record["scores"]))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            skipped += 1
+            continue
+        for token, cp in pairs:
             # The score was recorded before this move was played, so the
             # position to label is the one we are standing in now.
             #
@@ -214,7 +224,7 @@ def _cache_chunk(job):
             np.asarray(cps, dtype=np.float32),
             np.asarray(results, dtype=np.float32),
             np.asarray(games, dtype=np.int32),
-            len(lines))
+            len(lines), skipped)
 
 
 #: Games per work unit, capped so every worker gets several blocks -- a fixed
@@ -288,6 +298,14 @@ def build_cache(data_path, cache_path, limit=None, augment=False, quiet=False,
     for part in parts:
         game_ids.append(part[4] + base)
         base += part[5]
+
+    skipped = sum(p[6] for p in parts)
+    if skipped:
+        print("  skipped %d unreadable line%s of %d -- a truncated or "
+              "corrupt record" % (skipped, "" if skipped == 1 else "s", games),
+              file=sys.stderr, flush=True)
+    if not parts or not sum(len(p[2]) for p in parts):
+        raise ValueError("%s holds no readable positions" % data_path)
 
     arrays = {
         "features": np.concatenate([p[0] for p in parts]),
@@ -671,6 +689,10 @@ def main():
         ap.error("--out is required unless --epochs is 0")
     if args.epochs < 0:
         ap.error("--epochs cannot be negative")
+    if args.batch < 1:
+        ap.error("--batch must be at least 1")
+    if not 0.0 <= args.val < 1.0:
+        ap.error("--val is a fraction in [0, 1)")
 
     if os.path.exists(args.cache):
         print("loading cache %s" % args.cache)
@@ -710,6 +732,12 @@ def main():
     if args.epochs == 0:
         print("cache only (--epochs 0): %s, %d rows" % (args.cache, n))
         return 0
+    # At least one game is always held out, so a one-game cache trains on
+    # nothing. That used to run every epoch on zero rows, report a train loss
+    # of 0.00000, and save the untrained initialisation as net-best.nnue.
+    if not len(train_index):
+        raise SystemExit("nothing left to train on: all %d games are held out "
+                         "for validation. Generate more games." % len(ids))
 
     # --device numpy is the trainer every shipped net came from and stays the
     # default. Anything else runs the same net through torch, which is only

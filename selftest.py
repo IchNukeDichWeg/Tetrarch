@@ -2922,6 +2922,41 @@ def test_ffa_data():
     except ValueError as exc:
         check("a file mixing the two modes is refused", "mixes" in str(exc),
               str(exc))
+
+    # A truncated final line -- what a hard-killed gen_data run leaves, and
+    # what --resume exists for -- reached json.loads inside the cache worker
+    # unguarded and took the whole build down. It is skipped and counted.
+    with open(scratch, "w") as fh:
+        fh.write(json.dumps(records[0]) + "\n")
+        fh.write(json.dumps(records[0])[:-40])
+    try:
+        built = train_mod.build_cache(scratch, cache, quiet=True, workers=1)
+        want = len(records[0]["scores"])
+        ok, why = (len(built["cp"]) == want,
+                   "%d rows, expected %d" % (len(built["cp"]), want))
+    except ValueError as exc:
+        ok, why = False, repr(exc)
+    check("a truncated line is skipped, not fatal to the cache build", ok, why)
+
+    # One game is always held out, so a one-game cache left nothing to train
+    # on -- and still ran every epoch and saved the untrained init as
+    # net-best.nnue. Refused before the first epoch instead.
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(scratch, "w") as fh:
+        fh.write(json.dumps(records[0]) + "\n")
+    os.remove(cache)
+    with tempfile.TemporaryDirectory() as out_dir:
+        run = subprocess.run(
+            [sys.executable, os.path.join(root, "train.py"), "--data",
+             scratch, "--cache", cache, "--out", out_dir, "--epochs", "1",
+             "--quiet"], cwd=root, capture_output=True, text=True,
+            timeout=300)
+        check("a cache with no training rows is refused, not trained",
+              run.returncode != 0 and "nothing left to train" in run.stderr
+              and not os.path.exists(os.path.join(out_dir, "net-best.nnue")),
+              (run.stderr.strip().splitlines() or ["exit %d"
+                                                   % run.returncode])[-1])
     for path in (scratch, cache):
         if os.path.exists(path):
             os.remove(path)
