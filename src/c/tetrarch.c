@@ -1396,6 +1396,19 @@ static void see_gather(const TtBoard *b, SeeState *s, int to, int frm)
     }
 }
 
+/* Does `seat`'s team have any unspent attacker of `to` left? see_next's
+ * candidates, kings included, without picking or spending one. */
+static int see_any(const SeeState *s, int seat)
+{
+    unsigned want = 1u << (seat & 1);
+    int i;
+    for (i = 0; i < s->kn.n; i++) if (s->kn.tm[i] & want) return 1;
+    for (i = 0; i < 4; i++) if (s->pw.tm[i] & want) return 1;
+    for (i = 0; i < 8; i++) if (s->fr_tm[i] & want) return 1;
+    for (i = 0; i < s->kg.n; i++) if (s->kg.tm[i] & want) return 1;
+    return 0;
+}
+
 /* Cheapest unspent piece of `seat`'s team attacking `to`; spends it and
  * returns its square, or -1. */
 static int see_next(const TtBoard *b, SeeState *s, int to, int frm, int seat)
@@ -1478,6 +1491,19 @@ int32_t tt_see(const TtBoard *b, uint32_t m)
         attacker = see_next(b, &st, to, frm, seat);
         if (attacker < 0 || d >= 38) break;
         attacker_val = P.piece_value[P.pc_type[b->sq[attacker]]];
+        /* A king may recapture only onto a square nobody can take it on. The
+         * piece table prices the king at 0 -- right for material, where it is
+         * never captured -- so the swap-off used to let the other side "take"
+         * it for free and fold that back as a real line: rook takes a pawn
+         * the king alone defends, with a second rook behind, scored -400
+         * where it wins +100, and SEEPrune threw the capture away. Pins are
+         * ignored everywhere here; this is not a pin, it is the one move the
+         * exchange may never contain. The test sees through the king's own
+         * square, as the next capturer would: see_next has already spent the
+         * king and moved its ray's front past it. */
+        if (P.pc_type[b->sq[attacker]] == KING
+            && see_any(&st, (seat + 1) & 3))
+            break;
     }
     /* Fold back: at every step the side to move could have stopped instead. */
     while (--d > 0)

@@ -1778,10 +1778,12 @@ def test_ffa_elimination():
 
 
 #: bench.py's per-position node counts with the default net and the default
-#: toggles -- the signature every bit-exact commit quotes (597,933). Pinned
+#: toggles -- the signature every bit-exact commit quotes (601,860). Pinned
 #: here so a dormant toggle that leaks into the default path fails the gate
-#: rather than a reviewer's arithmetic.
-BENCH_PINS = [49806, 189492, 111487, 190997, 56151]
+#: rather than a reviewer's arithmetic. Was 597,933 (49806 / 189492 / 111487)
+#: until SEE stopped letting a recapturing king be taken for free; the FFA
+#: positions never ask SEE and did not move.
+BENCH_PINS = [50063, 189490, 115159, 190997, 56151]
 
 #: Built, default OFF, each pending its own A/B. (name, setter, getter, which
 #: bench positions it must move: "teams" or "ffa"). None is exact except
@@ -2566,6 +2568,17 @@ def test_see():
                 "g12": (YELLOW, ROOK)})
     check("a teammate's defender counts", see(mate, "g5g9") == -300,
           str(see(mate, "g5g9")))
+
+    # The king prices at 0 in the piece table, so the swap-off let the other
+    # side take a recapturing king for nothing: rook takes a pawn only Blue's
+    # king defends, a second rook behind, read -400 and SEEPrune dropped a
+    # capture that wins a pawn. The king may not recapture onto a square that
+    # is still attacked; with no rook behind it may, and the -400 stands.
+    guarded = pos({"b9": (BLUE, PAWN), "e9": (RED, ROOK), "g9": (RED, ROOK)})
+    alone = pos({"b9": (BLUE, PAWN), "e9": (RED, ROOK)})
+    check("a king cannot recapture onto a square still attacked",
+          (see(guarded, "e9b9"), see(alone, "e9b9")) == (100, -400),
+          "guarded %s, alone %s" % (see(guarded, "e9b9"), see(alone, "e9b9")))
 
     # An en-passant capture onto an occupied skipped square takes BOTH the
     # occupant and the passing pawn (§5.5), and tt_make removes both. Pricing
