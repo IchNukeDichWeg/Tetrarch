@@ -176,6 +176,7 @@ static int  nn_delta_on_for(uint64_t key);
 static inline void nn_toggle(uint8_t piece, int sq, int sign);
 static void build_ray_steps(void);
 static void nn_acc_set_key(uint64_t key);
+static void nn_build_tables(void);
 
 /* --- introspection, so the binding can assert layout agreement ---------- */
 
@@ -188,6 +189,7 @@ void tt_init(const TtParams *p)
     memcpy(&P, p, sizeof(TtParams));
     build_ray_steps();
     ph_ok = 0;                     /* points_hash's memo used the old zobrist */
+    nn_build_tables();
     initialised = 1;
 }
 
@@ -1405,12 +1407,22 @@ static int32_t nn_acc[4][NN_L1] __attribute__((aligned(64)));
 static uint64_t nn_acc_key;
 static int nn_acc_ok = 0;
 
-/* Add (sign +1) or remove (sign -1) one piece's contribution, in all four
- * perspectives at once. */
+/* The feature a piece on a square switches on, seen from `persp`: a piece
+ * half (colour made relative to the perspective, and type) plus a square half
+ * (the square turned to the perspective, then compacted). */
+static int nn_piece_base(int persp, int color, int type)
+{
+    return (((color - persp) & 3) * 6 + type) * 160;
+}
+
+static int nn_square_index(int sq, int persp)
+{
+    return P.compact[P.rot_to_persp[persp][sq]];
+}
+
 static int nn_feature_of(int sq, int persp, int color, int type)
 {
-    int rel = (color - persp) & 3;
-    return (rel * 6 + type) * 160 + P.compact[P.rot_to_persp[persp][sq]];
+    return nn_piece_base(persp, color, type) + nn_square_index(sq, persp);
 }
 
 /* One perspective, one feature row, applied now. */
@@ -1611,10 +1623,9 @@ static void nn_flush(int persp)
     nn_apply(nn_acc[persp], q, na, subs, ns);
 }
 
-static void nn_push(int persp, int feature, int sign)
+static void nn_push(int persp, int32_t e)
 {
     int n = nn_pend_n[persp];
-    int32_t e = feature * 2 + (sign < 0);
     if (n > 0 && nn_pend[persp][n - 1] == (e ^ 1)) {
         nn_pend_n[persp] = n - 1;
         return;
@@ -1633,6 +1644,29 @@ static void nn_toggle_now(uint8_t piece, int sq, int sign)
     type = P.feature_type[P.pc_type[piece]];
     for (persp = 0; persp < 4; persp++)
         nn_row(persp, nn_feature_of(sq, persp, color, type), sign);
+}
+
+/* nn_feature_of's two halves for all four perspectives, precomputed in
+ * queue-entry units (feature * 2), so nn_toggle's work per perspective is two
+ * loads and an add. In place it was the colour rotation, the type fold
+ * through two tables and two dependent square lookups, per perspective, on
+ * every make and unmake. Built from P by tt_init. A piece with no recorded
+ * colour gets -1, which nn_toggle tests instead of pc_color. */
+static int16_t nn_piece_entry[NPIECE][4];
+static int16_t nn_square_entry[NSQ][4];
+
+static void nn_build_tables(void)
+{
+    int p, sq, persp;
+    for (p = 0; p < NPIECE; p++) {
+        int color = P.pc_color[p];
+        for (persp = 0; persp < 4; persp++)
+            nn_piece_entry[p][persp] = (int16_t)(color == DEAD_UNKNOWN ? -1
+                : 2 * nn_piece_base(persp, color, P.feature_type[P.pc_type[p]]));
+    }
+    for (sq = 0; sq < NSQ; sq++)
+        for (persp = 0; persp < 4; persp++)
+            nn_square_entry[sq][persp] = (int16_t)(2 * nn_square_index(sq, persp));
 }
 
 /* One-perspective maintenance, for the paranoid FFA search.
@@ -1658,13 +1692,13 @@ static int nn_only_refreshed;
 static __attribute__((noinline)) void nn_toggle_all(uint8_t piece, int sq,
                                                     int sign)
 {
-    int persp, color = P.pc_color[piece], type;
+    const int16_t *pe = nn_piece_entry[piece], *se = nn_square_entry[sq];
+    int persp, neg = sign < 0;
     /* A piece with no recorded origin has no colour to make relative, so it
      * switches on no feature -- the same rule the full refresh applies. */
-    if (color == DEAD_UNKNOWN) return;
-    type = P.feature_type[P.pc_type[piece]];
+    if (pe[0] < 0) return;
     for (persp = 0; persp < 4; persp++)
-        nn_push(persp, nn_feature_of(sq, persp, color, type), sign);
+        nn_push(persp, pe[persp] + se[persp] + neg);
 }
 
 /* The one-seat path is inlined into make and unmake and the four-seat path is
@@ -1673,12 +1707,11 @@ static __attribute__((noinline)) void nn_toggle_all(uint8_t piece, int sq,
  * four-way loop needs. Teams pays the same out-of-line call it always did. */
 static inline void nn_toggle(uint8_t piece, int sq, int sign)
 {
-    int color, persp = nn_only;
+    int persp = nn_only, e;
     if (persp < 0) { nn_toggle_all(piece, sq, sign); return; }
-    color = P.pc_color[piece];
-    if (color == DEAD_UNKNOWN) return;
-    nn_push(persp, nn_feature_of(sq, persp, color,
-                                 P.feature_type[P.pc_type[piece]]), sign);
+    e = nn_piece_entry[piece][persp];
+    if (e < 0) return;
+    nn_push(persp, e + nn_square_entry[sq][persp] + (sign < 0));
 }
 
 /* Deltas are safe only when the accumulator actually describes the board in
