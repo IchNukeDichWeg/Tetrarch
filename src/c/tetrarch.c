@@ -172,7 +172,7 @@ static int initialised = 0;
 /* NNUE accumulator hooks. The net itself is defined further down; the deltas
  * are applied here, where the board actually changes. */
 static int  nn_delta_on_for(uint64_t key);
-static void nn_toggle(uint8_t piece, int sq, int sign);
+static inline void nn_toggle(uint8_t piece, int sq, int sign);
 static void build_ray_steps(void);
 static void nn_acc_set_key(uint64_t key);
 
@@ -1434,7 +1434,28 @@ static void nn_toggle_now(uint8_t piece, int sq, int sign)
         nn_row(persp, nn_feature_of(sq, persp, color, type), sign);
 }
 
-static void nn_toggle(uint8_t piece, int sq, int sign)
+/* One-perspective maintenance, for the paranoid FFA search.
+ *
+ * Every FFA node is scored in the ROOT seat's terms, so of the four queues
+ * nn_toggle feeds, three are never flushed during an FFA search: each entry
+ * is pushed on the way down and cancelled by its exact inverse on the way
+ * back up. That was pure overhead -- three feature computations and three
+ * push-or-pop per toggle, 6.2% of an FFA search's instructions with the
+ * inlining below -- for queues that end the search exactly where they
+ * started.
+ *
+ * While nn_only >= 0 only that perspective is queued. The other three are
+ * left untouched, so they still describe the board the search was entered
+ * with, and the search hands that same board back. The one way that fails is
+ * a refresh inside the search, which rebuilds all four from a board deep in
+ * the tree; nn_single_begin refreshes at the root first so that cannot happen
+ * on any path the search takes, and nn_single_end distrusts the accumulator
+ * if it happened anyway. -1 is the ordinary mode, all four. */
+static int nn_only = -1;
+static int nn_only_refreshed;
+
+static __attribute__((noinline)) void nn_toggle_all(uint8_t piece, int sq,
+                                                    int sign)
 {
     int persp, color = P.pc_color[piece], type;
     /* A piece with no recorded origin has no colour to make relative, so it
@@ -1443,6 +1464,20 @@ static void nn_toggle(uint8_t piece, int sq, int sign)
     type = P.feature_type[P.pc_type[piece]];
     for (persp = 0; persp < 4; persp++)
         nn_push(persp, nn_feature_of(sq, persp, color, type), sign);
+}
+
+/* The one-seat path is inlined into make and unmake and the four-seat path is
+ * kept out of line, so the call FFA makes 800k times a bench round is two
+ * table lookups and a push rather than a call that saves the registers the
+ * four-way loop needs. Teams pays the same out-of-line call it always did. */
+static inline void nn_toggle(uint8_t piece, int sq, int sign)
+{
+    int color, persp = nn_only;
+    if (persp < 0) { nn_toggle_all(piece, sq, sign); return; }
+    color = P.pc_color[piece];
+    if (color == DEAD_UNKNOWN) return;
+    nn_push(persp, nn_feature_of(sq, persp, color,
+                                 P.feature_type[P.pc_type[piece]]), sign);
 }
 
 /* Deltas are safe only when the accumulator actually describes the board in
@@ -1477,6 +1512,30 @@ static void nn_refresh(const TtBoard *b)
     }
     nn_acc_key = b->key;
     nn_acc_ok = 1;
+    nn_only_refreshed = 1;
+}
+
+/* Enter and leave one-perspective mode (see nn_only). Refreshing at the root
+ * costs nothing extra: a stale accumulator would be refreshed at the first
+ * evaluation anyway, and a refresh is exact, so it is the same arithmetic
+ * either way and no evaluation moves. */
+static void nn_single_begin(const TtBoard *b, int persp)
+{
+    if (!nn_loaded) return;
+    if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
+    nn_only_refreshed = 0;
+    nn_only = persp;
+}
+
+static void nn_single_end(void)
+{
+    if (nn_only < 0) return;
+    nn_only = -1;
+    /* A refresh in mode rebuilt the other three from a board the search has
+     * since left. Unreachable while every path below the root maintains the
+     * key, but if one ever does not, this degrades to one refresh at the next
+     * evaluation rather than to three silently wrong perspectives. */
+    if (nn_only_refreshed) nn_acc_ok = 0;
 }
 
 /* Differential check for selftest: does the maintained accumulator equal a
@@ -2994,6 +3053,7 @@ static void tt_search_ffa(TtBoard *b, int depth, TtResult *out)
     TtUndo u;
     int n, i, legal = 0, me = b->turn;
 
+    nn_single_begin(b, me);
     moves = search_buf[0];
     scores = order_buf[0];
     n = tt_gen_pseudo(b, moves);
@@ -3025,6 +3085,7 @@ static void tt_search_ffa(TtBoard *b, int depth, TtResult *out)
         }
     }
 
+    nn_single_end();
     out->nodes = search_nodes;
     out->score = legal ? best : -(MATE_SCORE);
     out->best = best_move;

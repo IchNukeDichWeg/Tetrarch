@@ -1746,11 +1746,24 @@ def _paranoid_job(index):
     rng = random.Random(9000 + index)
     b = _sparse_ffa(rng)
     if not fast.gen_legal(b):
-        return (0, 0, 0)
-    tested = bad = elim = 0
+        return (0, 0, 0, 0)
+    tested = bad = elim = acc_bad = 0
     for depth in (1, 2, 3):
         core.clear_hash()
         got = core.search(b, depth).score
+        # The FFA search queues accumulator deltas for the root seat alone,
+        # so the other three must come out of it still describing the root
+        # board. The oracle cannot see them -- it only reads the root seat's
+        # -- and the next search from another seat would. Checked before the
+        # oracle runs, because the oracle's own evaluations move it. Twice:
+        # the first search enters on a stale accumulator and refreshes at the
+        # root, the second enters on the one the first handed back.
+        if index % 2:
+            for _again in range(2):
+                if _again:
+                    core.search(b, depth)
+                if core.nnue_acc_matches(b) is not True:
+                    acc_bad += 1
         want = search.reference_paranoid(b.copy(), b.turn, depth)
         if got != want:
             bad += 1
@@ -1758,7 +1771,7 @@ def _paranoid_job(index):
     # Did any line in this position actually eliminate somebody? Counted so
     # the section can prove it exercised the branch rather than assume it.
     elim = 1 if _has_elimination(b.copy(), 2) else 0
-    return (tested, bad, elim)
+    return (tested, bad, elim, acc_bad)
 
 
 def _has_elimination(b, depth):
@@ -1859,6 +1872,10 @@ def test_ffa_search(workers=1):
     check("the sample reaches the elimination branch", elim > 0,
           "%d of %d positions had a seat run out of moves"
           % (elim, FFA_POSITIONS))
+    check("all four accumulators survive an FFA search with a net",
+          sum(r[3] for r in results) == 0,
+          "%d searches left a seat's accumulator stale"
+          % sum(r[3] for r in results))
 
     # The FFA table must not hand back a score computed at another points
     # standing. The evaluation reads the standing -- nnue.extra_inputs feeds
