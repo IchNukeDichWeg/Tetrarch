@@ -1210,6 +1210,30 @@ int32_t tt_see(const TtBoard *b, uint32_t m)
     return gain[0];
 }
 
+/* 1 when tt_see(b, m) >= 0 is already certain from the first capture alone,
+ * so a caller that only wants the sign can skip the exchange.
+ *
+ * Exact, not a heuristic, and it follows from the fold above rather than from
+ * chess intuition. The fold only ever lowers an entry (it takes the min with
+ * -gain[d]), so the final gain[1] <= its initial attacker_val - gain[0], and
+ * the final gain[0] = min(gain[0], -gain[1]) >= min(V, V - A), where V is the
+ * initial gain[0] and A the first attacker's value. With V >= 0 and V >= A
+ * that is >= 0 whatever the rest of the exchange does. FFA returns 0, which
+ * is >= 0 too. V is computed exactly as tt_see computes it, en-passant onto
+ * an occupied square included, so the two cannot disagree on any move.
+ *
+ * Taking a piece worth at least the taker is most captures quiescence sees,
+ * and each one used to run the full swap-off, a 256-byte clear and four
+ * attacker scans per step, only to report a sign this already knew. */
+static inline int see_surely_nonneg(const TtBoard *b, uint32_t m)
+{
+    int to = MV_TO(m);
+    int32_t v = b->sq[to] ? P.piece_value[P.pc_type[b->sq[to]]] : 0;
+    int32_t a = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
+    if (MV_FLAG(m) == F_EP) v += P.piece_value[PAWN];
+    return v >= 0 && v >= a;
+}
+
 int tt_gen_legal(TtBoard *b, uint32_t *out)
 {
     uint32_t buf[MAX_MOVES];
@@ -3124,6 +3148,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
          * line worth a subtree. Promotions are exempt: SEE prices the pieces
          * traded and not the piece gained, so it under-rates them. */
         if (use_see_prune && !in_chk && !MV_PROMO(moves[i])
+            && !see_surely_nonneg(b, moves[i])
             && tt_see(b, moves[i]) < 0) continue;
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
