@@ -1363,6 +1363,12 @@ typedef struct {
     const int32_t *b4;
 } TtNetView;
 
+/* L1 weights, NN_FEATURES rows of NN_L1 int16, 64-byte aligned. malloc
+ * returns 16-byte alignment, and with a 512-byte row stride every row then
+ * sits at the same offset into its line -- 48 on Linux/glibc here -- so half
+ * of nn_apply's 32-byte AVX-512 loads straddle two lines on every row.
+ * tt_load_net over-allocates and rounds up. (The AVX2 path's 16-byte loads
+ * never straddle at a multiple of 16, which is why only one path cared.) */
 static int16_t *nn_w1;
 static int32_t nn_b1[NN_L1];
 /* L2 rows, split out of the single (NN_L1 + NN_EXTRA)-stride block the .nnue
@@ -1805,8 +1811,10 @@ void tt_nnue_dims(int32_t *out)
 int tt_load_net(const TtNetView *v)
 {
     if (!nn_w1) {
-        nn_w1 = (int16_t *)malloc((size_t)NN_FEATURES * NN_L1 * sizeof(int16_t));
-        if (!nn_w1) return 0;
+        /* Never freed, as before: it lives as long as the library. */
+        void *mem = malloc((size_t)NN_FEATURES * NN_L1 * sizeof(int16_t) + 63);
+        if (!mem) return 0;
+        nn_w1 = (int16_t *)(((uintptr_t)mem + 63) & ~(uintptr_t)63);
     }
     memcpy(nn_w1, v->w1, (size_t)NN_FEATURES * NN_L1 * sizeof(int16_t));
     memcpy(nn_b1, v->b1, sizeof(nn_b1));
