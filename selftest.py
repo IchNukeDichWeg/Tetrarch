@@ -849,6 +849,31 @@ def test_c_core(deep=False):
     check("C and Python agree on legal moves", move_bad == 0,
           "%d positions differ" % move_bad)
 
+    # A grey piece (DEAD_UNKNOWN, colour 4) indexed the per-seat occupancy
+    # bitboard one row past its end: the rebuild set a bit there and a capture
+    # cleared one. On this build that row is the `initialised` flag, so grey
+    # pieces on d1 and e1 -- squares 3 and 4 -- OR'd bits 3 and 4 into it
+    # (tt_ready() read 2097177 here, earlier random positions adding bit 21).
+    # Exactly 1 is asserted, not truthy: the OR leaves it truthy, which is why
+    # nothing noticed. The capture is driven through make/unmake with the bitboard
+    # live, which is the path the search takes.
+    b = position({"h1": (RED, KING), "a7": (BLUE, KING), "g14": (YELLOW, KING),
+                  "n8": (GREEN, KING), "d4": (RED, ROOK),
+                  "d1": (DEAD_UNKNOWN, PAWN), "e1": (DEAD_UNKNOWN, KNIGHT)},
+                  mode=MODE_FFA)
+    cb = core.CBoard(b)
+    ready = [lib.tt_ready()]
+    take = [m for m in cb.legal() if mv_to(m) == sq_from_name("d1")]
+    ready.append(lib.tt_ready())
+    for m in take:
+        cb.make(m)
+        cb.legal()
+        cb.unmake(m)
+    ready.append(lib.tt_ready())
+    check("a grey piece does not write past the occupancy bitboard",
+          len(take) == 1 and ready == [1, 1, 1],
+          "tt_ready() read %s, %d captures of d1" % (ready, len(take)))
+
 
 def test_rotation():
     section("board rotation (match.py seat rotation)")

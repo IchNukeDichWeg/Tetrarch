@@ -412,8 +412,19 @@ static int ep_offers(const TtBoard *b, int me, int *targets, int *victims)
  * compact squares. The compact map would save one word per iteration but
  * needs an inverse table and makes the ascending-order argument depend on
  * compact[] being monotonic in sq. Indexing by sq keeps node-identity
- * self-evident. Switch to 160 bits if this ever shows up hot again. */
-static uint64_t occ[4][4];
+ * self-evident. Switch to 160 bits if this ever shows up hot again.
+ *
+ * FIVE rows, not four. The row is pc_color, and a grey piece of unknown
+ * origin (FEN4 `d`, §9.1) has colour DEAD_UNKNOWN = 4. With four rows the
+ * rebuild, and make/unmake capturing such a piece, read and wrote occ[4][*]:
+ * past the array, onto whatever the linker put next -- on this build the
+ * `initialised` flag, which picked up a bit per grey square below rank 3
+ * (tt_ready() read 2097177 by the end of selftest's C section), and a
+ * different layout puts P, the rules tables, there instead. Row 4 is maintained
+ * and never read: no seat moves grey pieces, so the generator only ever walks
+ * occ[b->turn]. Guarding every occ_set/occ_clr site with `colour < 4` was the
+ * alternative; one spare row costs 32 bytes and no branch on the hot path. */
+static uint64_t occ[5][4];
 static uint64_t occ_key;
 static int occ_ok = 0;
 
