@@ -243,6 +243,8 @@ static uint8_t see_pawn_slot[8];  /* j with diag[j] == -queen_dirs[i], else 4 */
  * order is irrelevant to the answer; it is kept so nobody has to argue it. */
 static uint8_t kn_to[NSQ][8];
 static uint8_t kn_n[NSQ];
+static uint8_t kg_to[NSQ][8];     /* the same for king steps, queen_dirs order */
+static uint8_t kg_n[NSQ];
 
 static void build_attack_tables(void)
 {
@@ -270,11 +272,13 @@ static void build_attack_tables(void)
             if (P.diag[j] == -P.queen_dirs[i]) see_pawn_slot[i] = (uint8_t)j;
     }
     for (sq = 0; sq < NSQ; sq++) {
-        kn_n[sq] = 0;
+        kn_n[sq] = kg_n[sq] = 0;
         if (!P.valid[sq]) continue;
         for (i = 0; i < 8; i++) {
             int t = (sq + P.knight_deltas[i]) & 255;
             if (P.valid[t]) kn_to[sq][kn_n[sq]++] = (uint8_t)t;
+            t = (sq + P.queen_dirs[i]) & 255;
+            if (P.valid[t]) kg_to[sq][kg_n[sq]++] = (uint8_t)t;
         }
     }
 }
@@ -510,7 +514,11 @@ static void occ_rebuild(const TtBoard *b)
  * assuming it was made the tool contradict its own output. */
 static uint64_t search_gens;
 
-int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
+/* `restrict`: the move buffer is a search, perft or caller-owned array and
+ * never overlaps the board or P. Without it every store to out[] could, as
+ * far as the compiler knows, rewrite P's int32 tables, which forces their
+ * reloads inside the loops. */
+int tt_gen_pseudo(const TtBoard *b, uint32_t *restrict out)
 {
     search_gens++;
     int me = b->turn, n = 0, sq, i, j, wi;
@@ -520,30 +528,42 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
     const int32_t *choices = P.promo_choices[b->mode];
     int push = P.pawn_push[me];
     int base = b->pawn_base_rank;
+    int dbl = base ? base - 1 : -1;
+    const uint8_t *pcoord = P.pawn_coord[me];
+    const int32_t *takes = P.pawn_takes[me];
     int ep_target[4], ep_victim[4];
     int n_offers = ep_offers(b, me, ep_target, ep_victim);
+    /* is_enemy() as a mask over colours, decided once per call rather than
+     * per target square: DEAD_UNKNOWN and dead seats are fair game to all,
+     * and otherwise it is the other side. Bit c answers is_enemy for colour
+     * c; att_cbit[p] is 1 << colour, and 0 for an empty square. */
+    unsigned em = 1u << DEAD_UNKNOWN;
+    int c;
+    for (c = 0; c < 4; c++)
+        if (!b->alive[c] || !same_team(b->mode, c, me)) em |= 1u << c;
 
     if (!occ_ok || occ_key != b->key) occ_rebuild(b);
 
     for (wi = 0; wi < 4; wi++)
     for (w = occ[me][wi]; w; w &= w - 1) {
-        uint8_t p;
-        int ptype, sliding, nd;
         const int32_t *deltas;
+        const uint8_t *steps;
+        int nd;
         sq = (wi << 6) + __builtin_ctzll(w);
-        p = b->sq[sq];
-        ptype = P.pc_type[p];
 
-        if (ptype == PAWN) {
+        switch (P.pc_type[b->sq[sq]]) {
+        case PAWN: {
             int to = (sq + push) & 255;
             if (P.valid[to] && !b->sq[to]) {
-                if (P.pawn_coord[me][to] == promo_coord) {
+                if (pcoord[to] == promo_coord) {
                     for (j = 0; j < nchoice; j++)
                         out[n++] = MK_MOVE(sq, to, F_NORMAL, choices[j]);
                 } else {
                     out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
                 }
-                if (base && P.pawn_coord[me][sq] == base - 1) {
+                /* dbl is -1 when there is no base rank, which no coordinate
+                 * equals: the old `base &&` test folded into the compare. */
+                if (pcoord[sq] == dbl) {
                     int to2 = (sq + 2 * push) & 255;
                     if (P.valid[to2] && !b->sq[to2])
                         out[n++] = MK_MOVE(sq, to2, F_DOUBLE, 0);
@@ -551,7 +571,7 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
             }
             for (i = 0; i < 2; i++) {
                 int flag = F_NORMAL, is_offer = 0;
-                to = (sq + P.pawn_takes[me][i]) & 255;
+                to = (sq + takes[i]) & 255;
                 if (!P.valid[to]) continue;
                 for (j = 0; j < n_offers; j++)
                     if (ep_target[j] == to) { is_offer = 1; break; }
@@ -561,10 +581,9 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
                      * passing pawn (§5.5). */
                     flag = F_EP;
                 } else {
-                    uint8_t target = b->sq[to];
-                    if (!(target && is_enemy(b, target, me))) continue;
+                    if (!(att_cbit[b->sq[to]] & em)) continue;
                 }
-                if (P.pawn_coord[me][to] == promo_coord) {
+                if (pcoord[to] == promo_coord) {
                     for (j = 0; j < nchoice; j++)
                         out[n++] = MK_MOVE(sq, to, flag, choices[j]);
                 } else {
@@ -573,32 +592,36 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
             }
             continue;
         }
-
-        if (ptype == KNIGHT) {
-            deltas = P.knight_deltas; nd = 8; sliding = 0;
-        } else if (ptype == KING) {
-            deltas = P.queen_dirs; nd = 8; sliding = 0;
-        } else if (ptype == BISHOP) {
-            deltas = P.diag; nd = 4; sliding = 1;
-        } else if (ptype == ROOK) {
-            deltas = P.ortho; nd = 4; sliding = 1;
-        } else if (queenish(ptype)) {
-            deltas = P.queen_dirs; nd = 8; sliding = 1;
-        } else {
-            continue;
+        /* Knights and kings walk their on-board steps in delta order: the
+         * same squares in the same order as testing every delta. */
+        case KNIGHT: steps = kn_to[sq]; nd = kn_n[sq]; break;
+        case KING:   steps = kg_to[sq]; nd = kg_n[sq]; break;
+        case BISHOP: deltas = P.diag; nd = 4; goto slide;
+        case ROOK:   deltas = P.ortho; nd = 4; goto slide;
+        case QUEEN:
+        case PQUEEN: deltas = P.queen_dirs; nd = 8; goto slide;
+        default:     continue;
         }
 
+        for (i = 0; i < nd; i++) {
+            int to = steps[i];
+            uint8_t target = b->sq[to];
+            if (!target || (att_cbit[target] & em))
+                out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
+        }
+        continue;
+
+    slide:
         for (i = 0; i < nd; i++) {
             int d = deltas[i];
             int to = (sq + d) & 255;
             while (P.valid[to]) {
                 uint8_t target = b->sq[to];
                 if (target) {
-                    if (is_enemy(b, target, me)) out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
+                    if (att_cbit[target] & em) out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
                     break;
                 }
                 out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
-                if (!sliding) break;
                 to = (to + d) & 255;
             }
         }
