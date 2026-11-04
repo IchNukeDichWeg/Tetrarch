@@ -321,6 +321,11 @@ class Engine:
         print("option name LMPMaxDepth type spin default 3 min 0 max 8")
         print("option name LMPBase type spin default 4 min 1 max 32")
         print("option name QSEvasions type check default true")
+        # Built, default OFF, each pending its own A/B (docs/AB.md). They
+        # touch only the paranoid search and share the LMR/LMP parameters.
+        print("option name FFAKillers type check default false")
+        print("option name FFALMR type check default false")
+        print("option name FFALMP type check default false")
         # A draw the search is walking into has to score as one. Off is for
         # measuring the difference, not for playing.
         print("option name Repetitions type check default true")
@@ -391,6 +396,12 @@ class Engine:
             core.set_lazy_eval(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "lmp":
             core.set_lmp(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "ffakillers":
+            core.set_ffa_killers(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "ffalmr":
+            core.set_ffa_lmr(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "ffalmp":
+            core.set_ffa_lmp(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "multipv":
             self.multipv = max(1, min(int(value), 64))
         elif name == "mobility":

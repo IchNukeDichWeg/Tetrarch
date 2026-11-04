@@ -310,6 +310,9 @@ def load(path=None):
         lib.tt_get_lmp.restype = ctypes.c_int
         lib.tt_set_lmp_params.argtypes = [ctypes.c_int, ctypes.c_int]
         lib.tt_set_qs_evasions.argtypes = [ctypes.c_int]
+        for name in ("ffa_killers", "ffa_lmr", "ffa_lmp"):
+            getattr(lib, "tt_set_" + name).argtypes = [ctypes.c_int]
+            getattr(lib, "tt_get_" + name).restype = ctypes.c_int
         lib.tt_get_qs_evasions.restype = ctypes.c_int
         lib.tt_divide.restype = ctypes.c_int
         lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
@@ -575,6 +578,37 @@ def set_qs_evasions(on):
 
 def qs_evasions_enabled():
     return bool(load().tt_get_qs_evasions())
+
+
+def set_ffa_killers(on):
+    """Killer moves in the paranoid FFA search. Default OFF. Ordering only:
+    the value is unchanged, the node count is not."""
+    load().tt_set_ffa_killers(1 if on else 0)
+
+
+def ffa_killers_enabled():
+    return bool(load().tt_get_ffa_killers())
+
+
+def set_ffa_lmr(on):
+    """Late move reductions in the paranoid FFA search, sharing the Teams
+    table and LMRMinDepth/LMRMinMove. Default OFF. Not exact."""
+    load().tt_set_ffa_lmr(1 if on else 0)
+
+
+def ffa_lmr_enabled():
+    return bool(load().tt_get_ffa_lmr())
+
+
+def set_ffa_lmp(on):
+    """Late move pruning in the paranoid FFA search, sharing LMPMaxDepth and
+    LMPBase with Teams. Default OFF. Not exact; never eliminates a seat that
+    has a legal move."""
+    load().tt_set_ffa_lmp(1 if on else 0)
+
+
+def ffa_lmp_enabled():
+    return bool(load().tt_get_ffa_lmp())
 
 
 def ffa_capture_table():

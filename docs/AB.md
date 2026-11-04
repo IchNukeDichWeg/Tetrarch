@@ -148,6 +148,58 @@ Not measured: Apple NEON, which is untouched. The Teams/FFA split was not
 measured separately here, and the AB box is NEON, so none of this moves its
 numbers.
 
+### FFA killers, LMR and LMP in the paranoid search -- built, NOT confirmed
+
+`setoption name FFAKillers`, `FFALMR`, `FFALMP`, all default **off**. The
+paranoid loop had none of the Teams search's shallow pruning, and a ply there
+costs a median 17x the last against Teams' 3.5x -- the regime where LMR and LMP
+each bought Teams about a ply. They reuse the Teams tables and parameters
+(`LMRMinDepth`/`LMRMinMove`, `LMPMaxDepth`/`LMPBase`); killers reuse the
+per-ply slots, which in a paranoid tree are per seat while all four live.
+
+Cheap readings, no games: 200 FFA positions (book + 0-79 plies of default
+self-play), net-ffa1, 16 MB, table cleared per position.
+
+| | mean depth @ 20k nodes | ID nodes to depth 4 | agrees with 400k-node base |
+|---|---:|---:|---:|
+| base | 3.11 | 11,883,965 | 45.0% |
+| FFAKillers | 3.12 | 10,970,400 (92%) | 44.5% |
+| FFALMR | 3.76 | 1,949,528 (16%) | 44.0% |
+| FFALMP | 4.16 | 633,815 (5%) | 49.5% |
+| LMR + LMP | **4.97** | 237,384 (2%) | 46.5% |
+| all three | 5.06 | 222,059 (2%) | 50.0% |
+
+**At the fixed-nodes instrument the FFA search does not finish one round**
+(3.11 plies): the root seat never sees its own next move. LMR + LMP moves that
+to five plies. Agreement with a deep search does not separate the rows -- an
+oracle running the prunings itself puts every row at 32.5-35.0% -- so it is
+reported, not leaned on.
+
+**A pre-screen, not a screen**: LMR + LMP vs default, fixed nodes 20,000, FFA
+book, both sides net-ffa1, 2 workers on a shared 4-core box, stopped at its
+time limit:
+
+```
+Elo   | +205.78 +/- 47.12   (37 complete rotations)
+Dist  | 0, 0, 0, 0, 0, 2, 1, 3, 6, 8, 8, 5, 4
+A pl. | 86/32/19/11  (1st/2nd/3rd/4th)
+Games | 148, 259.66 plies mean
+```
+
+148 games is a direction, not a number. Why to be suspicious of its size: at
+20,000 nodes the default is under a round deep, so this instrument is close to
+the worst case for the baseline; at movetime 100 the default reaches about 4.0
+and the gap should shrink. The pruning at an opponent's node is OPTIMISTIC
+for the root (it assumes that seat misses a late quiet move), which paranoid's
+pessimism may or may not absorb -- the games are what says. Killers alone are
+an ordering change (selftest checks the value is exact against the paranoid
+oracle) worth 8% of nodes here and 41% on the bench's FFA position with
+net-v5; screen them separately or not at all.
+
+**Owed:** screen LMR + LMP at fixed nodes and at movetime 100 (the FFA confirm
+instrument), then each alone if the pair confirms, since they were measured as
+a pair.
+
 ### Bit-exact speedups, 26 Sep -- three shipped, one CLOSED PRE-A/B
 
 Four items from the audit's speed section, each bit-exact: every bench

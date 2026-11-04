@@ -2675,6 +2675,52 @@ void tt_set_lmp_params(int max_depth, int base)
     lmp_base = base < 1 ? 1 : base;
 }
 
+/* --- FFA: killers and late-move pruning/reduction in the paranoid search ---
+ *
+ * The paranoid loop had none of the Teams search's shallow pruning: no
+ * killers (it passes ply -1 to score_moves), no LMR, no LMP. A ply there costs
+ * a median 17x the one before it against Teams' 3.5x, which is exactly the
+ * regime where LMR and LMP bought Teams a whole ply. Each is its own toggle,
+ * off by default, so each is its own A/B.
+ *
+ * Killers are an ordering change only: alpha-beta returns the same value in
+ * any order, so FFAKillers moves the node count and not the score (up to the
+ * table's path dependence). Killer slots are per ply, and in a paranoid tree
+ * the ply fixes the seat to move while every seat is alive.
+ *
+ * LMR and LMP are NOT exact, and in a paranoid tree they are not symmetric
+ * either: pruning at the root seat's node is pessimistic, pruning at an
+ * opponent's is optimistic -- it assumes that opponent will not find a late
+ * quiet move. Paranoid already assumes three opponents cooperating, so a
+ * little optimism at their nodes may move the search toward the real game
+ * rather than away from it; that is a hypothesis for the A/B, not a claim.
+ *
+ * Cheap measurement, 200 FFA positions (book + 0-79 self-play plies),
+ * net-ffa1, no games. Base reaches a mean depth of 3.11 at 20,000 nodes --
+ * less than one round, so the root seat never sees its own next move.
+ *
+ *                  depth @20k   ID nodes to depth 4   agrees w/ 400k base
+ *   base             3.11         11,883,965  100%       45.0%
+ *   FFAKillers       3.12         10,970,400   92%       44.5%
+ *   FFALMR           3.76          1,949,528   16%       44.0%
+ *   FFALMP           4.16            633,815    5%       49.5%
+ *   LMR + LMP        4.97            237,384    2%       46.5%
+ *   all three        5.06            222,059    2%       50.0%
+ *
+ * Agreement with a deep search is a weak instrument here: against a 400k
+ * oracle that runs all three prunings instead, every row lands in 32.5-35.0%
+ * and the order does not hold. The depth column is the reading to trust. */
+static int use_ffa_killers = 0;
+static int use_ffa_lmr = 0;
+static int use_ffa_lmp = 0;
+
+void tt_set_ffa_killers(int on) { use_ffa_killers = on ? 1 : 0; }
+int tt_get_ffa_killers(void) { return use_ffa_killers; }
+void tt_set_ffa_lmr(int on) { use_ffa_lmr = on ? 1 : 0; }
+int tt_get_ffa_lmr(void) { return use_ffa_lmr; }
+void tt_set_ffa_lmp(int on) { use_ffa_lmp = on ? 1 : 0; }
+int tt_get_ffa_lmp(void) { return use_ffa_lmp; }
+
 static uint32_t search_buf[MAX_DEPTH][MAX_MOVES];
 static int32_t order_buf[MAX_DEPTH][MAX_MOVES];
 static uint64_t search_nodes;
@@ -3508,7 +3554,8 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     uint64_t probe;
     TtUndo u;
     Pin pins[8];
-    int n, i, me = b->turn, legal = 0, king0, npins, in_chk, tail_sorted = 0;
+    int n, i, me = b->turn, legal = 0, quiets = 0, king0, npins, in_chk;
+    int tail_sorted = 0;
     int maximising = (me == root);
     int32_t best;
 
@@ -3557,16 +3604,26 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, ttmove, -1);
+    /* -1 keeps the killer slots out of it unless FFAKillers is on; see the
+     * note on that toggle. */
+    score_moves(b, moves, scores, n, ttmove, use_ffa_killers ? ply : -1);
     king0 = b->kings[me];
     in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     npins = compute_pins(b, me, king0, pins);
 
     best = maximising ? -INF_SCORE : INF_SCORE;
     for (i = 0; i < n; i++) {
-        int king, skip;
+        int king, skip, quiet, reduction = 0;
         int32_t score;
         tail_sorted = pick_move_tail(moves, scores, n, i, tail_sorted);
+        quiet = !is_capture(b, moves[i]) && !MV_PROMO(moves[i]);
+        /* The same guard as the Teams LMP, and here it matters more: a node
+         * that pruned every move would read as having no legal move, and in
+         * FFA that does not claim a mate, it ELIMINATES the seat. */
+        if (use_ffa_lmp && quiet && legal >= 1 && depth <= lmp_max_depth
+            && !in_chk && quiets >= lmp_base + depth * depth)
+            continue;
+        if (quiet) quiets++;
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
@@ -3575,7 +3632,31 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
             continue;
         }
         legal++;
-        score = paranoid(b, depth - 1, alpha, beta, root, ply + 1);
+        if (use_ffa_lmr && quiet && !in_chk && legal > lmr_min_move
+            && depth >= lmr_min_depth) {
+            reduction = lmr_table[depth < MAX_DEPTH ? depth : MAX_DEPTH - 1]
+                                 [legal < LMR_MAX_MOVE ? legal : LMR_MAX_MOVE - 1];
+            if (reduction > depth - 2) reduction = depth - 2;
+            if (reduction < 0) reduction = 0;
+        }
+        if (reduction) {
+            /* A null window on the side this node moves: the root seat asks
+             * "does this beat alpha?", an opponent "does this get under
+             * beta?". Only a yes earns the full-depth search. */
+            if (maximising) {
+                score = paranoid(b, depth - 1 - reduction, alpha, alpha + 1,
+                                 root, ply + 1);
+                if (!search_aborted && score > alpha)
+                    score = paranoid(b, depth - 1, alpha, beta, root, ply + 1);
+            } else {
+                score = paranoid(b, depth - 1 - reduction, beta - 1, beta,
+                                 root, ply + 1);
+                if (!search_aborted && score < beta)
+                    score = paranoid(b, depth - 1, alpha, beta, root, ply + 1);
+            }
+        } else {
+            score = paranoid(b, depth - 1, alpha, beta, root, ply + 1);
+        }
         tt_unmake(b, moves[i], &u);
         if (search_aborted) return 0;
         if (maximising) {
@@ -3585,7 +3666,10 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
             if (score < best) { best = score; best_move = moves[i]; }
             if (best < beta) beta = best;
         }
-        if (alpha >= beta) break;
+        if (alpha >= beta) {
+            if (use_ffa_killers && quiet) killer_store(ply, moves[i]);
+            break;
+        }
     }
 
     if (!legal) {
@@ -3700,7 +3784,7 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     if (!lmr_built) lmr_build();
     /* Killers are per-search, not per-game: a stale table from another
      * position orders by moves that meant something somewhere else. */
-    if (use_killers) killers_clear();
+    if (use_killers || use_ffa_killers) killers_clear();
     /* The root sits at ply 0 of the path, so children at ply 1 can see it. */
     rep_keys[rep_root] = b->key;
 
