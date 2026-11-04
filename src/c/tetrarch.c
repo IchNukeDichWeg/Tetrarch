@@ -3174,7 +3174,12 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     caps = in_chk ? -1 : score_captures(b, moves, scores, n);
     if (caps < 0) caps = score_moves(b, moves, scores, n, 0, -1, 0);
     king0 = b->kings[me];
-    npins = compute_pins(b, me, king0, pins);
+    /* Pins are found on first use, not here. They are a pure function of a
+     * board every make/unmake pair below restores, so computing them later
+     * gives the same list; and surely_legal never reads them in check, while
+     * a node whose captures are all pruned or that has none never reads them
+     * at all -- the common quiescence node. */
+    npins = -1;
 
     /* Once the last capture has been picked, everything left is a quiet that
      * the loop would pick and immediately skip -- and pick_move is a selection
@@ -3197,6 +3202,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
         if (use_see_prune && !in_chk && !MV_PROMO(moves[i])
             && !see_surely_nonneg(b, moves[i])
             && tt_see(b, moves[i]) < 0) continue;
+        if (npins < 0) npins = in_chk ? 0 : compute_pins(b, me, king0, pins);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
@@ -3435,7 +3441,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     n = tt_gen_pseudo(b, moves);
     score_moves(b, moves, scores, n, ttmove, ply, &louds);
     king0 = b->kings[me];
-    npins = compute_pins(b, me, king0, pins);
+    npins = -1;                  /* on first use, as in qsearch */
 
     for (i = 0; i < n; i++) {
         int king, skip;
@@ -3462,6 +3468,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         }
         if (!is_capture_before) quiets++;
 
+        if (npins < 0) npins = in_chk ? 0 : compute_pins(b, me, king0, pins);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
@@ -3874,7 +3881,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
                 &louds);
     king0 = b->kings[me];
     in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
-    npins = compute_pins(b, me, king0, pins);
+    npins = -1;                  /* on first use, as in qsearch */
 
     best = maximising ? -INF_SCORE : INF_SCORE;
     for (i = 0; i < n; i++) {
@@ -3895,6 +3902,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
             continue;
         }
         if (quiet) quiets++;
+        if (npins < 0) npins = in_chk ? 0 : compute_pins(b, me, king0, pins);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
