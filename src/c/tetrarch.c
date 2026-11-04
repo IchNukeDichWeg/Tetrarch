@@ -849,9 +849,19 @@ void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
  * every move of every position rather than sampling. */
 static int8_t ray_step[NSQ][NSQ];
 
+/* Is (dst - src) & 255 one of the eight knight deltas? `(src + d) & 255 ==
+ * dst` holds exactly when `d == dst - src` mod 256, so one lookup answers what
+ * piece_attacks used to loop eight deltas for -- the same answer for every
+ * pair of squares, by arithmetic rather than by test. That loop ran on every
+ * knight move of every FFA make (8.3 asks whether the moved piece hits each
+ * other live king). */
+static uint8_t knight_hit[256];
+
 static void build_ray_steps(void)
 {
     int a, i;
+    memset(knight_hit, 0, sizeof(knight_hit));
+    for (i = 0; i < 8; i++) knight_hit[P.knight_deltas[i] & 255] = 1;
     memset(ray_step, 0, sizeof(ray_step));
     for (a = 0; a < NSQ; a++) {
         if (!P.valid[a]) continue;
@@ -883,12 +893,7 @@ static int piece_attacks(const TtBoard *b, int src, int dst)
     if (!p || src == dst) return 0;
     type = P.pc_type[p];
 
-    if (type == KNIGHT) {
-        int i;
-        for (i = 0; i < 8; i++)
-            if (((src + P.knight_deltas[i]) & 255) == dst) return 1;
-        return 0;
-    }
+    if (type == KNIGHT) return knight_hit[(dst - src) & 255];
 
     step = ray_step[src][dst];
     if (!step) return 0;                       /* not on any line at all */
@@ -931,13 +936,20 @@ static int piece_attacks(const TtBoard *b, int src, int dst)
  */
 static int ffa_multicheck_points(const TtBoard *b, int to, int mover)
 {
-    int seat, checked = 0, queenish, type;
+    int seat, checked = 0, missed = 0, queenish, type;
     if (b->mode != MODE_FFA) return 0;
     type = P.pc_type[b->sq[to]];
     for (seat = 0; seat < 4; seat++) {
         int k = b->kings[seat];
         if (seat == mover || !b->alive[seat] || k < 0) continue;
         if (piece_attacks(b, to, k)) checked++;
+        /* There are at most three other kings, so two misses leave one hit
+         * at most, and only two or more pays. Nearly every move hits no king
+         * at all, so this skips the third test on nearly every make without
+         * changing a single award. Gathering the candidate kings first and
+         * testing a third only after a hit came out SLOWER (+0.46% FFA
+         * instructions): the gather cost more than the test it saved. */
+        else if (++missed == 2) return 0;
     }
     if (checked < 2) return 0;
     queenish = (type == QUEEN || type == PQUEEN);
