@@ -2940,6 +2940,41 @@ static uint64_t paranoid_key(const TtBoard *b, int root)
     return b->key ^ P.zob_turn[root] ^ points_hash(b);
 }
 
+/* pick_move, plus one fact carried between calls at the same node: whether
+ * the unpicked tail is already non-increasing. Once it is, pick_move would
+ * choose index i at every remaining call -- it takes a later move only on a
+ * strictly greater score -- and swap nothing, so the scan can be skipped and
+ * the moves come out in exactly the order they would have.
+ *
+ * Returns that fact for the NEXT call: true when [i, n) was non-increasing on
+ * this scan, which also means this call picked i itself, so [i+1, n) is still
+ * non-increasing. A scan that swaps reports false even if the swap happened
+ * to leave the tail in order; the next scan finds out. Conservative is the
+ * safe direction -- a missed shortcut is a scan, never a different order.
+ *
+ * Paranoid's own because of what FFA ordering looks like: score_moves is
+ * called with no killer ply and history is off, so every quiet move scores
+ * 0 and the tail after the last capture is one flat run. pick_move scanned
+ * that run again for every quiet move searched, O(n^2) per node; the scans
+ * this skips were 3.0% of an FFA search's instructions. alphabeta and
+ * qsearch are left on
+ * pick_move: their scores are not flat, and they are not this change. */
+static int pick_move_tail(uint32_t *moves, int32_t *scores, int n, int i,
+                          int tail_sorted)
+{
+    int best = i, j, mono = 1;
+    if (tail_sorted) return 1;
+    for (j = i + 1; j < n; j++) {
+        if (scores[j] > scores[j - 1]) mono = 0;
+        if (scores[j] > scores[best]) best = j;
+    }
+    if (best != i) {
+        uint32_t tm = moves[i]; moves[i] = moves[best]; moves[best] = tm;
+        int32_t ts = scores[i]; scores[i] = scores[best]; scores[best] = ts;
+    }
+    return mono;
+}
+
 static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
                         int root, int ply)
 {
@@ -2949,7 +2984,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     uint64_t probe;
     TtUndo u;
     Pin pins[8];
-    int n, i, me = b->turn, legal = 0, king0, npins, in_chk;
+    int n, i, me = b->turn, legal = 0, king0, npins, in_chk, tail_sorted = 0;
     int maximising = (me == root);
     int32_t best;
 
@@ -3007,7 +3042,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     for (i = 0; i < n; i++) {
         int king, skip;
         int32_t score;
-        pick_move(moves, scores, n, i);
+        tail_sorted = pick_move_tail(moves, scores, n, i, tail_sorted);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
