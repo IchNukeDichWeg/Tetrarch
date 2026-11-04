@@ -4134,9 +4134,36 @@ def test_protocol_contracts():
         reply = client.post("/api/play/engine",
                             json={"fen4": start, "movetime": 50,
                                   "net": "no-such.nnue"}).get_json()
+        loaded = gui_app._LOADED_NET
+        # Malformed fields, not malformed positions: each was read with a
+        # bare int() or .strip() and came back as a 500 and a traceback.
+        # A null movetime is what JSON.stringify makes of parseInt("").
+        shapes = []
+        for route, body in (
+                ("/api/play/engine", {"fen4": start, "movetime": "abc"}),
+                ("/api/play/engine", {"fen4": start, "setup": ["modern"]}),
+                ("/api/eval", {"fen4": start, "depth": "x"}),
+                ("/api/eval", {"fen4": start, "lines": [1]}),
+                ("/api/eval", [1, 2]),
+                ("/api/play/move", {"fen4": 5, "move": "h2h3"}),
+                ("/api/play/move", {"fen4": start, "move": 5}),
+                ("/api/play/pgn", {"moves": None, "setup": "modern",
+                                   "mode": "ffa", "x": 1}),
+                ("/api/play/pgn", {"moves": [3]}),
+                ("/api/play/new", {"setup": ["x"]}),
+                ("/api/parse", {"pgn4": 5}),
+                ("/api/legal", {"fen4": None})):
+            code = client.post(route, json=body).status_code
+            shapes.append(("%s %s -> %d" % (route, json.dumps(body)[:30], code),
+                           code < 500))
+        check_all("malformed request fields are a 4xx, never a 500", shapes)
+        code = client.post("/api/play/engine",
+                           json={"fen4": start, "movetime": None}).status_code
+        check("and a null movetime means the default", code == 200, code)
+
         check("an unknown net really is replaced by the hand eval it reports",
-              gui_app._LOADED_NET is None and "hand eval" in reply["note"],
-              "loaded %r, note %r" % (gui_app._LOADED_NET, reply.get("note")))
+              loaded is None and "hand eval" in reply["note"],
+              "loaded %r, note %r" % (loaded, reply.get("note")))
     except ImportError as exc:                               # noqa: BLE001
         check("flask available for the GUI checks", False, repr(exc))
 
