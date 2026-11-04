@@ -20,6 +20,7 @@ Two things this file is deliberately built around:
 """
 
 import argparse
+import atexit
 import json
 import os
 import random
@@ -50,7 +51,24 @@ from tetrarch import pgn4
 
 HAVE_C = core.available()
 
-SCRATCH = tempfile.gettempdir()
+# A directory of this run's own, not the shared temp dir. Every scratch file
+# below has a fixed name, and two selftests running at once (two checkouts on
+# one machine) used to write, read and delete each other's copies: one run
+# died with FileNotFoundError on tetrarch_bundle_test.txt that the other had
+# just removed. Pool workers inherit the path through fork, so they write into
+# it too; only the process that made it removes it, so a worker exiting cannot
+# pull it out from under the rest of the run.
+SCRATCH = tempfile.mkdtemp(prefix="tetrarch-selftest-")
+_SCRATCH_OWNER = os.getpid()
+
+
+def _remove_scratch():
+    if os.getpid() == _SCRATCH_OWNER:
+        import shutil
+        shutil.rmtree(SCRATCH, ignore_errors=True)
+
+
+atexit.register(_remove_scratch)
 
 FAILURES = []
 CHECKS = [0]
@@ -2158,7 +2176,7 @@ def test_net_bundle():
 
     # And the dispatch itself: selecting a setup must select its net, and a
     # setup the bundle does not name must fall back rather than fail.
-    scratch = os.path.join(tempfile.gettempdir(), "tetrarch_bundle_test.txt")
+    scratch = os.path.join(SCRATCH, "tetrarch_bundle_test.txt")
     nets_dir = os.path.dirname(path)
     # Absolute, because load_bundle resolves a relative name against the
     # manifest's own directory and this manifest lives in the temp dir.
@@ -2631,7 +2649,7 @@ def test_book():
     # The mode is written into the book and read back, so a book cannot be
     # fed to the wrong kind of run. Absent, it means Teams: books built before
     # FFA existed still mean what they meant.
-    scratch = os.path.join(tempfile.gettempdir(), "tetrarch_book_mode.txt")
+    scratch = os.path.join(SCRATCH, "tetrarch_book_mode.txt")
     for written, expect in (("# mode ffa\n", "ffa"),
                             ("# mode teams\n", "teams"),
                             ("", "teams"),
@@ -2644,7 +2662,7 @@ def test_book():
     os.remove(scratch)
 
     # And the file round-trips, since both consumers read it back.
-    path = os.path.join(tempfile.gettempdir(), "tetrarch_book_selftest.txt")
+    path = os.path.join(SCRATCH, "tetrarch_book_selftest.txt")
     with open(path, "w") as handle:
         handle.write("# a comment\n\n")
         for st, fen4, _k, _s in found[:5]:
@@ -3082,8 +3100,8 @@ def test_ffa_data():
     # eliminations the replay drifts off the recorded game at the first mate --
     # the same bug uci.py had -- and every later position is mislabelled
     # silently rather than producing a visible bad move.
-    scratch = os.path.join(tempfile.gettempdir(), "tetrarch_ffa_data_test.jsonl")
-    cache = os.path.join(tempfile.gettempdir(), "tetrarch_ffa_cache_test.npz")
+    scratch = os.path.join(SCRATCH, "tetrarch_ffa_data_test.jsonl")
+    cache = os.path.join(SCRATCH, "tetrarch_ffa_cache_test.npz")
     with open(scratch, "w") as fh:
         for r in records:
             fh.write(json.dumps(r) + "\n")
