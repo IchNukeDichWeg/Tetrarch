@@ -207,6 +207,8 @@ def api_play_engine():
     want_net = (payload.get("net") or "auto").strip()
     if want_net == "auto":
         want_net = _bundled_net(mode, payload.get("setup", DEFAULT_SETUP)) or ""
+    elif want_net == "none":
+        want_net = ""                   # as /api/eval spells the hand eval
     with ENGINE_LOCK:
         note = _select_net(want_net)
         core.clear_hash()
@@ -242,20 +244,24 @@ def _select_net(name):
     from the browser, so it never reaches the filesystem as a path.
     """
     global _LOADED_NET
+    note = None
     if name and (os.path.basename(name) != name
                  or not name.endswith(".nnue")
                  or not os.path.exists(os.path.join(NETS_DIR, name))):
-        return "unknown net %r; using the hand eval" % name
+        # And then actually use it. This returned the note and left whatever
+        # net the previous request loaded in place, so a reply could say "hand
+        # eval" while net-v7 played.
+        note = "unknown net %r; using the hand eval" % name
+        name = ""
     name = name or None
-    if name == _LOADED_NET:
-        return None
-    if name is None:
-        core.unload_net()
-    else:
-        from tetrarch import nnue
-        core.load_net(nnue.Net.load(os.path.join(NETS_DIR, name)))
-    _LOADED_NET = name
-    return None
+    if name != _LOADED_NET:
+        if name is None:
+            core.unload_net()
+        else:
+            from tetrarch import nnue
+            core.load_net(nnue.Net.load(os.path.join(NETS_DIR, name)))
+        _LOADED_NET = name
+    return note
 
 
 @app.route("/api/play/pgn", methods=["POST"])

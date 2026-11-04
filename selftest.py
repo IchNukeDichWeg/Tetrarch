@@ -3185,7 +3185,17 @@ def test_js_replay():
             return "%s|%s|%s" % (meta[0], meta[1], fen[cut + 1:])
 
         cases.append({"setup": setup, "pgn4": text,
+                      "py_setup": pgn4.parse(text).setup,
                       "frames": [key(f) for f in frames]})
+
+    # A modern start written with the code rather than with no tag. pgn4.py
+    # always read "4PC" as modern; the viewer had no entry for it and replayed
+    # the game from the classic start.
+    modern = cases[list(SETUPS).index("modern")]
+    tagged = '[StartFen4 "4PC"]\n' + modern["pgn4"]
+    cases.append({"setup": "modern-4PC", "pgn4": tagged,
+                  "py_setup": pgn4.parse(tagged).setup,
+                  "frames": modern["frames"]})
 
     path = os.path.join(SCRATCH, "tetrarch-js-cases.json")
     with open(path, "w") as fh:
@@ -4097,6 +4107,36 @@ def test_protocol_contracts():
             codes.append((route, client.post(route, json=body).status_code))
         check_all("a Teams position with a dead seat is a 400, not a 500",
                   [("%s -> %d" % (r, c), c == 400) for r, c in codes])
+
+        # The net that plays follows mode AND setup (nets/bundle.txt), and
+        # both pages left the setup out of their engine requests, so every
+        # game was played by classic's net: net-v5 on modern, where the bundle
+        # records it at -22.15 +/- 10.81. Asserted on the pages' own request
+        # bodies -- the server side was always right when it was told.
+        import re
+        for page, route in (("play.html", "/api/play/engine"),
+                            ("viewer.html", "/api/eval")):
+            html = open(os.path.join(root, "gui", page)).read()
+            calls = [m for m in re.finditer(
+                r'(?:post|fetch)\("%s"(.*?)\}\);' % re.escape(route), html,
+                re.S)]
+            bodies = [m.group(1) for m in calls
+                      if "fen4" in m.group(1)]
+            check("%s sends the setup with every %s request" % (page, route),
+                  bodies and all(re.search(r"\bsetup\b", b) for b in bodies),
+                  "%d requests" % len(bodies))
+
+        start = start_board("modern", MODE_TEAMS).to_fen4().replace("\n", "")
+        client.post("/api/play/engine", json={"fen4": start, "movetime": 50,
+                                              "setup": "modern"})
+        check("and given it, the engine plays the bundle's net for it",
+              gui_app._LOADED_NET == "net-v7.nnue", gui_app._LOADED_NET)
+        reply = client.post("/api/play/engine",
+                            json={"fen4": start, "movetime": 50,
+                                  "net": "no-such.nnue"}).get_json()
+        check("an unknown net really is replaced by the hand eval it reports",
+              gui_app._LOADED_NET is None and "hand eval" in reply["note"],
+              "loaded %r, note %r" % (gui_app._LOADED_NET, reply.get("note")))
     except ImportError as exc:                               # noqa: BLE001
         check("flask available for the GUI checks", False, repr(exc))
 

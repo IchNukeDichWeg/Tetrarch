@@ -572,6 +572,9 @@ async function tick(){
   const {ok, data} = await post("/api/play/engine", {
     fen4: state.fen4,
     mode: game.mode,
+    // The bundle picks a net by mode AND setup; without this every game was
+    // played by classic's net -- net-v5 on modern, -22.15 +/- 10.81 there.
+    setup: game.setup,
     movetime: parseInt(document.getElementById("movetime").value, 10),
     net: document.getElementById("net").value,
   });
@@ -814,6 +817,9 @@ hintBtn.onclick = async () => {
   const {ok, data} = await post("/api/play/engine", {
     fen4: state.fen4,
     mode: game.mode,
+    // The bundle picks a net by mode AND setup; without this every game was
+    // played by classic's net -- net-v5 on modern, -22.15 +/- 10.81 there.
+    setup: game.setup,
     movetime: parseInt(document.getElementById("movetime").value, 10),
     net: document.getElementById("net").value,
     apply: false,
