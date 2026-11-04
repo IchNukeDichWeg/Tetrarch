@@ -3023,6 +3023,52 @@ static int score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
     return caps;
 }
 
+/* score_moves for quiescence outside check, where only captures are ever
+ * searched: a capture gets exactly the score score_moves gives it and every
+ * quiet gets 0. Returns the capture count, or -1 when the shortcut does not
+ * apply and the caller must use score_moves instead.
+ *
+ * Why the order is identical. Quiescence passes no transposition move and
+ * ply -1, so in score_moves a quiet scores at most (1 << 15) for a promotion
+ * plus a history value below HISTORY_MAX -- QS_QUIET_MAX below. While every
+ * capture scores above that, every capture outranks every quiet under both
+ * scorings, so each selection pick until the last capture -- which is where
+ * quiescence stops -- lands on the same capture: the first-index maximum among
+ * the captures, whose scores and positions agree. Quiet values never decide a
+ * pick and quiets are never searched, so the 0 changes nothing but the cost.
+ * The bound holds by a wide margin for any sane piece values (the weakest
+ * capture is 65,536 + 16 * 100 - 900), and it is checked rather than assumed,
+ * so a tuning run with strange values falls back instead of reordering.
+ *
+ * Most of the moves scored anywhere are quiets at a quiescence node; for
+ * those this is a load and a test instead of the TT-move, killer, history
+ * and promotion checks. */
+#define QS_QUIET_MAX ((1 << 15) + HISTORY_MAX - 1)
+
+static int score_captures(const TtBoard *b, const uint32_t *restrict moves,
+                          int32_t *restrict scores, int n)
+{
+    const int see_order = use_see_order;
+    int32_t low = INT32_MAX;
+    int i, caps = 0;
+    for (i = 0; i < n; i++) {
+        uint32_t m = moves[i];
+        uint8_t victim = b->sq[MV_TO(m)];
+        int32_t s = 0;
+        if (victim || MV_FLAG(m) == F_EP) {
+            int vv = victim ? P.piece_value[P.pc_type[victim]]
+                            : P.piece_value[PAWN];
+            int av = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
+            s = (1 << 16) + (see_order ? tt_see(b, m) : vv * 16 - av);
+            if (MV_PROMO(m)) s += (1 << 15);
+            if (s < low) low = s;
+            caps++;
+        }
+        scores[i] = s;
+    }
+    return low > QS_QUIET_MAX ? caps : -1;
+}
+
 /* Selection sort one move at a time: most of the list is never reached after
  * a cutoff, so sorting it all up front would be wasted work.
  *
@@ -3125,7 +3171,8 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    caps = score_moves(b, moves, scores, n, 0, -1, 0);
+    caps = in_chk ? -1 : score_captures(b, moves, scores, n);
+    if (caps < 0) caps = score_moves(b, moves, scores, n, 0, -1, 0);
     king0 = b->kings[me];
     npins = compute_pins(b, me, king0, pins);
 
