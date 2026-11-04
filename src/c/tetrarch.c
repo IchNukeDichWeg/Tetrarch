@@ -2949,15 +2949,22 @@ static void killer_store(int ply, uint32_t m)
     killers[ply][0] = m;
 }
 
-/* MVV-LVA, with the transposition move first. */
-static void score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
-                        int n, uint32_t ttmove, int ply)
+/* MVV-LVA, with the transposition move first.
+ *
+ * Returns the number of captures and, through `loud` when it is non-null, the
+ * number of moves that are a capture or a promotion -- the moves LMP may never
+ * drop. Counted here because this loop already classifies every move; the
+ * callers use the counts to stop their loops once nothing searchable is left. */
+static int score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
+                       int n, uint32_t ttmove, int ply, int *loud)
 {
-    int i;
+    int i, caps = 0, louds = 0;
     for (i = 0; i < n; i++) {
         uint32_t m = moves[i];
         int32_t s = 0;
         int capture = is_capture(b, m);
+        caps += capture;
+        louds += capture || MV_PROMO(m);
         if (m == ttmove) {
             s = 1 << 24;
         } else if (capture) {
@@ -2988,6 +2995,8 @@ static void score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
         if (MV_PROMO(m)) s += (1 << 15);
         scores[i] = s;
     }
+    if (loud) *loud = louds;
+    return caps;
 }
 
 /* Selection sort one move at a time: most of the list is never reached after
@@ -3036,7 +3045,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     uint32_t *moves;
     int32_t *scores;
     TtUndo u;
-    int n, i, me = b->turn, in_chk = 0, legal = 0, caps = 0, picked = 0;
+    int n, i, me = b->turn, in_chk = 0, legal = 0, caps, picked = 0;
     int32_t stand;
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
@@ -3059,7 +3068,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, 0, -1);
+    caps = score_moves(b, moves, scores, n, 0, -1, 0);
     king0 = b->kings[me];
     npins = compute_pins(b, me, king0, pins);
 
@@ -3069,13 +3078,8 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
      * Counting the captures up front lets the loop stop there. It cannot
      * change which moves are searched, in what order, or with what result: the
      * array, the scores and the selection are all untouched, and the tail
-     * being dropped is exactly the moves that were already being discarded. */
-    caps = 0;
-    if (!in_chk) {
-        for (i = 0; i < n; i++)
-            if (is_capture(b, moves[i])) caps++;
-    }
-
+     * being dropped is exactly the moves that were already being discarded.
+     * The scorer counts them, since it classifies every move anyway. */
     for (i = 0; i < n; i++) {
         int king, skip;
         if (!in_chk && picked == caps) break;
@@ -3244,6 +3248,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     TtUndo u;
     TtEntry *slot = 0;
     int n, i, legal = 0, quiets = 0, me = b->turn, in_chk;
+    int louds = 0, louds_seen = 0, lmp_on = 0;
     Pin pins[8];
     int king0, npins;
 
@@ -3323,7 +3328,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, ttmove, ply);
+    score_moves(b, moves, scores, n, ttmove, ply, &louds);
     king0 = b->kings[me];
     npins = compute_pins(b, me, king0, pins);
 
@@ -3331,8 +3336,15 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         int king, skip;
         int32_t score;
         int is_capture_before, reduction;
+        /* Once LMP has dropped one move it drops every later quiet: `legal`
+         * and `quiets` only grow and nothing else in the test changes inside
+         * this loop. So when the last capture or promotion has also been
+         * picked, every remaining iteration is a pick, a test and a
+         * `continue`, and stopping here searches exactly the same moves. */
+        if (lmp_on && louds_seen == louds) break;
         pick_move(moves, scores, n, i);
         is_capture_before = is_capture(b, moves[i]);
+        if (is_capture_before || MV_PROMO(moves[i])) louds_seen++;
 
         /* Drop the quiet tail without even making the move. `legal >= 1` is
          * not an optimisation: without it a node could prune every move and
@@ -3340,6 +3352,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         if (use_lmp && legal >= 1 && depth <= lmp_max_depth && !in_chk
             && !is_capture_before && !MV_PROMO(moves[i])
             && quiets >= lmp_base + depth * depth) {
+            lmp_on = 1;
             continue;
         }
         if (!is_capture_before) quiets++;
@@ -3736,7 +3749,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     TtUndo u;
     Pin pins[8];
     int n, i, me = b->turn, legal = 0, quiets = 0, king0, npins, in_chk;
-    int tail_sorted = 0;
+    int tail_sorted = 0, louds = 0, louds_seen = 0, lmp_on = 0;
     int maximising = (me == root);
     int32_t best;
 
@@ -3787,7 +3800,8 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     n = tt_gen_pseudo(b, moves);
     /* -1 keeps the killer slots out of it unless FFAKillers is on; see the
      * note on that toggle. */
-    score_moves(b, moves, scores, n, ttmove, use_ffa_killers ? ply : -1);
+    score_moves(b, moves, scores, n, ttmove, use_ffa_killers ? ply : -1,
+                &louds);
     king0 = b->kings[me];
     in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     npins = compute_pins(b, me, king0, pins);
@@ -3796,14 +3810,20 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     for (i = 0; i < n; i++) {
         int king, skip, quiet, reduction = 0;
         int32_t score;
+        /* The Teams LMP's early stop, for the same reason: once FFALMP has
+         * dropped a quiet it drops every later one. */
+        if (lmp_on && louds_seen == louds) break;
         tail_sorted = pick_move_tail(moves, scores, n, i, tail_sorted);
         quiet = !is_capture(b, moves[i]) && !MV_PROMO(moves[i]);
+        if (!quiet) louds_seen++;
         /* The same guard as the Teams LMP, and here it matters more: a node
          * that pruned every move would read as having no legal move, and in
          * FFA that does not claim a mate, it ELIMINATES the seat. */
         if (use_ffa_lmp && quiet && legal >= 1 && depth <= lmp_max_depth
-            && !in_chk && quiets >= lmp_base + depth * depth)
+            && !in_chk && quiets >= lmp_base + depth * depth) {
+            lmp_on = 1;
             continue;
+        }
         if (quiet) quiets++;
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
@@ -3915,7 +3935,7 @@ static void tt_search_ffa(TtBoard *b, int depth, TtResult *out)
         TtEntry *slot = &tt_table[probe & tt_mask];
         if (slot->key == probe) ttmove = slot->best;
     }
-    score_moves(b, moves, scores, n, ttmove, 0);
+    score_moves(b, moves, scores, n, ttmove, 0, 0);
 
     for (i = 0; i < n; i++) {
         int king;
@@ -3979,7 +3999,7 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     n = tt_gen_pseudo(b, moves);
     score_moves(b, moves, scores, n,
                 (tt_table && tt_table[b->key & tt_mask].key == b->key)
-                ? tt_table[b->key & tt_mask].best : 0, 0);
+                ? tt_table[b->key & tt_mask].best : 0, 0, 0);
     king0 = b->kings[me];
     in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     npins = compute_pins(b, me, king0, pins);
