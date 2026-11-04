@@ -1054,10 +1054,108 @@ static int surely_legal(uint32_t m, int king, const Pin *pins, int npins,
 #endif
 }
 
+/* The other side of the same coin: in check, most pseudo-legal moves are
+ * illegal, and every one of them used to be made, scanned and unmade. In a
+ * bench round that was 122k of the 179k makes inside quiescence -- the
+ * evasion search tries every move, and a quiet move by a piece that neither
+ * captures the checker nor blocks the line answers nothing.
+ *
+ * `ev` is a 256-bit set over the mailbox: the squares a move by anything
+ * other than the king must land on. Each checker contributes its own square
+ * plus, for a slider, the squares between it and the king; the sets of all
+ * checkers are intersected, so a double check leaves the set empty and only
+ * king moves survive to the scan. Intersecting rather than counting checkers
+ * means no argument about whose lines can cross is needed.
+ *
+ * Why a move landing outside the set is CERTAINLY illegal: the checker still
+ * stands (the move did not land on it, and only en passant removes a piece
+ * from a square other than `to`, so F_EP is declined), every square between
+ * it and the king is still empty (they were empty, `to` is not one of them,
+ * and vacating `frm` only empties more), the king has not moved (frm != king;
+ * castling is a king move and falls out here too), and nothing about who is
+ * hostile to whom changes inside tt_make. So the same attack is there after
+ * the move and the scan would reject it. Like surely_legal this is one-sided:
+ * "certainly illegal" or "do not know", and selftest compares it against the
+ * scan on every move of every position it samples. */
+static void compute_evasions(const TtBoard *b, int me, int king, uint64_t ev[4])
+{
+    int i;
+    ev[0] = ev[1] = ev[2] = ev[3] = ~0ULL;
+#define EV_ONLY(s) do {                                                    \
+        uint64_t keep_ = ev[(s) >> 6] & (1ULL << ((s) & 63));              \
+        ev[0] = ev[1] = ev[2] = ev[3] = 0;                                 \
+        ev[(s) >> 6] = keep_;                                              \
+    } while (0)
+    for (i = 0; i < 8; i++) {
+        int t = (king + P.knight_deltas[i]) & 255;
+        uint8_t p;
+        if (!P.valid[t]) continue;
+        p = b->sq[t];
+        if (p && P.pc_type[p] == KNIGHT && hostile(b, p, me)) EV_ONLY(t);
+    }
+    for (i = 0; i < 8; i++) {
+        int t = (king + P.queen_dirs[i]) & 255;
+        uint8_t p;
+        if (!P.valid[t]) continue;
+        p = b->sq[t];
+        if (p && P.pc_type[p] == KING && hostile(b, p, me)) EV_ONLY(t);
+    }
+    for (i = 0; i < 4; i++) {
+        int d = P.diag[i], t = (king - d) & 255;
+        uint8_t p;
+        if (!P.valid[t]) continue;
+        p = b->sq[t];
+        if (p && P.pc_type[p] == PAWN && hostile(b, p, me)) {
+            int c = P.pc_color[p];
+            if (P.pawn_takes[c][0] == d || P.pawn_takes[c][1] == d) EV_ONLY(t);
+        }
+    }
+#undef EV_ONLY
+    for (i = 0; i < 8; i++) {
+        int d = P.queen_dirs[i], diag = is_diag(d);
+        int t = (king + d) & 255;
+        while (P.valid[t]) {
+            uint8_t p = b->sq[t];
+            if (p) {
+                int pt = P.pc_type[p];
+                if (hostile(b, p, me)
+                    && (queenish(pt) || (diag ? pt == BISHOP : pt == ROOK))) {
+                    /* The line from the king out to the checker, inclusive. */
+                    uint64_t line[4] = { 0, 0, 0, 0 };
+                    int s = king;
+                    do {
+                        s = (s + d) & 255;
+                        line[s >> 6] |= 1ULL << (s & 63);
+                    } while (s != t);
+                    ev[0] &= line[0]; ev[1] &= line[1];
+                    ev[2] &= line[2]; ev[3] &= line[3];
+                }
+                break;
+            }
+            t = (t + d) & 255;
+        }
+    }
+}
+
+/* 1 when the move certainly leaves this seat's king attacked; only meaningful
+ * in check, with `ev` from compute_evasions. Never says legal. */
+static inline int surely_illegal(uint32_t m, int king, const uint64_t ev[4])
+{
+#ifdef NO_PIN_FASTPATH
+    (void)m; (void)king; (void)ev;
+    return 0;
+#else
+    int to = MV_TO(m);
+    if (MV_FLAG(m) == F_EP || MV_FROM(m) == king) return 0;
+    return !((ev[to >> 6] >> (to & 63)) & 1);
+#endif
+}
+
 /* Differential for selftest: does the fast path ever call a move certainly
- * legal that the scan rejects? Returns the number of such moves, so 0 is the
- * only acceptable answer. Counting rather than flagging means a regression
- * reports how wrong it is. */
+ * legal that the scan rejects, or (in check) certainly illegal that the scan
+ * accepts? Returns the number of such moves, so 0 is the only acceptable
+ * answer. Counting rather than flagging means a regression reports how wrong
+ * it is. */
 int tt_legality_disagreements(TtBoard *b)
 {
     uint32_t buf[MAX_MOVES];
@@ -1068,14 +1166,20 @@ int tt_legality_disagreements(TtBoard *b)
     int king0 = b->kings[me];
     int in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     int npins = compute_pins(b, me, king0, pins);
+    uint64_t evade[4];
+    if (in_chk) compute_evasions(b, me, king0, evade);
     for (i = 0; i < n; i++) {
-        int king, really;
-        if (!surely_legal(buf[i], king0, pins, npins, in_chk)) continue;
+        int king, really, legal_claim, illegal_claim;
+        legal_claim = surely_legal(buf[i], king0, pins, npins, in_chk);
+        illegal_claim = in_chk && surely_illegal(buf[i], king0, evade);
+        if (!legal_claim && !illegal_claim) continue;
         tt_make(b, buf[i], &u);
         king = b->kings[me];
         really = king < 0 || !tt_is_attacked(b, king, me);
         tt_unmake(b, buf[i], &u);
-        if (!really) bad++;
+        /* Both claims at once is itself a contradiction. */
+        if (legal_claim && !really) bad++;
+        if (illegal_claim && really) bad++;
     }
     return bad;
 }
@@ -1244,12 +1348,15 @@ int tt_gen_legal(TtBoard *b, uint32_t *out)
     int king0 = b->kings[me];
     int in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     int npins = compute_pins(b, me, king0, pins);
+    uint64_t evade[4];
+    if (in_chk) compute_evasions(b, me, king0, evade);
     for (i = 0; i < n; i++) {
         int king, ok;
         if (surely_legal(buf[i], king0, pins, npins, in_chk)) {
             out[k++] = buf[i];
             continue;
         }
+        if (in_chk && surely_illegal(buf[i], king0, evade)) continue;
         tt_make(b, buf[i], &u);
         king = b->kings[me];
         ok = king < 0 || !tt_is_attacked(b, king, me);
@@ -3147,6 +3254,7 @@ int tt_get_qs_evasions(void) { return use_qs_evasions; }
 static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
 {
     Pin pins[8];
+    uint64_t evade[4];
     int king0, npins;
     uint32_t *moves;
     int32_t *scores;
@@ -3184,6 +3292,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
      * a node whose captures are all pruned or that has none never reads them
      * at all -- the common quiescence node. */
     npins = -1;
+    if (in_chk) compute_evasions(b, me, king0, evade);
 
     /* Once the last capture has been picked, everything left is a quiet that
      * the loop would pick and immediately skip -- and pick_move is a selection
@@ -3206,6 +3315,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
         if (use_see_prune && !in_chk && !MV_PROMO(moves[i])
             && !see_surely_nonneg(b, moves[i])
             && tt_see(b, moves[i]) < 0) continue;
+        if (in_chk && surely_illegal(moves[i], king0, evade)) continue;
         if (npins < 0) npins = in_chk ? 0 : compute_pins(b, me, king0, pins);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
@@ -3365,6 +3475,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     int n, i, legal = 0, quiets = 0, me = b->turn, in_chk;
     int louds = 0, louds_seen = 0, lmp_on = 0, sorted = 0;
     Pin pins[8];
+    uint64_t evade[4];
     int king0, npins;
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
@@ -3446,6 +3557,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     score_moves(b, moves, scores, n, ttmove, ply, &louds);
     king0 = b->kings[me];
     npins = -1;                  /* on first use, as in qsearch */
+    if (in_chk) compute_evasions(b, me, king0, evade);
 
     for (i = 0; i < n; i++) {
         int king, skip;
@@ -3472,6 +3584,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         }
         if (!is_capture_before) quiets++;
 
+        if (in_chk && surely_illegal(moves[i], king0, evade)) continue;
         if (npins < 0) npins = in_chk ? 0 : compute_pins(b, me, king0, pins);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
@@ -3829,6 +3942,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     uint64_t probe;
     TtUndo u;
     Pin pins[8];
+    uint64_t evade[4];
     int n, i, me = b->turn, legal = 0, quiets = 0, king0, npins, in_chk;
     int tail_sorted = 0, louds = 0, louds_seen = 0, lmp_on = 0;
     int maximising = (me == root);
@@ -3886,6 +4000,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     king0 = b->kings[me];
     in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     npins = -1;                  /* on first use, as in qsearch */
+    if (in_chk) compute_evasions(b, me, king0, evade);
 
     best = maximising ? -INF_SCORE : INF_SCORE;
     for (i = 0; i < n; i++) {
@@ -3906,6 +4021,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
             continue;
         }
         if (quiet) quiets++;
+        if (in_chk && surely_illegal(moves[i], king0, evade)) continue;
         if (npins < 0) npins = in_chk ? 0 : compute_pins(b, me, king0, pins);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
@@ -4056,6 +4172,7 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     int32_t *scores, best = -INF_SCORE, alpha = -INF_SCORE;
     TtUndo u;
     Pin pins[8];
+    uint64_t evade[4];
     int n, i, legal = 0, me = b->turn, king0, npins, in_chk;
 
     search_nodes = 0;
@@ -4085,11 +4202,13 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     king0 = b->kings[me];
     in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     npins = compute_pins(b, me, king0, pins);
+    if (in_chk) compute_evasions(b, me, king0, evade);
 
     for (i = 0; i < n; i++) {
         int king, skip;
         int32_t score;
         pick_move(moves, scores, n, i);
+        if (in_chk && surely_illegal(moves[i], king0, evade)) continue;
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];

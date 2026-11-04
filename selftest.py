@@ -1188,6 +1188,30 @@ def test_search(workers=1):
     check("the fast path declines it rather than allowing it",
           core.legality_disagreements(epb) == 0)
 
+    # The in-check half of the fast path calls a move certainly ILLEGAL when
+    # it neither moves the king nor lands on the checker or the line between.
+    # En passant is the one move that removes a piece from a square other than
+    # its destination, so it can capture a checking pawn without landing on
+    # it. Found by sampling once in 11,316 positions -- too rare to trust the
+    # random walk above to keep finding it, so pinned here. Blue's d11 pawn
+    # has just double-pushed and checks Yellow's king on e12; Yellow's d12
+    # pawn answers it by taking en passant on c11.
+    ep_evasion = ("Y-0,0,0,0-0,0,0,0-0,0,0,0-3,12,1,15-0-"
+                  "{'enPassant':('','c11:d11','','')}-"
+                  "3,yR,yN,yB,3,yN,yR,3/9,yP,4/3,yP,yK,yP,8/"
+                  "bR,2,bP,yP,5,yP,1,gP,gR/bN,1,bP,1,yB,5,gK,2,gN/"
+                  "bB,bP,bK,2,bB,4,gP,3/3,bP,10/1,bN,bQ,gQ,8,gP,1/"
+                  "1,bP,8,gP,2,gB/9,rN,rP,1,gP,gN/bR,bP,1,bP,gB,7,gP,gR/"
+                  "6,rP,7/5,rP,1,rP,rP,rP,4/3,rR,rN,1,rK,1,rB,1,rR,3")
+    evb = Board.from_fen4(ep_evasion, MODE_FFA)
+    check("the en passant evasion position is in check",
+          fast.in_check(evb, evb.turn))
+    check("and taking en passant answers it",
+          "d12c11" in [move_str(m) for m in fast.gen_legal(evb)]
+          and "d12c11" in [move_str(m) for m in core.gen_legal(evb)])
+    check("the fast path does not call it illegal",
+          core.legality_disagreements(evb) == 0)
+
     core.set_hash(16)
     pins = []
     for setup in SETUPS:
