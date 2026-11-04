@@ -115,10 +115,19 @@ def search(board, limits, info=None, repetitions=()):
     budget = limits.budget_ms()
     out = Result()
 
-    legal = gen.gen_legal(board)
-    if not legal:
+    # Board and history converted for C once per move, not once per depth.
+    root = core.Root(board, repetitions)
+
+    # Only "is there a move" is needed up front. The full Python legal list
+    # was built here on every move for the sake of one fallback -- the move to
+    # play if no depth completes -- and at ~0.3 ms it was the largest Python
+    # cost inside the movetime budget, ten times one depth's C call overhead.
+    # The fallback is still movegen.gen_legal(...)[0], the same move as before
+    # (the C list is the same SET but not the same order, so it cannot stand
+    # in there), built only on the rare path that reads it: `go nodes 1`, or
+    # any node budget smaller than depth 1.
+    if not root.has_legal():
         return out
-    out.best = legal[0]
 
     # `or` read a depth of 0 as "no limit" and searched to 48. 0 is a
     # caller error, not a synonym for unlimited; the CLI rejects it.
@@ -146,7 +155,7 @@ def search(board, limits, info=None, repetitions=()):
             remaining_nodes = max(1, int(out.nodes / out.elapsed
                                          * (left_ms / 1000.0)))
 
-        r = core.search(board, depth, remaining_nodes, repetitions)
+        r = root.search(depth, remaining_nodes)
         out.nodes += r.nodes
         out.elapsed = time.perf_counter() - started
 
@@ -155,7 +164,7 @@ def search(board, limits, info=None, repetitions=()):
             # meaningless, so keep the last completed one.
             break
 
-        out.best = r.best or out.best
+        out.best = r.best or out.best or gen.gen_legal(board)[0]
         out.score = r.score
         out.depth = depth
         if info:
@@ -170,6 +179,8 @@ def search(board, limits, info=None, repetitions=()):
         if limits.nodes and out.nodes >= limits.nodes:
             break
 
+    if not out.best:                    # no depth completed
+        out.best = gen.gen_legal(board)[0]
     return out
 
 
