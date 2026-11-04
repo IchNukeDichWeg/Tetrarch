@@ -3757,6 +3757,12 @@ def test_bench_tooling():
           if run.returncode else "exit 0")
     check("and reports a search line", "search:" in run.stdout,
           "%d bytes of output" % len(run.stdout))
+    run = subprocess.run([sys.executable, os.path.join(root, "bench.py"),
+                          "--rounds", "0"], cwd=root, capture_output=True,
+                         text=True)
+    check("bench.py --rounds 0 is refused, not an IndexError",
+          run.returncode == 2 and "at least 1" in run.stderr,
+          (run.stderr.strip().splitlines() or ["exit %d" % run.returncode])[-1])
 
     # The contract the loop variable carries: `profile` and `search_round`
     # must search the same tree. If `profile` loses the label it cannot apply
