@@ -2979,20 +2979,33 @@ static void killer_store(int ply, uint32_t m)
  * number of moves that are a capture or a promotion -- the moves LMP may never
  * drop. Counted here because this loop already classifies every move; the
  * callers use the counts to stop their loops once nothing searchable is left. */
-static int score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
-                       int n, uint32_t ttmove, int ply, int *loud)
+static int score_moves(const TtBoard *b, const uint32_t *restrict moves,
+                       int32_t *restrict scores, int n, uint32_t ttmove,
+                       int ply, int *loud)
 {
+    /* ply >= 0 is not redundant: quiescence passes -1 deliberately, so that
+     * it consults no killer slot, and the upper bound alone lets -1 through
+     * to killers[-1][0..1] -- eight bytes before the array, read for every
+     * quiet move at every qsearch node. It is harmless only by accident of the
+     * current link layout, and SEARCH_PINS depends on qsearch ordering, so the
+     * pinned counts were resting on out-of-bounds memory staying zero.
+     *
+     * With the slots off, both killers read as 0, which no generated move
+     * equals (a move never has from == to), so the compare below needs no
+     * guard of its own. */
+    const int kon = use_killers && ply >= 0 && ply < MAX_DEPTH;
+    const uint32_t k0 = kon ? killers[ply][0] : 0;
+    const uint32_t k1 = kon ? killers[ply][1] : 0;
+    const int see_order = use_see_order, hist = use_history;
     int i, caps = 0, louds = 0;
     for (i = 0; i < n; i++) {
         uint32_t m = moves[i];
-        int32_t s = 0;
-        int capture = is_capture(b, m);
+        uint8_t victim = b->sq[MV_TO(m)];
+        int capture = victim != 0 || MV_FLAG(m) == F_EP;
+        int32_t s;
         caps += capture;
         louds += capture || MV_PROMO(m);
-        if (m == ttmove) {
-            s = 1 << 24;
-        } else if (capture) {
-            uint8_t victim = b->sq[MV_TO(m)];
+        if (capture) {
             int vv = victim ? P.piece_value[P.pc_type[victim]]
                             : P.piece_value[PAWN];
             int av = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
@@ -3000,22 +3013,13 @@ static int score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
              * against a 65,536 base, so a losing capture still sorts above
              * every killer and history move. Whether it should is a separate
              * question and a separate experiment. */
-            s = (1 << 16) + (use_see_order ? tt_see(b, m) : vv * 16 - av);
+            s = (1 << 16) + (see_order ? tt_see(b, m) : vv * 16 - av);
         } else {
-            /* ply >= 0 is not redundant: quiescence passes -1 deliberately,
-             * so that it consults no killer slot, and the upper bound alone
-             * lets -1 through to killers[-1][0..1] -- eight bytes before the
-             * array, read for every quiet move at every qsearch node. It is
-             * harmless only by accident of the current link layout, and
-             * SEARCH_PINS depends on qsearch ordering, so the pinned counts
-             * were resting on out-of-bounds memory staying zero. */
-            if (use_killers && ply >= 0 && ply < MAX_DEPTH) {
-                if (m == killers[ply][0]) s = KILLER_BASE + 1;
-                else if (m == killers[ply][1]) s = KILLER_BASE;
-            }
-            if (!s && use_history)
-                s = history[b->turn][MV_FROM(m)][MV_TO(m)];
+            s = m == k0 ? KILLER_BASE + 1 : (m == k1 ? KILLER_BASE : 0);
+            if (!s && hist) s = history[b->turn][MV_FROM(m)][MV_TO(m)];
         }
+        /* The TT move overrides whatever it scored above. */
+        if (m == ttmove) s = 1 << 24;
         if (MV_PROMO(m)) s += (1 << 15);
         scores[i] = s;
     }
