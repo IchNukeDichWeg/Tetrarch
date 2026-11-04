@@ -1374,16 +1374,19 @@ static int32_t nn_b1[NN_L1];
 static int8_t nn_w2main[NN_L2 * NN_L1] __attribute__((aligned(64)));
 static int8_t nn_w2extra[NN_L2 * NN_EXTRA];
 static int32_t nn_b2[NN_L2];
+/* nn_b2 less 128 * (row sum of the extras' weights): see nn_l2's VNNI path. */
+static int32_t nn_b2vnni[NN_L2];
 static int8_t nn_w3[NN_L3 * NN_L2];
 /* The same L2 and L3 weights again, COLUMN-BLOCKED for the x86 path (see
  * nn_sums_run): block c holds input bytes 4c..4c+3 of every output row, row
  * after row, so one 32-byte load is those four inputs' weights for eight
- * outputs. nn_w2excol is the extras the same way, as int16 pairs padded
- * with a zero weight, because they are signed. Built by tt_load_net
+ * outputs. nn_w2col runs on past the 256 main inputs into two blocks of the
+ * extras, padded with a zero weight, which the VNNI path reads; AVX2 reads
+ * nn_w2excol instead, the extras as int16 pairs. Built by tt_load_net
  * alongside the row copies, which the scalar and NEON paths still read. */
 #define NN_EXPAIRS ((NN_EXTRA + 1) / 2)
-_Static_assert(NN_EXPAIRS == 4, "nn_l2 broadcasts four extras pairs");
-static int8_t nn_w2col[NN_L1 * NN_L2] __attribute__((aligned(64)));
+_Static_assert(NN_EXTRA < 8, "the extras pad to two 4-byte blocks");
+static int8_t nn_w2col[(NN_L1 + 8) * NN_L2] __attribute__((aligned(64)));
 static int16_t nn_w2excol[NN_EXPAIRS * NN_L2 * 2] __attribute__((aligned(64)));
 static int8_t nn_w3col[NN_L2 * NN_L3] __attribute__((aligned(64)));
 static int32_t nn_b3[NN_L3];
@@ -1629,9 +1632,16 @@ int tt_load_net(const TtNetView *v)
          * j/4, slot k, byte j%4. */
         int k, j;
         for (k = 0; k < NN_L2; k++)
-            for (j = 0; j < NN_L1; j++)
+            for (j = 0; j < NN_L1 + 8; j++)
                 nn_w2col[(j / 4) * (NN_L2 * 4) + k * 4 + j % 4] =
-                    v->w2[(size_t)k * (NN_L1 + NN_EXTRA) + j];
+                    j < NN_L1 + NN_EXTRA
+                        ? v->w2[(size_t)k * (NN_L1 + NN_EXTRA) + j] : 0;
+        for (k = 0; k < NN_L2; k++) {
+            int32_t sum = 0;
+            for (j = 0; j < NN_EXTRA; j++)
+                sum += v->w2[(size_t)k * (NN_L1 + NN_EXTRA) + NN_L1 + j];
+            nn_b2vnni[k] = v->b2[k] - 128 * sum;
+        }
         for (k = 0; k < NN_L2; k++)
             for (j = 0; j < NN_EXPAIRS * 2; j++)
                 nn_w2excol[(j / 2) * (NN_L2 * 2) + k * 2 + j % 2] = (int16_t)(
@@ -1713,18 +1723,34 @@ static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
  * reference keep the row-at-a-time loop. */
 #define NN_COLUMNS 1
 
-/* acc + four adjacent u8 x s8 products per int32 lane.
+/* acc + four adjacent u8 x s8 products per int32 lane, 256 bits wide.
  *
- * maddubs sums two products into one int16 WITH saturation. The widest pair
- * is 127 * -128 * 2 = -32,512 against a -32,768 floor (127 * 127 * 2 = 32,258
- * on the other side), so it cannot saturate -- but the margin is under 1%, so
- * it is a real constraint on the quantisation rather than a comfortable one.
- * Raising NN_CRELU past 127 would break this path silently. */
+ * With VNNI this is one vpdpbusd, which sums in int32 and has no saturation
+ * constraint at all. Without it, maddubs sums two products into one int16
+ * WITH saturation. The widest pair is 127 * -128 * 2 = -32,512 against a
+ * -32,768 floor (127 * 127 * 2 = 32,258 on the other side), so it cannot
+ * saturate -- but the margin is under 1%, so it is a real constraint on the
+ * quantisation rather than a comfortable one. Raising NN_CRELU past 127 would
+ * break the AVX2-only path silently, and only that path. */
+#if defined(__AVX512VNNI__) && defined(__AVX512VL__)
+#define NN_VNNI 1
+static inline __m256i nn_dpbusd(__m256i acc, __m256i a, __m256i b)
+{
+    return _mm256_dpbusd_epi32(acc, a, b);
+}
+#elif defined(__AVXVNNI__)
+#define NN_VNNI 1
+static inline __m256i nn_dpbusd(__m256i acc, __m256i a, __m256i b)
+{
+    return _mm256_dpbusd_avx_epi32(acc, a, b);
+}
+#else
 static inline __m256i nn_dpbusd(__m256i acc, __m256i a, __m256i b)
 {
     return _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(a, b),
                                                    _mm256_set1_epi16(1)));
 }
+#endif
 
 static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
 {
@@ -1741,31 +1767,111 @@ static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
     return _mm_cvtsi128_si32(lo);
 }
 
-_Static_assert(NN_L2 == 32 && NN_L3 == 32,
-               "nn_sums_run computes exactly 32 outputs");
+/* The vector the column-blocked layers accumulate in: a zmm where AVX-512
+ * VNNI is there to fill it, a ymm otherwise. NN_VPR is how many of them hold
+ * one layer's 32 int32 sums. */
+#if defined(__AVX512VNNI__) && defined(__AVX512BW__)
+#define NN_ZMM 1
+#define NN_VPR 2
+typedef __m512i NnVec;
+static inline NnVec nn_vzero(void) { return _mm512_setzero_si512(); }
+static inline NnVec nn_vbcast(int32_t v) { return _mm512_set1_epi32(v); }
+static inline NnVec nn_vloadu(const void *p) { return _mm512_loadu_si512(p); }
+static inline NnVec nn_vadd(NnVec a, NnVec b) { return _mm512_add_epi32(a, b); }
+static inline NnVec nn_vdp(NnVec acc, NnVec a, const int8_t *w)
+{
+    return _mm512_dpbusd_epi32(acc, a, _mm512_load_si512((const void *)w));
+}
+static inline void nn_vsplit(NnVec v, __m256i *s)
+{
+    s[0] = _mm512_castsi512_si256(v);
+    s[1] = _mm512_extracti64x4_epi64(v, 1);
+}
+#else
+#define NN_VPR 4
+typedef __m256i NnVec;
+static inline NnVec nn_vzero(void) { return _mm256_setzero_si256(); }
+static inline NnVec nn_vbcast(int32_t v) { return _mm256_set1_epi32(v); }
+static inline NnVec nn_vloadu(const void *p)
+{
+    return _mm256_loadu_si256((const __m256i *)p);
+}
+static inline NnVec nn_vadd(NnVec a, NnVec b) { return _mm256_add_epi32(a, b); }
+static inline NnVec nn_vdp(NnVec acc, NnVec a, const int8_t *w)
+{
+    return nn_dpbusd(acc, a, _mm256_load_si256((const __m256i *)w));
+}
+static inline void nn_vsplit(NnVec v, __m256i *s) { s[0] = v; }
+#endif
 
-/* `n` unsigned input bytes against the column-blocked weights `w`, into four
- * ymm of eight int32 sums, outputs 0..31 in order, starting from `bias`.
+/* Independent accumulator chains per output vector. maddubs+madd+add carries
+ * only the 1-cycle add from one block to the next, so one chain keeps up.
+ * vpdpbusd carries its whole ~5-cycle latency into the next block, so a
+ * single chain would leave it latency-bound at a fraction of its throughput.
+ * Measured with tt_bench_eval on a Sapphire Rapids Xeon, ns per eval:
+ *     zmm   groups 2 / 4 / 8     91.6 / 69.4 / 71.2
+ *     ymm (AVX-VNNI only, built -march=alderlake)
+ *           groups 1 / 2 / 4    132.4 / 91.3 / 106.8   (4 spills: 16 regs)
+ *     AVX2  groups 1 / 2        142.6 / 142.2 */
+#if defined(NN_ZMM)
+#define NN_GROUPS 4
+#elif defined(NN_VNNI)
+#define NN_GROUPS 2
+#else
+#define NN_GROUPS 1
+#endif
+_Static_assert((NN_L1 / 4) % NN_GROUPS == 0 && (NN_L2 / 4) % NN_GROUPS == 0
+               && NN_L2 == 32 && NN_L3 == 32,
+               "nn_sums_run hands out whole groups of 32-output blocks");
+
+/* One 32-output layer's running sums. */
+typedef struct { NnVec v[NN_GROUPS][NN_VPR]; } NnSums;
+
+static inline void nn_sums_init(NnSums *a, const int32_t *bias)
+{
+    int g, r;
+    for (r = 0; r < NN_VPR; r++) {
+        a->v[0][r] = nn_vloadu(bias + r * (32 / NN_VPR));
+        for (g = 1; g < NN_GROUPS; g++) a->v[g][r] = nn_vzero();
+    }
+}
+
+/* Four input bytes `four` against column block `wc`, into chain `g`. */
+static inline void nn_sums_block(NnSums *a, int g, int32_t four,
+                                 const int8_t *wc)
+{
+    NnVec xb = nn_vbcast(four);
+    int r;
+    for (r = 0; r < NN_VPR; r++)
+        a->v[g][r] = nn_vdp(a->v[g][r], xb, wc + r * (128 / NN_VPR));
+}
+
+/* `n` unsigned input bytes against the column-blocked weights `w`.
  *
  * No horizontal reduction anywhere: a block of four inputs is broadcast to
  * every lane and each lane is one output, so the 32 sums come out already in
  * vector form. The row-at-a-time loop this replaced paid a full 8-to-1
  * reduction and a scalar crelu per output, 32 times per layer. */
-static inline void nn_sums_run(const int8_t *x, int n, const int8_t *w,
-                               const int32_t *bias, __m256i *s)
+static inline void nn_sums_run(NnSums *a, const int8_t *x, int n,
+                               const int8_t *w)
 {
-    int c, r;
-    for (r = 0; r < 4; r++)
-        s[r] = _mm256_loadu_si256((const __m256i *)(bias + 8 * r));
-    for (c = 0; c < n / 4; c++) {
-        int32_t four;
-        __m256i xb;
-        const int8_t *wc = w + (size_t)c * 128;
-        memcpy(&four, x + 4 * c, 4);
-        xb = _mm256_set1_epi32(four);
-        for (r = 0; r < 4; r++)
-            s[r] = nn_dpbusd(s[r], xb,
-                             _mm256_load_si256((const __m256i *)(wc + 32 * r)));
+    int c, g;
+    for (c = 0; c < n / 4; c += NN_GROUPS)
+        for (g = 0; g < NN_GROUPS; g++) {
+            int32_t four;
+            memcpy(&four, x + 4 * (c + g), 4);
+            nn_sums_block(a, g, four, w + (size_t)(c + g) * 128);
+        }
+}
+
+/* The chains summed, as four ymm of eight int32: outputs 0..31 in order. */
+static inline void nn_sums_out(NnSums *a, __m256i *s)
+{
+    int g, r;
+    for (r = 0; r < NN_VPR; r++) {
+        for (g = 1; g < NN_GROUPS; g++)
+            a->v[0][r] = nn_vadd(a->v[0][r], a->v[g][r]);
+        nn_vsplit(a->v[0][r], s + r * (4 / NN_VPR));
     }
 }
 
@@ -1791,27 +1897,67 @@ static inline void nn_crelu32(__m256i a, __m256i b, __m256i c, __m256i d,
 static inline void nn_l1(const int32_t *acc, int8_t *x)
 {
     int j;
+#if defined(NN_ZMM)
+    /* nn_crelu32 64 at a time: the packs interleave four 128-bit lanes now,
+     * so the permute gathers dword m of every lane into quarter m. */
+    const __m512i order = _mm512_setr_epi32(0, 4, 8, 12, 1, 5, 9, 13,
+                                            2, 6, 10, 14, 3, 7, 11, 15);
+    for (j = 0; j < NN_L1; j += 64) {
+        __m512i p = _mm512_packs_epi16(
+            _mm512_packs_epi32(
+                _mm512_srai_epi32(_mm512_loadu_si512(acc + j), NN_SHIFT1),
+                _mm512_srai_epi32(_mm512_loadu_si512(acc + j + 16), NN_SHIFT1)),
+            _mm512_packs_epi32(
+                _mm512_srai_epi32(_mm512_loadu_si512(acc + j + 32), NN_SHIFT1),
+                _mm512_srai_epi32(_mm512_loadu_si512(acc + j + 48), NN_SHIFT1)));
+        p = _mm512_max_epi8(p, _mm512_setzero_si512());
+        _mm512_storeu_si512(x + j, _mm512_permutexvar_epi32(order, p));
+    }
+#else
     for (j = 0; j < NN_L1; j += 32)
         nn_crelu32(_mm256_loadu_si256((const __m256i *)(acc + j)),
                    _mm256_loadu_si256((const __m256i *)(acc + j + 8)),
                    _mm256_loadu_si256((const __m256i *)(acc + j + 16)),
                    _mm256_loadu_si256((const __m256i *)(acc + j + 24)),
                    NN_SHIFT1, x + j);
+#endif
 }
 
 /* L2. `x` is NN_L1 crelu bytes, then the extras as int8, then one zero.
  *
- * The extras run negative, so they cannot be maddubs's unsigned operand. They
- * go through madd_epi16 instead, as int16 pairs against int16 weights, which
- * is exact: |product pair| <= 2 * 127 * 128. This replaces a scalar tail per
- * row; see docs/AB.md for why CACHING that tail was rejected -- this does not
- * cache, it stops doing it seven multiplies at a time.
+ * The extras run negative, so they cannot be the unsigned operand of maddubs
+ * or vpdpbusd as they stand. With VNNI they go in offset by +128 -- the XOR
+ * flips each byte's sign bit, which is exactly that -- as two more column
+ * blocks, and the +128 * (row sum of the extras' weights) that adds is taken
+ * back out of the bias at load time (nn_b2vnni). Integer, so exact. maddubs
+ * cannot take the offset bytes, 255 * 127 * 2 saturates int16, so AVX2 runs
+ * them through madd_epi16 instead, as int16 pairs against int16 weights:
+ * exact too, |product pair| <= 2 * 127 * 128. Either way this replaces a
+ * scalar tail per row; see docs/AB.md for why CACHING that tail was rejected
+ * -- this does not cache, it stops doing it seven multiplies at a time.
  *
  * `extras` 0 drops the tail for tt_bench_nnue_stage. */
 static inline void nn_l2(const int8_t *x, int8_t *h1, int extras)
 {
+    NnSums a;
     __m256i s[4];
-    nn_sums_run(x, NN_L1, nn_w2col, nn_b2, s);
+#if defined(NN_VNNI)
+    nn_sums_init(&a, extras ? nn_b2vnni : nn_b2);
+    nn_sums_run(&a, x, NN_L1, nn_w2col);
+    if (extras) {
+        uint64_t e;
+        memcpy(&e, x + NN_L1, 8);
+        e ^= 0x8080808080808080ULL;
+        nn_sums_block(&a, 0, (int32_t)(uint32_t)e,
+                      nn_w2col + (size_t)NN_L1 / 4 * 128);
+        nn_sums_block(&a, 1 % NN_GROUPS, (int32_t)(uint32_t)(e >> 32),
+                      nn_w2col + ((size_t)NN_L1 / 4 + 1) * 128);
+    }
+    nn_sums_out(&a, s);
+#else
+    nn_sums_init(&a, nn_b2);
+    nn_sums_run(&a, x, NN_L1, nn_w2col);
+    nn_sums_out(&a, s);
     if (extras) {
         __m256i xe = _mm256_broadcastsi128_si256(_mm_cvtepi8_epi16(
             _mm_loadl_epi64((const __m128i *)(x + NN_L1))));
@@ -1827,13 +1973,17 @@ static inline void nn_l2(const int8_t *x, int8_t *h1, int extras)
                     _mm256_load_si256((const __m256i *)
                         (nn_w2excol + p * NN_L2 * 2 + r * 16))));
     }
+#endif
     nn_crelu32(s[0], s[1], s[2], s[3], NN_SHIFT2, h1);
 }
 
 static inline void nn_l3(const int8_t *h1, int8_t *h2)
 {
+    NnSums a;
     __m256i s[4];
-    nn_sums_run(h1, NN_L2, nn_w3col, nn_b3, s);
+    nn_sums_init(&a, nn_b3);
+    nn_sums_run(&a, h1, NN_L2, nn_w3col);
+    nn_sums_out(&a, s);
     nn_crelu32(s[0], s[1], s[2], s[3], NN_SHIFT2, h2);
 }
 #else

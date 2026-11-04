@@ -85,6 +85,69 @@ through the same aliased pairing and has not been re-run.
 
 ## Results
 
+### NNUE forward pass column-blocked on x86, plus VNNI -- two SHIPPED, bit-exact
+
+Two commits in `nnue_eval_for`, x86 only; NEON and `-DNN_SCALAR` keep the row
+loop. Signature 597,933, every per-position count and perft 5 (93,846,865)
+unchanged, full selftest green. A separate check compares C `tt_eval` with
+Python `Net.evaluate` on 300 random Teams+FFA positions over all 19 shipped
+nets, plus three synthetic full-range nets with all-(-128) and all-127 rows to
+hit the maddubs extremes, in all four perspectives. It ran on the native
+(AVX-512 VNNI), alderlake (AVX-VNNI only), x86-64-v3 (AVX2), x86-64-v2
+(scalar fallback) and `-DNN_SCALAR` builds: 9,300 evals each, 0 mismatches.
+
+**Column-blocked L2/L3 (AVX2).** The row loop paid a full 8-to-1 horizontal
+reduction and a scalar crelu for each of the 64 outputs. With the weights
+re-laid at load time so that block c is input bytes 4c..4c+3 of every row,
+each step broadcasts four inputs and each int32 lane accumulates one output:
+no reduction anywhere, and crelu is srai + two saturating packs + max(0) + one
+permute over the 32 outputs at once. The signed extras go through madd_epi16
+as int16 pairs. Nothing is cached; the extras-cache rejection above stands.
+
+**VNNI.** Where the compiler has it, vpdpbusd replaces maddubs + madd + add
+and has no int16 saturation constraint. With AVX-512 BW, zmm halves the
+instruction count. vpdpbusd carries its ~5-cycle latency from one block to
+the next, so the sums run in 4 (zmm) or 2 (ymm) independent chains. The
+extras ride the same stream, offset by +128 to make them unsigned, with the
+offset taken back out of the bias at load.
+
+Sapphire Rapids Xeon, 4 vCPUs shared, load 18-32. `tt_bench_eval` ns/call
+over the bench positions, best of 3 x 25 interleaved; the stage columns are
+`tt_bench_nnue_stage` cumulative prefixes, read as differences. HEAD's L2
+column absorbs ~8 ns of L1 crelu, which its truncated prefix lets the compiler
+drop because nothing reads it:
+
+```
+build                          eval  L2 main  L2 extras  L3+out
+HEAD, -march=native           298.7    177.2       26.6    95.0
+column AVX2 (native build)    144.0     98.5        4.4    24.0
++ VNNI zmm (native build)      59.8     33.0        1.2    13.3
++ VNNI ymm (-march=alderlake)  86.2     55.4        1.1    15.0
+```
+
+CPU s per bench round, rotated order, best of 8, each run with a null:
+HEAD -> both commits native **+30.19%** (null +2.20%); HEAD -> the AVX2 code
+built x86-64-v3 **+19.25%** (same run). Commit 1 -> commit 2 native
++10.59%, but that run's null was -6.83%, so it does not resolve the VNNI step
+alone. The first run implies about +9% (1.3019 / 1.1925), consistent with it
+but not proof. AVX-VNNI ymm (alderlake build) against commit 1 native was
++0.17% in the second run: no full-bench effect seen, although the microbench
+gain is clear. callgrind (x86-64-v3, so AVX2 only): nnue_eval_for 1,153.8M ->
+675.2M Ir (-41.5%), libtetrarch -14.0%.
+
+**Rejected inside this item:** chain counts other than the shipped ones
+(zmm 2 / 8 chains 91.6 / 71.2 ns against 69.4 at 4; AVX-VNNI ymm 1 / 4 chains
+132.4 / 106.8 against 91.3 at 2, where 4 spills on 16 registers). Skipping
+all-zero 4-byte input blocks was not built: only 7% (net-v5) to 22%
+(net-ffa1) of L2's input blocks are zero, against a mask-and-compress
+overhead and a data-dependent trip count. The row-wise multi-row variant
+(4-8 rows per pass with one combined hadd tree) was not built either:
+the column form needs no reduction at all, so it dominates it.
+
+Not measured: Apple NEON, which is untouched. The Teams/FFA split was not
+measured separately here, and the AB box is NEON, so none of this moves its
+numbers.
+
 ### Bit-exact speedups, 26 Sep -- three shipped, one CLOSED PRE-A/B
 
 Four items from the audit's speed section, each bit-exact: every bench
