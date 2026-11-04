@@ -2651,6 +2651,33 @@ def test_resume():
     nxt, lines = gen_data.resume_index(path)
     check("a truncated final line is not counted as a game",
           (nxt, lines) == (13, 5), "next=%d lines=%d" % (nxt, lines))
+
+    # ...and must not swallow the next one. Appending straight after the
+    # fragment glued the first resumed game onto it, so that game was written,
+    # reported, and unreadable -- and the next resume skipped past its index.
+    # Through main, at a game count already reached, so nothing is played.
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    subprocess.run([sys.executable, os.path.join(root, "gen_data.py"), "13",
+                    "--out", path, "--resume"], cwd=root,
+                   capture_output=True, timeout=120)
+    with open(path, "a") as fh:
+        fh.write(json.dumps({"i": 13, "moves": "a", "scores": [1],
+                             "result": 1.0}) + "\n")
+    nxt, lines = gen_data.resume_index(path)
+    check("a game appended after a truncated line is still readable",
+          (nxt, lines) == (14, 6), "next=%d lines=%d" % (nxt, lines))
+    # A record that is whole but lost its newline is a game, not a fragment.
+    with open(path, "a") as fh:
+        fh.write(json.dumps({"i": 14, "moves": "a", "scores": [1],
+                             "result": 1.0}))
+    gen_data.seal_tail(path)
+    with open(path, "a") as fh:
+        fh.write(json.dumps({"i": 15, "moves": "a", "scores": [1],
+                             "result": 1.0}) + "\n")
+    nxt, lines = gen_data.resume_index(path)
+    check("and a whole record missing only its newline is kept",
+          (nxt, lines) == (16, 8), "next=%d lines=%d" % (nxt, lines))
     os.remove(path)
 
 
