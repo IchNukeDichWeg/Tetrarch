@@ -12,8 +12,10 @@ Where Athena already made a choice, this matches it: a `Setup` option, and
 `position <setup>` / `position fen <FEN4>`.
 """
 
+import collections
 import os
 import sys
+import threading
 import time
 
 from tetrarch.board import (
@@ -28,6 +30,127 @@ from tetrarch import game
 from tetrarch.search import Limits, search, search_multi, MATE_SCORE
 
 NAME = "Tetrarch"
+
+#: One lock for every line written while a search runs. The input thread
+#: answers `isready` during a search, and print() writes the text and its
+#: newline separately, so without this a `readyok` can land inside an `info`
+#: line and the host reads neither.
+_OUT_LOCK = threading.Lock()
+
+
+def emit(text):
+    """Write one whole protocol line and flush it, safe from any thread."""
+    with _OUT_LOCK:
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+
+
+class _Stopped(Exception):
+    """Raised out of the per-depth callback when the host has sent `stop`."""
+
+
+class Inbox:
+    """stdin, read on its own thread so a search can still hear the host.
+
+    `go` used to run on the thread that reads stdin, so nothing sent during a
+    search was read until it returned. `stop` was documented as ignored on the
+    grounds that `go` "has already returned" -- true of a bounded search and
+    false of `go infinite`, a bare `go`, and a `go wtime ...` from a standard
+    UCI host (wtime names no seat here, so no clock binds): each searched to
+    depth 48, which is forever, and the only way out was to kill the process.
+    `isready` sent mid-search, which UCI says must be answered at once, waited
+    just as long, and hosts that time it out declare the engine dead.
+
+    So the reader thread queues lines for the main loop, except while a search
+    runs: then it answers `isready` itself and turns `stop` (and `quit`, and
+    end of input) into an event the search polls. The C core has no interrupt
+    hook, so the poll is between iterative-deepening depths -- `stop` takes
+    effect when the depth in progress completes, not mid-node. Everything else
+    sent during a search waits in order for the main loop, as before.
+    """
+
+    def __init__(self, stream):
+        self._lines = collections.deque()
+        self._cond = threading.Condition()
+        self._eof = False
+        self._searching = False
+        self.stop = threading.Event()
+        reader = threading.Thread(target=self._read, args=(stream,),
+                                  name="uci-input", daemon=True)
+        reader.start()
+
+    def _read(self, stream):
+        for raw in stream:
+            line = raw.strip()
+            if not line:
+                continue
+            with self._cond:
+                if not (self._searching and self._consume(line)):
+                    self._lines.append(line)
+                self._cond.notify_all()
+        with self._cond:
+            self._eof = True
+            # The host is gone. A search nobody can stop must not outlive it.
+            self.stop.set()
+            self._cond.notify_all()
+
+    def _consume(self, line):
+        """Handle a line that arrived mid-search. True if it is used up here.
+
+        Called with the lock held. `quit` sets the stop AND stays queued, so
+        the main loop prints the bestmove and then exits.
+        """
+        word = line.split()[0]
+        if word == "isready":
+            emit("readyok")
+            return True
+        if word == "stop":
+            self.stop.set()
+            return True
+        if word == "quit":
+            self.stop.set()
+        return False
+
+    def get(self):
+        """The next queued line, or None at end of input."""
+        with self._cond:
+            while not self._lines and not self._eof:
+                self._cond.wait()
+            return self._lines.popleft() if self._lines else None
+
+    def begin_search(self):
+        """Mark a search as running, and apply what is already queued for it.
+
+        `go infinite` and `stop` sent back to back can both be read before the
+        main loop has even started the search, which leaves the `stop` queued
+        as an ordinary command behind a search that never ends. So the queue
+        is scanned up to the next `go`: a `stop` there belongs to this search.
+        """
+        with self._cond:
+            self.stop.clear()
+            self._searching = True
+            if self._eof:
+                self.stop.set()
+            kept = collections.deque()
+            mine = True
+            for line in self._lines:
+                if line.split()[0] == "go":
+                    mine = False
+                if not (mine and self._consume(line)):
+                    kept.append(line)
+            self._lines = kept
+
+    def end_search(self):
+        with self._cond:
+            self._searching = False
+
+    def wait_for_stop(self):
+        """Block until `stop`, `quit` or end of input. UCI: under `go infinite`
+        the bestmove is withheld until the host asks for it, even when the
+        search has nothing left to do."""
+        with self._cond:
+            while not self.stop.is_set():
+                self._cond.wait()
 #: The evaluation the engine plays with unless told otherwise. Net v5 beats
 #: net v4 by +7.78 +/- 4.61 at fixed time and +10.50 +/- 4.59 at fixed nodes,
 #: both over 20,000 games (docs/AB.md). Derived at runtime, never a hardcoded
@@ -111,6 +234,9 @@ class Engine:
         #: None means "rebuild from scratch next time".
         self._replayed = None
         self.bundle = {}
+        #: The stdin reader, when there is one. None for an Engine driven
+        #: directly from Python (selftest.py), where nothing can send `stop`.
+        self.inbox = None
         self._load_default_net()
 
     def _load_default_net(self):
@@ -435,6 +561,7 @@ class Engine:
         """
         limits = Limits()
         seat = self.board.turn
+        infinite = False
         i = 0
         while i < len(args):
             token, value = args[i], None
@@ -443,6 +570,10 @@ class Engine:
                     value = int(args[i + 1])
                 except ValueError:
                     value = None
+            if token in ("depth", "nodes", "movetime") and value is None:
+                # Said rather than swallowed: a dropped limit leaves a search
+                # with no bound at all, which looks exactly like a hang.
+                emit("info string go %s needs a number; ignored" % token)
             if token == "depth" and value is not None:
                 limits.depth = value
             elif token == "nodes" and value is not None:
@@ -451,6 +582,7 @@ class Engine:
                 limits.movetime = value
             elif token == "infinite":
                 limits.depth = limits.max_depth
+                infinite = True
             elif len(token) > 3 and token[0].upper() in SEAT_NAMES:
                 # rtime/btime/ytime/gtime and rinc/binc/yinc/ginc: one clock
                 # per seat, because there is no white and black (PROTOCOL.md).
@@ -472,12 +604,24 @@ class Engine:
             # been overwritten (core.pv).
             moves = r.pv or core.pv(self.board, r.best) \
                 or ([r.best] if r.best else [])
-            print("info depth %d%s score %s nodes %d nps %d time %d pv %s"
-                  % (r.depth, "" if rank is None else " multipv %d" % rank,
-                     score_string(r.score), r.nodes, r.nps,
-                     int(r.elapsed * 1000),
-                     " ".join(move_str(m) for m in moves)))
+            emit("info depth %d%s score %s nodes %d nps %d time %d pv %s"
+                 % (r.depth, "" if rank is None else " multipv %d" % rank,
+                    score_string(r.score), r.nodes, r.nps,
+                    int(r.elapsed * 1000),
+                    " ".join(move_str(m) for m in moves)))
 
+        inbox = self.inbox
+        #: The best move of the last COMPLETED depth, for a search cut short
+        #: by `stop`: search() never returns in that case, so its Result is
+        #: read here instead.
+        last = [None]
+
+        def stopped():
+            if inbox is not None and inbox.stop.is_set():
+                raise _Stopped()
+
+        if inbox is not None:
+            inbox.begin_search()
         # One guard where the two arms converge, so the print below always
         # runs. A refused position falls back to the first legal move, which
         # is at least playable; with no legal move at all it is "0000".
@@ -486,7 +630,8 @@ class Engine:
                 def report(rs):
                     for rank, r in enumerate(rs, 1):
                         line(r, rank)
-                    sys.stdout.flush()
+                    last[0] = rs[0].best if rs else last[0]
+                    stopped()
 
                 results = search_multi(self.board, limits, self.multipv,
                                        report, self.history)
@@ -494,20 +639,29 @@ class Engine:
             else:
                 def report(r):
                     line(r)
-                    sys.stdout.flush()
+                    last[0] = r.best or last[0]
+                    stopped()
 
                 best = search(self.board, limits, report,
                               self.history).best
+            if infinite and inbox is not None:
+                inbox.wait_for_stop()
+        except _Stopped:
+            best = last[0]
         except Exception as exc:                                # noqa: BLE001
-            print("info string search failed: %s: %s"
-                  % (type(exc).__name__, exc))
+            emit("info string search failed: %s: %s"
+                 % (type(exc).__name__, exc))
             legal = gen.gen_legal(self.board)
             best = legal[0] if legal else None
-        print("bestmove %s" % (move_str(best) if best else "0000"))
+        finally:
+            if inbox is not None:
+                inbox.end_search()
+        emit("bestmove %s" % (move_str(best) if best else "0000"))
 
     def cmd_stop(self, _args):
-        # Single-threaded: `go` has already returned by the time this is read.
-        # Documented as a divergence in PROTOCOL.md.
+        # Reached only when no search is running: a `stop` sent during one is
+        # taken by the Inbox and never queued. Nothing to stop, so nothing to
+        # say -- UCI hosts send a defensive `stop` before every `go`.
         pass
 
     def cmd_bench(self, _args):
@@ -581,10 +735,11 @@ def main():
         "print": engine.cmd_print,
         "d": engine.cmd_print,
     }
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    engine.inbox = Inbox(sys.stdin)
+    while True:
+        line = engine.inbox.get()
+        if line is None:
+            break
         parts = line.split()
         cmd, args = parts[0], parts[1:]
         if cmd == "quit":

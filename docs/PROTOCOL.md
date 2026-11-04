@@ -18,7 +18,7 @@ Section references (§n) are to `RULES.md`.
 | 2 | `wtime`/`btime`, `winc`/`binc` | `rtime`/`btime`/`ytime`/`gtime`, `rinc`/`binc`/`yinc`/`ginc` | Four clocks. Note `btime` means **Blue**, not black |
 | 3 | moves are 4-5 chars over 64 squares | 4-6 chars over 196 (`a1`-`n14`), e.g. `h2h3`, `b7c8q` | 14×14 file and rank names |
 | 4 | `score mate N` counts moves | counts the mating **team's** moves | The rotation gives each team two plies in four; a ply count would read double |
-| 5 | `stop` interrupts the search | accepted and ignored | Single-threaded: `go` has already returned. No multithreading until single-thread is fast and correct |
+| 5 | `stop` interrupts the search | honoured at the next completed depth | The search is single-threaded and the C core has no interrupt hook, so `stop` is polled between iterative-deepening depths. `isready` during a search is answered at once |
 | 6 | -- | `option name Setup` combo: `classic`, `modern`, `by`, `byg`, `rg` | Athena's shape, extended to all five (§3) |
 | 7 | -- | `option name Mode` combo: `teams`, `ffa` | Two different games (§2) |
 | 8 | -- | `bench`, `perft <depth>`, `print` / `d` | Debug commands; `bench` prints the commit signature |
@@ -54,6 +54,14 @@ go infinite
 Only the clock belonging to the seat to move is read; the other three are
 accepted and ignored. **`btime` is Blue's clock, not black's** -- the collision
 with standard UCI is unavoidable and is the reason this table exists.
+
+A `go` with no bound that applies -- bare `go`, `go infinite`, or a standard
+host's `go wtime ... btime ...` while Red, Yellow or Green is to move, since
+`wtime` names no seat -- searches until `stop`. `stop` takes effect when the
+depth in progress completes, so it can lag by one iteration; the bestmove is
+the last completed depth's. Under `go infinite` the bestmove is withheld until
+`stop` (or `quit`, or end of input) even if the search finishes first, as UCI
+requires.
 
 Pick exactly one instrument. `match.py` refuses a mixture, because mixing
 fixed-nodes and fixed-time inside one campaign invalidates it.
@@ -93,7 +101,8 @@ counted in TEAM moves, not plies, since a team moves once per two seats.
   asks for (ranking every root move for one fixed root needs a C entry that
   takes the root explicitly); the single line is streamed under the multi
   contract. FFA itself searches since v8.
-* **`stop` / `ponder`** -- single-threaded (divergence 5).
+* **`ponder`** -- `go ponder` is read as an ordinary `go`, and `stop` is
+  depth-granular rather than immediate (divergence 5).
 * **Repetition and the 50-move rule inside the search** -- `match.py` adjudicates
   the 50-move draw at the game level. Item 2 and 3 in §14 are still open, and
   wiring an assumed rule into the search before it is settled would bake in the

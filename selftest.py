@@ -25,6 +25,7 @@ import os
 import random
 import sys
 import tempfile
+import threading
 import time
 
 from tetrarch.board import (
@@ -3714,6 +3715,71 @@ def test_protocol_contracts():
     out = uci(["position fen4 " + DEAD_SEAT_FEN4, "go depth 2"]).stdout
     check("go answers with a bestmove on a position the search refuses",
           "bestmove " in out, out.strip().splitlines()[-1:] or ["no output"])
+
+    # --- stop and isready during a search ----------------------------------
+    # `go` ran on the thread reading stdin, so `stop` was never read while a
+    # search ran. `go infinite`, a bare `go` and a standard host's `go wtime`
+    # (wtime names no seat) each searched to depth 48 with no way out, and an
+    # `isready` sent meanwhile -- which UCI says must be answered at once --
+    # waited just as long. A watchdog kills the engine, so a regression reads
+    # as a failed check rather than a hung ladder.
+    proc = subprocess.Popen([sys.executable, os.path.join(root, "uci.py")],
+                            cwd=root, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            text=True, bufsize=1)
+    watchdog = threading.Timer(60, proc.kill)
+    watchdog.start()
+
+    def send(*lines):
+        for text in lines:
+            proc.stdin.write(text + "\n")
+        proc.stdin.flush()
+
+    def read_until(prefix):
+        seen = []
+        for text in proc.stdout:
+            seen.append(text.strip())
+            if text.startswith(prefix):
+                break
+        return seen
+
+    try:
+        send("position startpos", "go infinite")
+        read_until("info depth 1 ")
+        send("isready")
+        seen = read_until("readyok")
+        check("isready during go infinite is answered before any bestmove",
+              seen[-1:] == ["readyok"]
+              and not any(l.startswith("bestmove") for l in seen),
+              seen[-1:] or "no output")
+        send("stop")
+        seen = read_until("bestmove")
+        check("stop ends go infinite with a bestmove",
+              seen[-1:] and seen[-1].startswith("bestmove h"), seen[-1:])
+        # Both lines can be read before the search starts, leaving the stop
+        # queued behind a search that never ends.
+        send("go infinite", "stop")
+        seen = read_until("bestmove")
+        check("and a stop sent right behind go is not lost",
+              seen[-1:] and seen[-1].startswith("bestmove"), seen[-1:])
+        send("go wtime 1000 btime 1000", "stop")
+        seen = read_until("bestmove")
+        check("as is one behind a go whose clocks bind no seat",
+              seen[-1:] and seen[-1].startswith("bestmove"), seen[-1:])
+        send("go infinite")
+        proc.stdin.close()
+        seen = read_until("bestmove")
+        proc.wait(timeout=30)
+        check("end of input stops a search and the engine exits",
+              seen[-1:] and seen[-1].startswith("bestmove")
+              and proc.returncode == 0,
+              "%s, exit %r" % (seen[-1:], proc.returncode))
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        check("the stop/isready exchange completes", False, repr(exc))
+    finally:
+        watchdog.cancel()
+        if proc.poll() is None:
+            proc.kill()
 
 
 
