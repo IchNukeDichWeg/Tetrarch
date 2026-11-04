@@ -188,10 +188,17 @@ class UciEngine:
 
     def close(self):
         try:
-            self._send("quit")
-            self.proc.wait(timeout=5)
+            if self.proc.poll() is None:
+                self._send("quit")
+                self.proc.wait(timeout=5)
         except (OSError, subprocess.TimeoutExpired, ValueError):
             self.proc.kill()
+        # A dead engine's pipe still holds unflushed text; closing it here
+        # keeps the BrokenPipeError out of interpreter shutdown.
+        try:
+            self.proc.stdin.close()
+        except (OSError, ValueError):
+            pass
 
 
 _ENGINE_CACHE = {}
@@ -209,9 +216,27 @@ def get_engine(side, command, setup, mode, hash_mb=16, net=None, opts=()):
     if command == RANDOM_ENGINE:
         return RANDOM_ENGINE
     key = (side, command, setup, mode, hash_mb, net, opts)
-    if key not in _ENGINE_CACHE:
-        _ENGINE_CACHE[key] = UciEngine(command, setup, mode, hash_mb, net, opts)
-    engine = _ENGINE_CACHE[key]
+    engine = _ENGINE_CACHE.get(key)
+    # A process that died in an earlier game is replaced, not reused. It used
+    # to stay cached, so one crash turned every later game in that worker into
+    # "engine start: BrokenPipeError" -- measured, 11 of 12 games of a run lost
+    # to a single crash in game 2, every rotation after it incomplete and
+    # dropped from the Elo. The crash itself is still scored where it happened.
+    #
+    # poll() alone is not enough: the pipe reads EOF a moment before the
+    # process has finished exiting, so a crash in the last game can still look
+    # alive here. A newgame that fails gets one fresh process before the game
+    # is given up as an engine-start error.
+    if engine is not None:
+        if engine.proc.poll() is None:
+            try:
+                engine.newgame()
+                return engine
+            except (OSError, RuntimeError, ValueError):
+                pass
+        engine.close()
+    engine = UciEngine(command, setup, mode, hash_mb, net, opts)
+    _ENGINE_CACHE[key] = engine
     engine.newgame()
     return engine
 

@@ -3600,6 +3600,71 @@ def test_match_log_header():
         check("and says its instrument is unknown",
               "no header line" in run.stderr)
 
+    # --- one engine crash must not take the rest of the run with it --------
+    # A process that died stayed in the worker's engine cache, so every later
+    # game in that worker came back "engine start: BrokenPipeError": one crash
+    # in game 2 lost 11 of 12 games. The fixture plays the first legal move
+    # and exits on its 5th `go`, so EVERY game it is in ends on its crash --
+    # what must not happen is a game that never starts.
+    import match
+    with tempfile.TemporaryDirectory() as d:
+        flaky = os.path.join(d, "flaky.py")
+        with open(flaky, "w") as fh:
+            fh.write(FLAKY_ENGINE)
+        cmd = "%s %s %s" % (sys.executable, flaky, root)
+        records = []
+        try:
+            for job in [(i, 3 + i // 4, i % 4, "classic", MODE_TEAMS, 4,
+                         match.RANDOM_ENGINE, cmd, "go nodes 100", i, False,
+                         None, None, 16, (), ()) for i in range(6)]:
+                records.append(match.play_game(job))
+        finally:
+            for engine in match._ENGINE_CACHE.values():
+                if engine is not match.RANDOM_ENGINE:
+                    engine.close()
+            match._ENGINE_CACHE.clear()
+        starts = [r for r in records if r and r.get("error")]
+        crashes = [r for r in records
+                   if r and "engine failure" in (r.get("reason") or "")]
+        check("an engine that died is replaced for the next game",
+              not starts and len(crashes) == len(records),
+              "%d engine-start errors, %d crashes scored, of %d games"
+              % (len(starts), len(crashes), len(records)))
+
+
+#: A protocol-speaking engine that plays its first legal move and exits on its
+#: fifth `go`. argv[1] is the repo root.
+FLAKY_ENGINE = '''
+import sys
+sys.path.insert(0, sys.argv[1])
+from tetrarch.board import Board, MODE_TEAMS, MODE_FFA, move_str
+from tetrarch import movegen as gen, game
+
+mode, board, gos = MODE_TEAMS, None, 0
+for line in sys.stdin:
+    parts = line.split()
+    if not parts:
+        continue
+    if parts[0] == "uci":
+        print("uciok", flush=True)
+    elif parts[0] == "isready":
+        print("readyok", flush=True)
+    elif parts[:4] == ["setoption", "name", "Mode", "value"]:
+        mode = MODE_FFA if parts[4] == "ffa" else MODE_TEAMS
+    elif parts[0] == "position":
+        board = Board.from_fen4(parts[2], mode)
+        if "moves" in parts:
+            for token in parts[parts.index("moves") + 1:]:
+                game.play_token(board, token)
+    elif parts[0] == "go":
+        gos += 1
+        if gos == 5:
+            sys.exit(1)
+        print("bestmove %s" % move_str(gen.gen_legal(board)[0]), flush=True)
+    elif parts[0] == "quit":
+        break
+'''
+
 
 def test_bench_tooling():
     section("bench.py instruments")
