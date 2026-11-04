@@ -1400,7 +1400,8 @@ static int nn_version = 1;
  * without going through make/unmake fails the comparison and forces a
  * refresh, so a missed path degrades to the old cost rather than to a wrong
  * evaluation. */
-static int32_t nn_acc[4][NN_L1];
+/* 64-byte aligned for the aligned zmm loads in nn_apply. */
+static int32_t nn_acc[4][NN_L1] __attribute__((aligned(64)));
 static uint64_t nn_acc_key;
 static int nn_acc_ok = 0;
 
@@ -1440,29 +1441,186 @@ static void nn_row(int persp, int feature, int sign)
  * The queue is bounded and flushes when full, so a pathological line costs
  * time rather than correctness. */
 #define NN_PEND_MAX 1024
-typedef struct { int32_t feature; int32_t sign; } NnPend;
-static NnPend nn_pend[4][NN_PEND_MAX];
+/* One entry is `feature << 1 | (sign < 0)`: an entry's exact inverse is
+ * `e ^ 1`, so the cancellation test is a single compare. */
+static int32_t nn_pend[4][NN_PEND_MAX];
 static int nn_pend_n[4];
 
+/* Apply a flush's rows in ONE pass over the accumulator.
+ *
+ * nn_flush used to call nn_row once per queued row, and every nn_row is a
+ * full read-modify-write of the 1 KB accumulator. A flush is 5.9 rows on
+ * average over the bench (2,231,897 rows in 379,536 flushes), so most of that
+ * traffic was the accumulator going out to L1 and straight back. Here a slice
+ * of it is held in registers while every row's slice is added or subtracted
+ * into it, and it is loaded and stored once per flush instead of once per row.
+ * The caller splits the rows into an add list and a subtract list, so the
+ * inner loops carry no sign branch.
+ *
+ * Bit-exact: the accumulator is int32 and is never clamped or saturated, the
+ * widened int16 weights are added exactly, and integer addition is
+ * associative, so the order the rows land in cannot change a bit of it. No
+ * partial sum is near overflow: |w1| < 2^15 and a queue is at most 1,024 rows.
+ *
+ * Intrinsics rather than the plain loop because neither plain form came out
+ * well. Written as a fused C loop over a local slice, GCC vectorises it but
+ * round-trips the slice through a stack copy at every pass: 392M instructions
+ * in nn_flush over the bench against 350M for the old row-at-a-time loop,
+ * i.e. worse. GCC's generic vector extensions kept the slice on the stack
+ * entirely under AVX2. -DNN_SCALAR forces the reference loop, as for nn_dot,
+ * and it is also what NEON gets: the compiler vectorises it by itself. A
+ * first attempt at vectorising nn_row alone was 4% slower (docs/AB.md, lazy
+ * perspectives); this is a different change -- it removes accumulator
+ * traffic rather than speeding up the arithmetic the compiler already
+ * vectorised. */
+#if !defined(NN_SCALAR) && (defined(__AVX512BW__) || defined(__AVX2__))
+#include <immintrin.h>
+#endif
+#if !defined(NN_SCALAR) && defined(__AVX512BW__)
+/* 128 lanes = 8 zmm per pass, two passes. */
+static void nn_apply(int32_t *acc, const int32_t *adds, int na,
+                     const int32_t *subs, int ns)
+{
+    int c, i;
+    for (c = 0; c < NN_L1; c += 128) {
+        const int16_t *w = nn_w1 + c;
+        __m512i t0 = _mm512_load_si512((const void *)(acc + c + 0));
+        __m512i t1 = _mm512_load_si512((const void *)(acc + c + 16));
+        __m512i t2 = _mm512_load_si512((const void *)(acc + c + 32));
+        __m512i t3 = _mm512_load_si512((const void *)(acc + c + 48));
+        __m512i t4 = _mm512_load_si512((const void *)(acc + c + 64));
+        __m512i t5 = _mm512_load_si512((const void *)(acc + c + 80));
+        __m512i t6 = _mm512_load_si512((const void *)(acc + c + 96));
+        __m512i t7 = _mm512_load_si512((const void *)(acc + c + 112));
+#define NN_W(k) _mm512_cvtepi16_epi32( \
+                    _mm256_loadu_si256((const __m256i *)(row + 16 * (k))))
+        for (i = 0; i < na; i++) {
+            const int16_t *row = w + adds[i];
+            t0 = _mm512_add_epi32(t0, NN_W(0)); t1 = _mm512_add_epi32(t1, NN_W(1));
+            t2 = _mm512_add_epi32(t2, NN_W(2)); t3 = _mm512_add_epi32(t3, NN_W(3));
+            t4 = _mm512_add_epi32(t4, NN_W(4)); t5 = _mm512_add_epi32(t5, NN_W(5));
+            t6 = _mm512_add_epi32(t6, NN_W(6)); t7 = _mm512_add_epi32(t7, NN_W(7));
+        }
+        for (i = 0; i < ns; i++) {
+            const int16_t *row = w + subs[i];
+            t0 = _mm512_sub_epi32(t0, NN_W(0)); t1 = _mm512_sub_epi32(t1, NN_W(1));
+            t2 = _mm512_sub_epi32(t2, NN_W(2)); t3 = _mm512_sub_epi32(t3, NN_W(3));
+            t4 = _mm512_sub_epi32(t4, NN_W(4)); t5 = _mm512_sub_epi32(t5, NN_W(5));
+            t6 = _mm512_sub_epi32(t6, NN_W(6)); t7 = _mm512_sub_epi32(t7, NN_W(7));
+        }
+#undef NN_W
+        _mm512_store_si512((void *)(acc + c + 0), t0);
+        _mm512_store_si512((void *)(acc + c + 16), t1);
+        _mm512_store_si512((void *)(acc + c + 32), t2);
+        _mm512_store_si512((void *)(acc + c + 48), t3);
+        _mm512_store_si512((void *)(acc + c + 64), t4);
+        _mm512_store_si512((void *)(acc + c + 80), t5);
+        _mm512_store_si512((void *)(acc + c + 96), t6);
+        _mm512_store_si512((void *)(acc + c + 112), t7);
+    }
+}
+#elif !defined(NN_SCALAR) && defined(__AVX2__)
+/* 64 lanes = 8 ymm per pass, four passes. All 16 ymm would leave no
+ * register for the widened row. */
+static void nn_apply(int32_t *acc, const int32_t *adds, int na,
+                     const int32_t *subs, int ns)
+{
+    int c, i;
+    for (c = 0; c < NN_L1; c += 64) {
+        const int16_t *w = nn_w1 + c;
+        __m256i t0 = _mm256_load_si256((const __m256i *)(acc + c + 0));
+        __m256i t1 = _mm256_load_si256((const __m256i *)(acc + c + 8));
+        __m256i t2 = _mm256_load_si256((const __m256i *)(acc + c + 16));
+        __m256i t3 = _mm256_load_si256((const __m256i *)(acc + c + 24));
+        __m256i t4 = _mm256_load_si256((const __m256i *)(acc + c + 32));
+        __m256i t5 = _mm256_load_si256((const __m256i *)(acc + c + 40));
+        __m256i t6 = _mm256_load_si256((const __m256i *)(acc + c + 48));
+        __m256i t7 = _mm256_load_si256((const __m256i *)(acc + c + 56));
+#define NN_W(k) _mm256_cvtepi16_epi32( \
+                    _mm_loadu_si128((const __m128i *)(row + 8 * (k))))
+        for (i = 0; i < na; i++) {
+            const int16_t *row = w + adds[i];
+            t0 = _mm256_add_epi32(t0, NN_W(0)); t1 = _mm256_add_epi32(t1, NN_W(1));
+            t2 = _mm256_add_epi32(t2, NN_W(2)); t3 = _mm256_add_epi32(t3, NN_W(3));
+            t4 = _mm256_add_epi32(t4, NN_W(4)); t5 = _mm256_add_epi32(t5, NN_W(5));
+            t6 = _mm256_add_epi32(t6, NN_W(6)); t7 = _mm256_add_epi32(t7, NN_W(7));
+        }
+        for (i = 0; i < ns; i++) {
+            const int16_t *row = w + subs[i];
+            t0 = _mm256_sub_epi32(t0, NN_W(0)); t1 = _mm256_sub_epi32(t1, NN_W(1));
+            t2 = _mm256_sub_epi32(t2, NN_W(2)); t3 = _mm256_sub_epi32(t3, NN_W(3));
+            t4 = _mm256_sub_epi32(t4, NN_W(4)); t5 = _mm256_sub_epi32(t5, NN_W(5));
+            t6 = _mm256_sub_epi32(t6, NN_W(6)); t7 = _mm256_sub_epi32(t7, NN_W(7));
+        }
+#undef NN_W
+        _mm256_store_si256((__m256i *)(acc + c + 0), t0);
+        _mm256_store_si256((__m256i *)(acc + c + 8), t1);
+        _mm256_store_si256((__m256i *)(acc + c + 16), t2);
+        _mm256_store_si256((__m256i *)(acc + c + 24), t3);
+        _mm256_store_si256((__m256i *)(acc + c + 32), t4);
+        _mm256_store_si256((__m256i *)(acc + c + 40), t5);
+        _mm256_store_si256((__m256i *)(acc + c + 48), t6);
+        _mm256_store_si256((__m256i *)(acc + c + 56), t7);
+    }
+}
+#else
+static void nn_apply(int32_t *acc, const int32_t *adds, int na,
+                     const int32_t *subs, int ns)
+{
+    int i, j;
+    for (i = 0; i < na; i++) {
+        const int16_t *row = nn_w1 + adds[i];
+        for (j = 0; j < NN_L1; j++) acc[j] += row[j];
+    }
+    for (i = 0; i < ns; i++) {
+        const int16_t *row = nn_w1 + subs[i];
+        for (j = 0; j < NN_L1; j++) acc[j] -= row[j];
+    }
+}
+#endif
+
+/* REJECTED here, so it is not re-derived: cancelling inverse pairs that are
+ * NOT adjacent in the queue. They exist -- a sibling line replaying a move
+ * the previous line also made leaves +f ... -f with other entries between --
+ * and they are 526,518 of the bench's 2,231,897 flushed rows (23.6%). But
+ * pairing them off (a generation-stamped last-index-per-feature table, one
+ * lookup per entry) saved only 6.9M instructions of 2,765M (0.25%), and the
+ * cache simulation showed why: D1 read misses in nn_flush were unchanged
+ * (4.59M both ways). The rows it skips were already L1 hits -- the second of
+ * a pair re-reads the row the first just loaded, and the first is a feature
+ * the earlier line's evaluation applied moments before. A forward scan for
+ * the inverse in a 64-entry window cost 30M instructions MORE than it saved.
+ * The FFA search, which queues only the root seat, flushes short queues at
+ * every evaluation, and there the table was a net LOSS: nn_flush 89.6M ->
+ * 99.3M on the FFA position, because most queues are too short to hold a
+ * pair and still pay the pass. (callgrind, one bench round, x86-64-v3.) */
 static void nn_flush(int persp)
 {
-    int i;
-    for (i = 0; i < nn_pend_n[persp]; i++)
-        nn_row(persp, nn_pend[persp][i].feature, nn_pend[persp][i].sign);
+    int n = nn_pend_n[persp], i, na = 0, ns = 0;
+    int32_t *q = nn_pend[persp];
+    int32_t subs[NN_PEND_MAX];
+    if (n == 0) return;
     nn_pend_n[persp] = 0;
+    for (i = 0; i < n; i++) {
+        int32_t e = q[i];
+        /* Row offsets into nn_w1. Adds are compacted into q itself, which
+         * is being emptied; the write index never passes the read index. */
+        if (e & 1) subs[ns++] = (e >> 1) * NN_L1;
+        else       q[na++] = (e >> 1) * NN_L1;
+    }
+    nn_apply(nn_acc[persp], q, na, subs, ns);
 }
 
 static void nn_push(int persp, int feature, int sign)
 {
     int n = nn_pend_n[persp];
-    if (n > 0 && nn_pend[persp][n - 1].feature == feature
-              && nn_pend[persp][n - 1].sign == -sign) {
+    int32_t e = feature * 2 + (sign < 0);
+    if (n > 0 && nn_pend[persp][n - 1] == (e ^ 1)) {
         nn_pend_n[persp] = n - 1;
         return;
     }
     if (n == NN_PEND_MAX) { nn_flush(persp); n = 0; }
-    nn_pend[persp][n].feature = feature;
-    nn_pend[persp][n].sign = sign;
+    nn_pend[persp][n] = e;
     nn_pend_n[persp] = n + 1;
 }
 
