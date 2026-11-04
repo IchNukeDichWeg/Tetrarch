@@ -1160,47 +1160,46 @@ static int surely_legal(uint32_t m, int king, const Pin *pins, int npins,
  * scan on every move of every position it samples. */
 static void compute_evasions(const TtBoard *b, int me, int king, uint64_t ev[4])
 {
-    int i;
+    unsigned hm = 0;
+    int i, c, n;
     ev[0] = ev[1] = ev[2] = ev[3] = ~0ULL;
+    /* The same probes as tt_is_attacked, collecting every checker instead of
+     * stopping at the first; see there for the tables and the folding of the
+     * king and pawn probes into each ray's first step. */
+    for (c = 0; c < 4; c++)
+        if (b->alive[c] && !same_team(b->mode, c, me)) hm |= 1u << c;
 #define EV_ONLY(s) do {                                                    \
         uint64_t keep_ = ev[(s) >> 6] & (1ULL << ((s) & 63));              \
         ev[0] = ev[1] = ev[2] = ev[3] = 0;                                 \
         ev[(s) >> 6] = keep_;                                              \
     } while (0)
-    for (i = 0; i < 8; i++) {
-        int t = (king + P.knight_deltas[i]) & 255;
-        uint8_t p;
-        if (!P.valid[t]) continue;
-        p = b->sq[t];
-        if (p && P.pc_type[p] == KNIGHT && hostile(b, p, me)) EV_ONLY(t);
+    n = kn_n[king];
+    for (i = 0; i < n; i++) {
+        int t = kn_to[king][i];
+        uint8_t p = b->sq[t];
+        if ((att_class[p] & AC_KNIGHT) && (att_cbit[p] & hm)) EV_ONLY(t);
     }
     for (i = 0; i < 8; i++) {
-        int t = (king + P.queen_dirs[i]) & 255;
+        int d = P.queen_dirs[i], t = (king + d) & 255;
+        unsigned want = att_dir_class[i];
         uint8_t p;
         if (!P.valid[t]) continue;
         p = b->sq[t];
-        if (p && P.pc_type[p] == KING && hostile(b, p, me)) EV_ONLY(t);
-    }
-    for (i = 0; i < 4; i++) {
-        int d = P.diag[i], t = (king - d) & 255;
-        uint8_t p;
-        if (!P.valid[t]) continue;
-        p = b->sq[t];
-        if (p && P.pc_type[p] == PAWN && hostile(b, p, me)) {
-            int c = P.pc_color[p];
-            if (P.pawn_takes[c][0] == d || P.pawn_takes[c][1] == d) EV_ONLY(t);
+        if (p) {
+            if (att_cbit[p] & hm) {
+                unsigned cl = att_class[p];
+                const int32_t *tk = P.pawn_takes[P.pc_color[p]];
+                /* Adjacent: its own square is the whole answer. */
+                if ((cl & (want | AC_KING))
+                    || ((cl & AC_PAWN) && (tk[0] == -d || tk[1] == -d)))
+                    EV_ONLY(t);
+            }
+            continue;
         }
-    }
-#undef EV_ONLY
-    for (i = 0; i < 8; i++) {
-        int d = P.queen_dirs[i], diag = is_diag(d);
-        int t = (king + d) & 255;
-        while (P.valid[t]) {
-            uint8_t p = b->sq[t];
+        for (t = (t + d) & 255; P.valid[t]; t = (t + d) & 255) {
+            p = b->sq[t];
             if (p) {
-                int pt = P.pc_type[p];
-                if (hostile(b, p, me)
-                    && (queenish(pt) || (diag ? pt == BISHOP : pt == ROOK))) {
+                if ((att_class[p] & want) && (att_cbit[p] & hm)) {
                     /* The line from the king out to the checker, inclusive. */
                     uint64_t line[4] = { 0, 0, 0, 0 };
                     int s = king;
@@ -1213,9 +1212,9 @@ static void compute_evasions(const TtBoard *b, int me, int king, uint64_t ev[4])
                 }
                 break;
             }
-            t = (t + d) & 255;
         }
     }
+#undef EV_ONLY
 }
 
 /* 1 when the move certainly leaves this seat's king attacked; only meaningful
