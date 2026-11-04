@@ -4155,6 +4155,16 @@ def test_protocol_contracts():
 
 
     # --- the GUI answers bad input with 400, never 500 ---------------------
+    # flask is gui/app.py's dependency and nothing else's, so a box without it
+    # skips these as it skips the JS differential without node: setup.sh warns
+    # rather than dies when flask will not install, and the ladder must not
+    # then fail on a GUI the box cannot serve anyway. Installed but broken
+    # still fails below.
+    import importlib.util
+    if importlib.util.find_spec("flask") is None:
+        check("flask available for the GUI checks", True,
+              "skipped: flask is not installed, and only the GUI needs it")
+        return
     try:
         sys.path.insert(0, os.path.join(root, "gui"))
         import importlib

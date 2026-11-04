@@ -12,12 +12,13 @@
 # thing that proves the C core still agrees with the Python reference.
 #
 # No virtualenv: numpy and flask go into the system python3, so every command
-# in this repo is a plain `python3 something.py`. On a distro python that is
-# marked externally managed (PEP 668) pip needs --break-system-packages, which
-# this adds only after a plain install has been refused. That is the trade: two
-# packages can now collide with OS-managed ones. On a disposable A/B box that
-# is fine; on a machine you care about, `./setup.sh --no-install` and install
-# numpy and flask however you prefer.
+# in this repo is a plain `python3 something.py`. numpy is required; flask is
+# only the GUI's, so failing to install it is a warning, not a stop. On a
+# distro python marked externally managed (PEP 668) pip needs
+# --break-system-packages, added only after a plain install has been refused.
+# That is the trade: packages can now collide with OS-managed ones. On a
+# disposable A/B box that is fine; on a machine you care about, run
+# `./setup.sh --no-install` and install numpy and flask however you prefer.
 #
 # No environment-variable feature gates. Every knob here is a visible constant
 # or a flag.
@@ -234,37 +235,68 @@ fi
 say "interpos: ${SEMFLAG:-default (flag not accepted)}"
 
 # --- python packages ---------------------------------------------------------
+#
+# One package at a time, so a failure names the package and costs only that
+# package: installed together, flask failing also left numpy uninstalled.
+#
+# numpy is the engine's -- the trainer, the NNUE tooling and the selftest need
+# it -- so it is fatal. flask is gui/app.py's and nothing else's, so a flask
+# that will not install is a warning: the engine, match.py and the selftest
+# ladder all run without it, and a fresh A/B box that cannot serve the viewer
+# must still be able to run a campaign. It used to die here instead.
 
-missing=""
+pip_log=$(mktemp "${TMPDIR:-/tmp}/tetrarch-pip.XXXXXX")
+trap 'rm -f "$pip_log"' EXIT
+
+pip_install() {
+    # pip_install <package>: politest first; 0 when it imports afterwards.
+    python3 -m pip install --quiet --user --no-warn-script-location "$1" \
+        2>"$pip_log" && return 0
+    # PEP 668: distro and Homebrew pythons refuse to be written to without
+    # this. Only reached after the polite attempt has already failed.
+    say "python:   $1: externally managed, retrying with --break-system-packages"
+    python3 -m pip install --quiet --user --break-system-packages \
+        --no-warn-script-location "$1" 2>"$pip_log" && return 0
+    python3 -m pip install --quiet --break-system-packages \
+        --no-warn-script-location "$1" 2>"$pip_log" && return 0
+    # Debian ships some of flask's dependencies -- blinker, at a version
+    # flask has outgrown -- with no RECORD file, so pip cannot uninstall them
+    # to upgrade and stops with uninstall-no-record-file. Installing over the
+    # distro copy is pip's own documented way out; it is the same trade the
+    # --break-system-packages line above already makes.
+    if grep -qi 'record file\|no-record-file\|installed by debian' "$pip_log"; then
+        say "python:   $1: a distro-managed dependency blocks the upgrade; \
+installing over it (--ignore-installed)"
+        python3 -m pip install --quiet --break-system-packages --ignore-installed \
+            --no-warn-script-location "$1" 2>"$pip_log" && return 0
+    fi
+    return 1
+}
+
 for pkg in $PYTHON_DEPS; do
-    python3 -c "import $pkg" >/dev/null 2>&1 || missing="$missing $pkg"
-done
-
-if [ -n "$missing" ] && [ "$NO_INSTALL" -eq 0 ]; then
+    python3 -c "import $pkg" >/dev/null 2>&1 && continue
+    if [ "$NO_INSTALL" -eq 1 ]; then
+        warn "missing python package: $pkg  (--no-install)"
+        continue
+    fi
     ensure pip python3 -m pip --version \
         || die "pip is unavailable; install python3-pip and re-run"
-    # shellcheck disable=SC2086
-    if ! python3 -m pip install --quiet --user --no-warn-script-location $missing 2>/dev/null; then
-        # PEP 668: distro and Homebrew pythons refuse to be written to without
-        # this. Only reached after the polite attempt has already failed.
-        say "python:   externally managed, retrying with --break-system-packages"
-        # shellcheck disable=SC2086
-        python3 -m pip install --quiet --user --break-system-packages \
-            --no-warn-script-location $missing \
-            || python3 -m pip install --quiet --break-system-packages \
-               --no-warn-script-location $missing \
-            || die "could not install:$missing"
+    if ! pip_install "$pkg"; then
+        warn "pip could not install $pkg; its last words:"
+        tail -n 5 "$pip_log" | sed 's/^/    /' >&2
     fi
-elif [ -n "$missing" ]; then
-    warn "missing python packages:$missing  (--no-install)"
-fi
-
-for pkg in $PYTHON_DEPS; do
-    python3 -c "import $pkg" >/dev/null 2>&1 \
-        || die "$pkg is still not importable by $(command -v python3)"
 done
+
+python3 -c "import numpy" >/dev/null 2>&1 \
+    || die "numpy is not importable by $(command -v python3)"
+if python3 -c "import flask" >/dev/null 2>&1; then
+    flask_version=$(python3 -c 'import importlib.metadata as m; print(m.version("flask"))')
+else
+    flask_version="MISSING -- gui/app.py will not run; the engine, match.py and the selftest do not need it"
+    warn "flask is not importable: the GUI is unavailable until it is installed"
+fi
 say "deps:     numpy $(python3 -c 'import numpy; print(numpy.__version__)'), \
-flask $(python3 -c 'import flask, importlib.metadata as m; print(m.version("flask"))')"
+flask $flask_version"
 
 # --- C cores -----------------------------------------------------------------
 

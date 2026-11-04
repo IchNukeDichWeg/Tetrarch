@@ -22,6 +22,8 @@ cd Tetrarch
 That is the whole of a fresh-machine setup: it installs a compiler and numpy/flask
 if they are missing, builds the C core, and then runs the full test ladder -- a setup
 that reports success and leaves a broken build costs a whole campaign to discover.
+numpy is required. flask is only the GUI's: if it will not install, setup warns,
+the engine and the ladder carry on without it, and the GUI checks are skipped.
 
 No virtualenv. Everything is a plain `python3 something.py`.
 
@@ -199,5 +201,5 @@ lobby, is the table at the top of [`docs/RULES.md`](docs/RULES.md); every rule
 in that file names where it came from and flags where it is an assumption
 instead.
 
-`numpy` and `flask` are runtime dependencies, installed rather than vendored,
-and are not redistributed here.
+`numpy` and `flask` (the GUI's only) are runtime dependencies, installed rather
+than vendored, and are not redistributed here.
