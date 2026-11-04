@@ -27,19 +27,22 @@ No virtualenv. Everything is a plain `python3 something.py`.
 
 ```bash
 python3 uci.py                 # the engine, speaking the protocol
-python3 selftest.py            # 427 checks, ~13s
+python3 selftest.py            # the full ladder: ~715 checks, ~80s on an 18-core M4
 python3 gui/app.py             # viewer + play, http://127.0.0.1:7442
 ```
 
 Two pages. `/` replays a PGN4 you paste -- `gui/viewer.html` also opens straight
 off disk with no server at all. `/play` is an interactive board: set each of the
-four seats to Human or Engine and play. The engine plays Teams only; in
-free-for-all every seat has to be human, because the paranoid search is Phase 5.
+four seats to Human or Engine and play, in Teams or free-for-all -- the engine
+plays both, FFA since v8. Both pages pick the net the way the engine does, by
+mode and setup (`nets/bundle.txt`).
 
 ## Strength
 
 Every gain below is measured over at least 10,000 games with a full four-game seat
-rotation, against a null self-test of −2.64 ± 6.24 on the same harness.
+rotation, against a null self-test of −2.64 ± 6.24 on the same harness. The
+harness has since been re-certified at −0.31 ± 6.58 after an orientation fix
+([`docs/AB.md`](docs/AB.md), Harness validity).
 
 | release | feature | Elo | instrument |
 |---|---|---|---|
@@ -98,6 +101,7 @@ over 10,000,000 random positions, and perft exact against
 ```bash
 make            # build the C core
 make test       # the selftest ladder
+make quick      # build + the movegen/C-core sections only: the inner loop, not the gate
 make bench      # the bench signature
 make dist       # source tarball
 ```
@@ -129,13 +133,15 @@ gen_data.py         self-play positions     train.py     NNUE trainer
 tetrarch/           board, movegen x2, search root, eval, NNUE, PGN4, C binding
 src/c/tetrarch.c    board, movegen, perft, eval, transposition table, search
 nets/               quantised nets the engine loads
-gui/                viewer.html (standalone) + app.py (adds an engine endpoint)
+gui/                viewer.html (standalone), play.html, app.py (the engine behind both)
 docs/               rules, results, perft, protocol, releasing
 ```
 
 ## Status
 
-**Phase 4 is done.** Net v5 is the engine's evaluation as of v7, beating net v4 by
+**Phase 4 is done.** Net v5 is the engine's evaluation as of v7 on `classic`, and
+net v7 on the other four setups, where it measured level or better
+(`nets/bundle.txt`). Net v5 beat net v4 by
 **+7.78 ± 4.61** on a clock and **+10.50 ± 4.59** at fixed nodes over 20,000 games
 each. Net v4, which it replaced, had beaten the hand eval by
 **+76.79 ± 6.87** on a clock and **+135.19 ± 7.36** at fixed nodes, 10,000

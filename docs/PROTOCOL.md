@@ -74,7 +74,13 @@ setoption name Mode  value teams|ffa
 setoption name Hash  value <mb>
 ```
 
-Changing `Setup` or `Mode` resets the board.
+Changing `Setup` or `Mode` resets the board, and reloads the net
+`nets/bundle.txt` names for the pair unless `Net` has been set explicitly.
+
+`Net` takes a `.nnue` path, a bundle `.txt`, or `none` for the hand eval. The
+other options `uci` lists are search toggles and parameters kept so each can
+be A/B'd with one `setoption`; their defaults are what was measured, and
+`docs/AB.md` records why each is on or off.
 
 ### `info` lines
 
@@ -103,10 +109,12 @@ counted in TEAM moves, not plies, since a team moves once per two seats.
   contract. FFA itself searches since v8.
 * **`ponder`** -- `go ponder` is read as an ordinary `go`, and `stop` is
   depth-granular rather than immediate (divergence 5).
-* **Repetition and the 50-move rule inside the search** -- `match.py` adjudicates
-  the 50-move draw at the game level. Item 2 and 3 in §14 are still open, and
-  wiring an assumed rule into the search before it is settled would bake in the
-  wrong answer.
+* **The 50-move rule inside the search** -- `match.py` adjudicates the 50-move
+  draw at the game level, and §14 item 2 (the threshold in plies) is still an
+  assumption. Repetition IS in the search: `option name Repetitions`, default
+  on, scores the first repeat of a position the game or the line has already
+  been through as a draw, over the `position ... moves` history (§10.2; §14
+  item 3 records the key it assumes).
 * **1-point queens across a FEN4 boundary** -- FEN4 cannot represent them
   (§11.2), so a position sent as FEN4 loses the distinction. Send `position
   fen4 <start> moves ...` rather than the current position when it matters;

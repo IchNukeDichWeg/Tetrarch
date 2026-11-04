@@ -34,10 +34,12 @@ teams rg      net-v7.nnue
 #     fixed nodes 20,000   +67.35 +/- 10.38   2,500 games
 #     fixed time 200ms     +18.30 +/- 14.88   1,571 games
 #
-# NOT a confirmed release: fixed time is the instrument that decides and 1.23
-# sigma does not clear it. It is bundled anyway because the bundle is dispatch,
-# not a claim -- the alternative here is the hand eval, and the net beat it at
-# both instruments and on every setup.
+# That screen alone was NOT a confirm: fixed time is the instrument that
+# decides and 1.23 sigma does not clear it. It was bundled anyway because the
+# bundle is dispatch, not a claim. The confirm came after, and is what v8
+# shipped on (CHANGELOG.md, docs/AB.md "FFA generation 1"):
+#
+#     fixed time 100ms     +106.05 +/- 5.55   10,000 games, all five setups
 #
 # It was trained on `classic` self-play alone, which is exactly the mistake the
 # Teams half of this file records for net-v5. It does not repeat it. Split by
