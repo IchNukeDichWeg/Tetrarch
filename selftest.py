@@ -2583,6 +2583,23 @@ def test_see():
                                         + eval_hand.PIECE_VALUE[KNIGHT],
               str(core.see(ep, moves[0])))
 
+    # Which of two equal recapturers goes first decides which x-ray opens
+    # behind it, so the pick order is part of the answer: the first in
+    # knights, pawns, rays in queen_dirs order, kings last, with a strict
+    # `value <`. Found by sampling (13 in 534,683 SEE calls change when the
+    # ray pick takes the last equal instead of the first; this is one of
+    # them), and pinned because a rewrite that keeps the attackers but not
+    # their order passes every hand case above.
+    tie = Board.from_fen4(
+        "R-0,0,0,0-1,1,0,1-1,1,0,1-0,0,0,0-1-"
+        "3,yR,1,yB,yQ,1,yB,1,yR,3/3,yP,1,yP,yP,1,yK,1,yP,3/7,yP,yN,5/"
+        "bR,2,bN,8,gP,gR/3,yP,6,rQ,3/yN,bP,10,gP,1/1,bN,1,bP,7,gP,gN,gQ/"
+        "bK,2,bP,8,gP,gK/bB,bP,11,gB/1,bP,9,gP,1,gN/bR,2,bP,2,rP,rP,5,gR/"
+        "4,rP,4,rP,gP,3/3,rP,1,rP,bQ,1,rP,1,rP,3/3,rR,1,rB,1,rK,rB,1,rR,3",
+        MODE_TEAMS)
+    check("equal recapturers are taken in scan order",
+          see(tie, "k10m8") == -600, str(see(tie, "k10m8")))
+
     # FFA has no alternating swap-off, and returning a plausible number there
     # would be worse than refusing.
     ffa = pos({"g5": (RED, ROOK), "g9": (BLUE, PAWN)})

@@ -238,6 +238,7 @@ static inline int queenish(int t) { return t == QUEEN || t == PQUEEN; }
 static uint8_t att_class[NPIECE];
 static uint8_t att_cbit[NPIECE];
 static uint8_t att_dir_class[8];  /* AC_ORTHO or AC_DIAG for queen_dirs[i] */
+static uint8_t see_pawn_slot[8];  /* j with diag[j] == -queen_dirs[i], else 4 */
 /* The on-board knight jumps from each square, in knight_deltas order. The
  * order is irrelevant to the answer; it is kept so nobody has to argue it. */
 static uint8_t kn_to[NSQ][8];
@@ -261,6 +262,12 @@ static void build_attack_tables(void)
         int d = P.queen_dirs[i], j, diag = 0;
         for (j = 0; j < 4; j++) if (P.diag[j] == d) diag = 1;
         att_dir_class[i] = diag ? AC_DIAG : AC_ORTHO;
+    }
+    for (i = 0; i < 8; i++) {
+        int j;
+        see_pawn_slot[i] = 4;
+        for (j = 0; j < 4; j++)
+            if (P.diag[j] == -P.queen_dirs[i]) see_pawn_slot[i] = (uint8_t)j;
     }
     for (sq = 0; sq < NSQ; sq++) {
         kn_n[sq] = 0;
@@ -1252,79 +1259,171 @@ int tt_legality_disagreements(TtBoard *b)
  * recapture that turns out to be illegal makes the estimate pessimistic, never
  * unsound as an ordering key. */
 
-/* Cheapest piece of `seat`'s team attacking `to`, skipping squares already
- * spent in the exchange. Returns the square, or -1. */
-static int see_attacker(const TtBoard *b, int to, int seat, const uint8_t *gone)
-{
-    int best = -1, best_val = 1 << 30, i;
+/* The attackers of `to`, gathered once per exchange rather than rescanned per
+ * recapture.
+ *
+ * This used to be see_attacker(): every recapture walked all eight knight
+ * squares, four pawn squares, eight rays and eight king squares again, over a
+ * 256-byte `gone` array zeroed per call. Only one square changes between two
+ * recaptures -- the attacker just spent -- so almost all of that rescan
+ * re-read what the last one read.
+ *
+ * What is kept is exactly what the rescan looked at, in its order: the knight
+ * squares in knight_deltas order, the pawn squares in diag order, the first
+ * unspent piece on each ray in queen_dirs order, the kings in queen_dirs order.
+ * The pick is the same strict `value < best` over that same order, kings only
+ * when nothing else answers, so ties go to the same square and the x-rays
+ * that follow are the same.
+ *
+ * Why only one ray ever needs re-walking: a spent piece is a knight (on no
+ * ray from `to`), or the first piece of its ray -- an adjacent pawn or king
+ * is the first piece of the ray it stands on, and a slider is picked only as
+ * a ray's first piece. So spending it moves that one ray's front outward and
+ * nothing else; every square further out is still unspent, except `frm`,
+ * which the walk skips the way `gone[frm]` made it transparent before. A
+ * spent knight, pawn or king has its team cleared so it can never be picked
+ * again.
+ *
+ * `tm` is the team as a bit: 1 << (colour & 1) for a seat, 0 for
+ * DEAD_UNKNOWN, which same_team() never matches. Teams only; tt_see returns
+ * before any of this in FFA. */
+typedef struct {
+    int16_t sq[8];
+    uint8_t tm[8];
+    uint8_t ray[8];      /* pawns and kings: the ray they front */
+    int n;
+} SeeList;
 
-    for (i = 0; i < 8; i++) {
-        int t = (to + P.knight_deltas[i]) & 255;
-        uint8_t p;
-        if (!P.valid[t] || gone[t]) continue;
-        p = b->sq[t];
-        if (p && P.pc_type[p] == KNIGHT && same_team(b->mode, P.pc_color[p], seat)
-            && P.piece_value[KNIGHT] < best_val) {
-            best = t; best_val = P.piece_value[KNIGHT];
+typedef struct {
+    SeeList kn, pw, kg;
+    int16_t fr[8];       /* first unspent piece on each ray, or -1 */
+    uint8_t fr_tm[8];    /* its team if it is a slider that hits along it */
+    int32_t fr_val[8];
+} SeeState;
+
+static inline unsigned see_team(int colour)
+{
+    return colour < 4 ? 1u << (colour & 1) : 0u;
+}
+
+static inline void see_front(const TtBoard *b, SeeState *s, int i, int start,
+                             int frm)
+{
+    int d = P.queen_dirs[i], t = (start + d) & 255;
+    s->fr[i] = -1;
+    s->fr_tm[i] = 0;
+    for (; P.valid[t]; t = (t + d) & 255) {
+        uint8_t p = b->sq[t];
+        if (!p || t == frm) continue;
+        s->fr[i] = (int16_t)t;
+        if (att_class[p] & att_dir_class[i]) {
+            s->fr_tm[i] = (uint8_t)see_team(P.pc_color[p]);
+            s->fr_val[i] = P.piece_value[P.pc_type[p]];
+        }
+        return;
+    }
+}
+
+static void see_gather(const TtBoard *b, SeeState *s, int to, int frm)
+{
+    int i, n = kn_n[to];
+    s->kn.n = s->kg.n = 0;
+    for (i = 0; i < n; i++) {
+        int t = kn_to[to][i];
+        uint8_t p = b->sq[t];
+        if ((att_class[p] & AC_KNIGHT) && t != frm) {
+            s->kn.sq[s->kn.n] = (int16_t)t;
+            s->kn.tm[s->kn.n++] = (uint8_t)see_team(P.pc_color[p]);
         }
     }
-    /* A pawn on to-d attacks `to` when d is one of that seat's capture deltas. */
-    for (i = 0; i < 4; i++) {
-        int d = P.diag[i], t = (to - d) & 255;
+    /* Pawns sit in fixed slots by diag index, so the pick still sees them in
+     * the diag order the old pawn loop used even though they are found here
+     * in queen_dirs order. Kings are found in queen_dirs order, which is
+     * already the old king loop's. */
+    for (i = 0; i < 4; i++) s->pw.tm[i] = 0;
+    for (i = 0; i < 8; i++) {
+        int d = P.queen_dirs[i], t = (to + d) & 255;
         uint8_t p;
-        if (!P.valid[t] || gone[t]) continue;
+        s->fr[i] = -1;
+        s->fr_tm[i] = 0;
+        if (!P.valid[t]) continue;
         p = b->sq[t];
-        if (p && P.pc_type[p] == PAWN && same_team(b->mode, P.pc_color[p], seat)) {
+        if (!p || t == frm) {
+            see_front(b, s, i, t, frm);
+            continue;
+        }
+        /* The first piece on this ray is adjacent: the old king and pawn
+         * probes read exactly these squares. */
+        s->fr[i] = (int16_t)t;
+        if (att_class[p] & att_dir_class[i]) {
+            s->fr_tm[i] = (uint8_t)see_team(P.pc_color[p]);
+            s->fr_val[i] = P.piece_value[P.pc_type[p]];
+        } else if (att_class[p] & AC_KING) {
+            s->kg.sq[s->kg.n] = (int16_t)t;
+            s->kg.tm[s->kg.n] = (uint8_t)see_team(P.pc_color[p]);
+            s->kg.ray[s->kg.n++] = (uint8_t)i;
+        } else if ((att_class[p] & AC_PAWN) && see_pawn_slot[i] < 4) {
             int c = P.pc_color[p];
-            if ((P.pawn_takes[c][0] == d || P.pawn_takes[c][1] == d)
-                && P.piece_value[PAWN] < best_val) {
-                best = t; best_val = P.piece_value[PAWN];
+            if (P.pawn_takes[c][0] == -d || P.pawn_takes[c][1] == -d) {
+                int j = see_pawn_slot[i];
+                s->pw.sq[j] = (int16_t)t;
+                s->pw.tm[j] = (uint8_t)see_team(c);
+                s->pw.ray[j] = (uint8_t)i;
             }
         }
     }
-    /* Sliders, walked outward so a piece behind a spent one takes its place --
-     * the x-ray that makes an exchange come out differently than it looks. */
-    for (i = 0; i < 8; i++) {
-        int d = P.queen_dirs[i], t = (to + d) & 255, diag = is_diag(d);
-        while (P.valid[t]) {
-            uint8_t p = b->sq[t];
-            if (!gone[t] && p) {
-                int pt = P.pc_type[p];
-                int hits = queenish(pt) || (diag ? pt == BISHOP : pt == ROOK);
-                if (hits && same_team(b->mode, P.pc_color[p], seat)
-                    && P.piece_value[pt] < best_val) {
-                    best = t; best_val = P.piece_value[pt];
-                }
+}
+
+/* Cheapest unspent piece of `seat`'s team attacking `to`; spends it and
+ * returns its square, or -1. */
+static int see_next(const TtBoard *b, SeeState *s, int to, int frm, int seat)
+{
+    unsigned want = 1u << (seat & 1);
+    int best = -1, kind = 0, idx = 0, i;
+    int32_t best_val = 1 << 30;
+
+    for (i = 0; i < s->kn.n; i++)
+        if ((s->kn.tm[i] & want) && P.piece_value[KNIGHT] < best_val) {
+            best = s->kn.sq[i]; best_val = P.piece_value[KNIGHT];
+            kind = 1; idx = i;
+        }
+    for (i = 0; i < 4; i++)
+        if ((s->pw.tm[i] & want) && P.piece_value[PAWN] < best_val) {
+            best = s->pw.sq[i]; best_val = P.piece_value[PAWN];
+            kind = 2; idx = i;
+        }
+    for (i = 0; i < 8; i++)
+        if ((s->fr_tm[i] & want) && s->fr_val[i] < best_val) {
+            best = s->fr[i]; best_val = s->fr_val[i];
+            kind = 3; idx = i;
+        }
+    if (best < 0) {
+        for (i = 0; i < s->kg.n; i++)
+            if (s->kg.tm[i] & want) {
+                best = s->kg.sq[i]; kind = 4; idx = i;
                 break;
             }
-            t = (t + d) & 255;
-        }
     }
-    /* The king last: it is only a legal recapturer when nothing else answers,
-     * and giving it a value here would let it out-bid a real piece. */
-    for (i = 0; i < 8; i++) {
-        int t = (to + P.queen_dirs[i]) & 255;
-        uint8_t p;
-        if (!P.valid[t] || gone[t]) continue;
-        p = b->sq[t];
-        if (p && P.pc_type[p] == KING && same_team(b->mode, P.pc_color[p], seat)
-            && best < 0) {
-            best = t; best_val = P.piece_value[KING];
-        }
+    switch (kind) {
+    case 1: s->kn.tm[idx] = 0; break;
+    case 2: s->pw.tm[idx] = 0; see_front(b, s, s->pw.ray[idx], best, frm); break;
+    case 3: see_front(b, s, idx, best, frm); break;
+    case 4: s->kg.tm[idx] = 0; see_front(b, s, s->kg.ray[idx], best, frm); break;
+    default: break;
     }
+    (void)to;
     return best;
 }
 
 int32_t tt_see(const TtBoard *b, uint32_t m)
 {
-    uint8_t gone[NSQ];
+    SeeState st;
     int32_t gain[40];
     int to = MV_TO(m), frm = MV_FROM(m), d = 0;
     int seat = b->turn, attacker;
     int32_t attacker_val;
 
     if (b->mode == MODE_FFA) return 0;          /* see the note above */
-    memset(gone, 0, sizeof(gone));
 
     if (MV_FLAG(m) == F_EP) {
         /* An en-passant capture onto an OCCUPIED skipped square takes both the
@@ -1339,7 +1438,7 @@ int32_t tt_see(const TtBoard *b, uint32_t m)
     }
 
     attacker_val = P.piece_value[P.pc_type[b->sq[frm]]];
-    gone[frm] = 1;
+    see_gather(b, &st, to, frm);
 
     /* The usual implementation breaks out early once neither side would enter
      * the continuation. That is a real speedup and it is why most engines do
@@ -1354,10 +1453,9 @@ int32_t tt_see(const TtBoard *b, uint32_t m)
         d++;
         gain[d] = attacker_val - gain[d - 1];
         seat = (seat + 1) & 3;
-        attacker = see_attacker(b, to, seat, gone);
+        attacker = see_next(b, &st, to, frm, seat);
         if (attacker < 0 || d >= 38) break;
         attacker_val = P.piece_value[P.pc_type[b->sq[attacker]]];
-        gone[attacker] = 1;
     }
     /* Fold back: at every step the side to move could have stopped instead. */
     while (--d > 0)
@@ -1378,8 +1476,8 @@ int32_t tt_see(const TtBoard *b, uint32_t m)
  * an occupied square included, so the two cannot disagree on any move.
  *
  * Taking a piece worth at least the taker is most captures quiescence sees,
- * and each one used to run the full swap-off, a 256-byte clear and four
- * attacker scans per step, only to report a sign this already knew. */
+ * and each one used to run the full swap-off -- the attacker gather and a
+ * pick per step -- only to report a sign this already knew. */
 static inline int see_surely_nonneg(const TtBoard *b, uint32_t m)
 {
     int to = MV_TO(m);
