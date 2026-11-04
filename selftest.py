@@ -1042,6 +1042,10 @@ INEXACT_TOGGLES = (
     ("lmr", core.set_lmr, core.lmr_enabled),
     ("lmp", core.set_lmp, core.lmp_enabled),
     ("see prune", core.set_see_prune, core.see_prune_enabled),
+    # Default off, so switching them off here is a no-op today. Listed so the
+    # oracle stays meaningful the day either is promoted.
+    ("null move", core.set_null_move, core.null_move_enabled),
+    ("rfp", core.set_rfp, core.rfp_enabled),
 )
 
 #: The same list for the paranoid oracle. FFAKillers is not on it: it only
@@ -1741,6 +1745,8 @@ BENCH_PINS = [49806, 189492, 111487, 190997, 56151]
 #: bench positions it must move: "teams" or "ffa"). None is exact except
 #: FFAKillers, which is ordering only and is checked against the oracle.
 DORMANT_SEARCH_TOGGLES = (
+    ("NullMove", core.set_null_move, core.null_move_enabled, "teams"),
+    ("RFP", core.set_rfp, core.rfp_enabled, "teams"),
     ("FFAKillers", core.set_ffa_killers, core.ffa_killers_enabled, "ffa"),
     ("FFALMR", core.set_ffa_lmr, core.ffa_lmr_enabled, "ffa"),
     ("FFALMP", core.set_ffa_lmp, core.ffa_lmp_enabled, "ffa"),
@@ -1793,6 +1799,31 @@ def test_dormant_search_toggles():
                   back == BENCH_PINS, str(back))
     finally:
         core.unload_net()
+
+    # The Teams prunings return early on a bound; they must never INVENT a
+    # mate. A pass proves a bound, not a mate -- the line behind it is not
+    # playable -- so a mate score out of the null search is clamped to beta.
+    rng = random.Random(4471)
+    invented = {"NullMove": 0, "RFP": 0}
+    setters = {"NullMove": core.set_null_move, "RFP": core.set_rfp}
+    compared = 0
+    for _ in range(300):
+        b = random_position(rng)
+        if b.mode != MODE_TEAMS or not all(b.alive) or not fast.gen_legal(b):
+            continue
+        compared += 1
+        core.clear_hash()
+        plain = core.search(b, 5).score
+        for name, setter in setters.items():
+            setter(True)
+            core.clear_hash()
+            got = core.search(b, 5).score
+            setter(False)
+            if abs(got) >= 29900 and abs(plain) < 29900:
+                invented[name] += 1
+    for name, n in invented.items():
+        check("%s never invents a mate" % name, n == 0,
+              "%d of %d positions" % (n, compared))
 
     # FFA LMP drops moves; with the legal >= 1 guard a seat that has a move
     # is never eliminated by the pruning, so neither a win nor a loss appears

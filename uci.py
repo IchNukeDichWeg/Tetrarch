@@ -227,6 +227,10 @@ class Engine:
         self.lmr_min_move = 3
         self.lmp_max_depth = 3
         self.lmp_base = 4
+        self.null_min_depth = 3
+        self.null_r = 2
+        self.rfp_max_depth = 3
+        self.rfp_margin = 150
         self.multipv = 1
         self.board = start_board(self.setup, self.mode)
         self.history = []
@@ -321,8 +325,15 @@ class Engine:
         print("option name LMPMaxDepth type spin default 3 min 0 max 8")
         print("option name LMPBase type spin default 4 min 1 max 32")
         print("option name QSEvasions type check default true")
-        # Built, default OFF, each pending its own A/B (docs/AB.md). They
-        # touch only the paranoid search and share the LMR/LMP parameters.
+        # Built, default OFF, each pending its own A/B (docs/AB.md). None is
+        # exact. NullMove and RFP are Teams-only; the FFA* three touch only the
+        # paranoid search and share the LMR/LMP parameters above.
+        print("option name NullMove type check default false")
+        print("option name NullMoveMinDepth type spin default 3 min 2 max 16")
+        print("option name NullMoveR type spin default 2 min 1 max 6")
+        print("option name RFP type check default false")
+        print("option name RFPMaxDepth type spin default 3 min 1 max 8")
+        print("option name RFPMargin type spin default 150 min 1 max 2000")
         print("option name FFAKillers type check default false")
         print("option name FFALMR type check default false")
         print("option name FFALMP type check default false")
@@ -396,12 +407,28 @@ class Engine:
             core.set_lazy_eval(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "lmp":
             core.set_lmp(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "nullmove":
+            core.set_null_move(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name == "rfp":
+            core.set_rfp(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "ffakillers":
             core.set_ffa_killers(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "ffalmr":
             core.set_ffa_lmr(value.strip().lower() in ("true", "1", "on", "yes"))
         elif name == "ffalmp":
             core.set_ffa_lmp(value.strip().lower() in ("true", "1", "on", "yes"))
+        elif name in ("nullmovemindepth", "nullmover"):
+            if name == "nullmovemindepth":
+                self.null_min_depth = int(value)
+            else:
+                self.null_r = int(value)
+            core.set_null_params(self.null_min_depth, self.null_r)
+        elif name in ("rfpmaxdepth", "rfpmargin"):
+            if name == "rfpmaxdepth":
+                self.rfp_max_depth = int(value)
+            else:
+                self.rfp_margin = int(value)
+            core.set_rfp_params(self.rfp_max_depth, self.rfp_margin)
         elif name == "multipv":
             self.multipv = max(1, min(int(value), 64))
         elif name == "mobility":

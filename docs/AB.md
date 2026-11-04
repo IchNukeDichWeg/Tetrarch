@@ -148,6 +148,68 @@ Not measured: Apple NEON, which is untouched. The Teams/FFA split was not
 measured separately here, and the AB box is NEON, so none of this moves its
 numbers.
 
+### Reverse futility and null-move pruning in Teams -- built, NOT confirmed
+
+`setoption name RFP` (`RFPMaxDepth` 3, `RFPMargin` 150 per ply) and
+`setoption name NullMove` (`NullMoveMinDepth` 3, `NullMoveR` 2, +1 from depth
+7), both default **off**, Teams only. They share one static evaluation, read
+only when one of them is on. A pass expires the passer's en-passant offer,
+zeroes `halfmove` so no repetition is scored through it, never follows another
+pass, is refused in check and to a seat down to king and pawns, and never
+returns a mate score.
+
+Cheap readings, no games: 300 Teams positions (book + 0-49 plies of default
+self-play), the net bundle, 16 MB, table cleared per position. "Regret" is the
+20,000-node move's value against a 400,000-node default search's move, each
+valued by a 150,000-node search of the child; paired against base, negative
+is better.
+
+| | mean depth @ 20k | ID nodes to d6 | regret vs base (cp) |
+|---|---:|---:|---:|
+| base | 4.72 | 7,747,172 | -- |
+| RFP margin 150, d <= 3 | **5.45** | 3,651,572 (47%) | -10.7 +/- 21.2 |
+| RFP margin 100 | 5.68 | 2,789,879 (36%) | -25.3 +/- 22.6 |
+| RFP margin 250 | 5.18 | 4,795,346 (62%) | +1.2 +/- 18.2 |
+| RFP d <= 2 | 5.41 | 3,822,605 (49%) | -9.2 +/- 21.3 |
+| NullMove R2, d >= 3 | 4.95 | 5,400,719 (70%) | -3.2 +/- 14.4 |
+| NullMove R3 | 5.01 | 5,278,763 (68%) | +6.2 +/- 15.6 |
+| NullMove d >= 4 | 4.87 | 6,073,035 (78%) | +3.3 +/- 10.3 |
+| RFP + NullMove | 5.63 | 3,002,185 (39%) | -13.8 +/- 21.5 |
+
+(+/- is one standard error here, not the 95% interval match.py prints.) The
+regret instrument cannot resolve anything below ~20 cp; the depth column is the
+firm reading.
+
+**Pre-screens, not screens** -- fixed nodes 20,000, classic, random openings,
+net bundle both sides, 2 workers on a shared 4-core box:
+
+```
+RFP       +110.41 +/- 38.06   400 games, Dist 4, 0, 7, 3, 25, 6, 33, 4, 18
+NullMove   +32.23 +/- 35.25   400 games, Dist 5, 3, 14, 2, 36, 4, 25, 2, 9
+```
+
+Why to distrust the RFP number before the confirm: it is FIXED NODES, and RFP
+spends an evaluation at every shallow interior node it tests -- time that a
+node count does not see. Fixed time is the instrument that decides it, and 100
+should be a second margin arm.
+
+Null move is the one to expect little from, and the 4PC reason is structural:
+a pass hands ONE opponent a tempo and then the passer's partner moves, so the
+threat it tests is a quarter of a round, and at median depth 4-5 a reduction of
+R=2 leaves a null search of one or two plies -- one opponent move and a
+quiescence. It is in because its cost to keep dormant is one branch.
+
+### Measured and not built: what the other textbook items read here
+
+Same positions and instruments as above; none committed.
+
+| item | reading | verdict |
+|---|---|---|
+| aspiration windows | root score moves a median **86 cp** between consecutive ID iterations, >50 cp 64% of the time, >100 cp 45% (420 transitions into depths 4-6) | a +/-50 window fails two times in three; re-search cost is PVS's problem again. Not built |
+| check extension (+1 ply in check) | depth @20k 4.72 -> 4.54, ID nodes +32%, regret **+31.7 +/- 16.9** cp worse | checks come from three seats; extending them is the opposite of what buys depth here |
+| internal iterative reduction (depth >= 4, no table move) | ID nodes 95%, depth 4.72 -> 4.73, regret +17.3 +/- 12.2 worse | dropped; recorded at the site |
+| depth-preferred table replacement | at a 1 MB table, ID nodes 96%, depth 4.71 -> 4.72 | at 16 MB a 20k-node search does not fill the table; only a long fixed-time game could show it |
+
 ### FFA killers, LMR and LMP in the paranoid search -- built, NOT confirmed
 
 `setoption name FFAKillers`, `FFALMR`, `FFALMP`, all default **off**. The

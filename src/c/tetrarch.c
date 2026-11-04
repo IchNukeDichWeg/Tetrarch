@@ -2675,6 +2675,77 @@ void tt_set_lmp_params(int max_depth, int base)
     lmp_base = base < 1 ? 1 : base;
 }
 
+/* --- null-move pruning (toggle: off by default, pending its A/B) ----------
+ *
+ * Pass, and search the result shallower with a null window at beta. If our
+ * team is still above beta after handing the opponents a free move, the real
+ * moves will be too, and the node fails high without generating them. NOT
+ * exact: it is wrong exactly where passing would be better than any move.
+ *
+ * Why it is not obviously unsound in four seats. The "free move" goes to ONE
+ * opponent: after Red passes, Blue moves, then Yellow -- Red's partner, who
+ * can still parry -- then Green. The opponents gain one tempo out of four, not
+ * the game's only tempo as in chess, so the threat test is weaker, and so is
+ * the risk. Zugzwang needs every move of a seat to be bad AND its partner to
+ * be unable to help, which is rarer than in chess; the non-pawn guard covers
+ * the endgames where it can happen.
+ *
+ * Teams only. In the paranoid FFA search a pass at a MIN node hands the turn
+ * from one opponent to the next and tests nothing about the root.
+ *
+ * Cheap measurement, 300 Teams positions (book + 0-49 self-play plies), net
+ * bundle, no games: mean depth at 20,000 nodes 4.72 -> 4.95, nodes for an
+ * ID to depth 6 69.7% of base, and the 20,000-node move -3 +/- 14 cp (one
+ * s.e.) against a 400,000-node oracle -- inside noise. R=3 (5.01, +6 cp) and
+ * min depth 4 (4.87, +3 cp) are no better. The weaker of the two Teams
+ * toggles: a third of RFP's depth gain, and little on top of it (5.45 ->
+ * 5.63 together). Expected to be small; that is why it is separate.
+ */
+static int use_null_move = 0;
+static int null_min_depth = 3;
+static int null_r = 2;
+/* Set at ply p when the move into ply p was a pass. A second pass in a row
+ * would let both teams pass, which searches the same position two seats on
+ * and proves nothing. */
+static uint8_t null_into[MAX_DEPTH + 1];
+
+void tt_set_null_move(int on) { use_null_move = on ? 1 : 0; }
+int tt_get_null_move(void) { return use_null_move; }
+void tt_set_null_params(int min_depth, int r)
+{
+    null_min_depth = min_depth < 2 ? 2 : min_depth;
+    null_r = r < 1 ? 1 : r;
+}
+
+/* --- reverse futility pruning (toggle: off by default, pending its A/B) ----
+ *
+ * Also called static null move: at shallow depth, a static evaluation that
+ * already beats beta by a margin per remaining ply returns without searching.
+ * NOT exact. The margin has to cover what three other seats can do before
+ * this one moves again, which is why it is wider than a chess engine's.
+ *
+ * Cheap measurement, same 300 positions as NullMove: mean depth at 20,000
+ * nodes 4.72 -> 5.45 (margin 150, depth <= 3), ID-to-depth-6 nodes 47.1% of
+ * base, oracle regret -11 +/- 21 cp (one s.e.). Margin 100 reaches 5.68
+ * (-25 +/- 23), margin 250 only 5.18 (+1 +/- 18), depth <= 2 5.41. 150 is
+ * the default because 100 is the kind of number a 2-player engine picks and
+ * three seats move between here and the horizon; the A/B should try 100 as a
+ * second arm. Pre-screen at fixed nodes 20,000, 400 games: +110.41 +/- 38.06
+ * (docs/AB.md) -- a direction, not a confirm.
+ * The eval it reads is NOT free at fixed time (one more evaluation per
+ * shallow interior node), so fixed nodes will flatter it: screen both. */
+static int use_rfp = 0;
+static int rfp_max_depth = 3;
+static int rfp_margin = 150;
+
+void tt_set_rfp(int on) { use_rfp = on ? 1 : 0; }
+int tt_get_rfp(void) { return use_rfp; }
+void tt_set_rfp_params(int max_depth, int margin)
+{
+    rfp_max_depth = max_depth < 1 ? 1 : max_depth;
+    rfp_margin = margin < 1 ? 1 : margin;
+}
+
 /* --- FFA: killers and late-move pruning/reduction in the paranoid search ---
  *
  * The paranoid loop had none of the Teams search's shallow pruning: no
@@ -3097,6 +3168,74 @@ int tt_pv(TtBoard *b, uint32_t first, uint32_t *out, int max)
     return n;
 }
 
+/* What a pass changes: the turn, the passing seat's own en-passant offer
+ * (which expires when its owner moves, and a pass is that seat's move), and
+ * the key. Nothing moves on the board, so the accumulator and the occupancy
+ * bitboard stay correct and only their key tag follows -- the same carry
+ * ffa_eliminate does, for the same reason.
+ *
+ * halfmove is zeroed so the repetition scan stops at the pass: a position on
+ * the far side of a null move was reached by a line nobody can play, and a
+ * "repetition" through it would score a draw that does not exist. */
+typedef struct {
+    uint64_t key;
+    int32_t halfmove;
+    int16_t ep_target;
+    int16_t ep_victim;
+    uint8_t turn;
+} NullUndo;
+
+static void null_make(TtBoard *b, NullUndo *u)
+{
+    int me = b->turn, c, t = me;
+    uint64_t key = b->key ^ P.zob_turn[me];
+    u->key = b->key;
+    u->halfmove = b->halfmove;
+    u->ep_target = b->ep_target[me];
+    u->ep_victim = b->ep_victim[me];
+    u->turn = (uint8_t)me;
+    if (b->ep_target[me] >= 0) {
+        key ^= P.zob_ep[me][b->ep_target[me]];
+        b->ep_target[me] = -1;
+        b->ep_victim[me] = -1;
+    }
+    for (c = 0; c < 4; c++) {
+        t = (t + 1) & 3;
+        if (b->alive[t]) break;
+    }
+    b->turn = (uint8_t)t;
+    key ^= P.zob_turn[t];
+    b->halfmove = 0;
+    if (nn_delta_on_for(u->key)) nn_acc_set_key(key);
+    if (occ_ok && occ_key == u->key) occ_key = key;
+    b->key = key;
+}
+
+static void null_unmake(TtBoard *b, const NullUndo *u)
+{
+    if (nn_delta_on_for(b->key)) nn_acc_set_key(u->key);
+    if (occ_ok && occ_key == b->key) occ_key = u->key;
+    b->ep_target[u->turn] = u->ep_target;
+    b->ep_victim[u->turn] = u->ep_victim;
+    b->turn = u->turn;
+    b->halfmove = u->halfmove;
+    b->key = u->key;
+}
+
+/* Does `seat` own anything but pawns and its king? The zugzwang guard: a
+ * seat down to king and pawns is where passing can genuinely beat moving. */
+static int has_piece(const TtBoard *b, int seat)
+{
+    int sq;
+    for (sq = 0; sq < NSQ; sq++) {
+        uint8_t p = b->sq[sq];
+        if (p && P.valid[sq] && P.pc_color[p] == seat
+            && P.pc_type[p] != PAWN && P.pc_type[p] != KING)
+            return 1;
+    }
+    return 0;
+}
+
 static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
                          int ply)
 {
@@ -3139,6 +3278,48 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     if (ply >= MAX_DEPTH - 2) return tt_eval(b);
 
     in_chk = tt_in_check(b, me);
+
+    /* The two pre-move prunings, both off by default. Each reads the static
+     * evaluation, so it is computed only when one of them could use it; with
+     * both off this block costs one branch and the tree is the pinned one.
+     * Never in check, never against a mate bound.
+     *
+     * Internal iterative reduction (a ply off any depth >= 4 node with no
+     * table move) was built here and dropped before an A/B: over 300 Teams
+     * positions it cut nodes-to-depth-6 by only 5%, left mean depth at 20,000
+     * nodes unmoved (4.72 -> 4.73), and its 20,000-node moves measured +17 cp
+     * WORSE against a 400,000-node oracle (+/-12). With always-replace and a
+     * per-search ID, a missing table move here usually means a genuinely new
+     * node, and reducing those is reducing the tree blind. */
+    if ((use_rfp || use_null_move) && ply > 0 && !in_chk
+        && beta < MATE_SCORE - MAX_DEPTH && beta > -(MATE_SCORE - MAX_DEPTH)) {
+        int rfp_on = use_rfp && depth <= rfp_max_depth;
+        int null_on = use_null_move && depth >= null_min_depth
+                      && !null_into[ply];
+        if (rfp_on || null_on) {
+            int32_t margin = rfp_on ? rfp_margin * depth : 0;
+            int32_t ev = tt_eval_bounded(b, beta - margin - 1, beta);
+            if (rfp_on && ev - margin >= beta) return ev;
+            if (null_on && ev >= beta && has_piece(b, me)) {
+                NullUndo nu;
+                int32_t s;
+                int r = null_r + (depth >= 7 ? 1 : 0);
+                null_make(b, &nu);
+                null_into[ply + 1] = 1;
+                s = -alphabeta(b, depth - 1 - r, -beta, -beta + 1, ply + 1);
+                null_into[ply + 1] = 0;
+                null_unmake(b, &nu);
+                if (search_aborted) return 0;
+                if (s >= beta) {
+                    /* A pass proves a bound, never a mate: the line it walked
+                     * is not playable. */
+                    if (s > MATE_SCORE - MAX_DEPTH) s = beta;
+                    return s;
+                }
+            }
+        }
+    }
+
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
