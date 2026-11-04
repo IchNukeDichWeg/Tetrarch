@@ -3000,16 +3000,48 @@ static int score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
 }
 
 /* Selection sort one move at a time: most of the list is never reached after
- * a cutoff, so sorting it all up front would be wasted work. */
-static void pick_move(uint32_t *moves, int32_t *scores, int n, int i)
+ * a cutoff, so sorting it all up front would be wasted work.
+ *
+ * Returns 1 when [i, n) is already non-increasing. The scan then picked i
+ * itself and swapped nothing (a later move wins only on a strictly greater
+ * score), [i+1, n) is still non-increasing, and nothing outside the scan
+ * writes the scores -- so every later call at this node would pick its own
+ * index and swap nothing too, and the caller stops calling. That is the
+ * common case, not a corner: with history off every plain quiet scores 0, so
+ * the tail after the last capture and killer is one flat run, and each pick
+ * from it was an O(n - i) scan that changed nothing. Skipping those scans
+ * cannot reorder anything. A scan that swaps reports 0 even if the swap left
+ * the tail in order; the next scan finds out. Conservative is the safe
+ * direction -- a missed shortcut costs a scan, never a different order.
+ *
+ * The FFA search found this first, as pick_move_tail (4c74f17): FFA quiets
+ * all score 0, and the scans it skipped were 3.0% of an FFA search. It is
+ * here now for every search loop, and paranoid uses this one.
+ *
+ * The scan itself is two passes. The first takes the maximum and the
+ * non-increasing test with no branch on the data, so gcc vectorises it
+ * (vpmaxsd under AVX2) where the old `if (scores[j] > scores[best]) best = j`
+ * loop could not; the second walks to the first index holding that maximum.
+ * The first index of the maximum is exactly what the strict `>` scan chose,
+ * so the swap, and with it every later tie-break, is the same. */
+static int pick_move(uint32_t *moves, int32_t *scores, int n, int i)
 {
-    int best = i, j;
-    for (j = i + 1; j < n; j++)
-        if (scores[j] > scores[best]) best = j;
-    if (best != i) {
-        uint32_t tm = moves[i]; moves[i] = moves[best]; moves[best] = tm;
-        int32_t ts = scores[i]; scores[i] = scores[best]; scores[best] = ts;
+    int best, j, rises = 0;
+    int32_t first = scores[i], top = first;
+    for (j = i + 1; j < n; j++) {
+        int32_t s = scores[j];
+        top = s > top ? s : top;
+        rises |= s > scores[j - 1];
     }
+    if (!rises) return 1;
+    if (top == first) return 0;
+    for (best = i + 1; scores[best] != top; best++)
+        ;
+    {
+        uint32_t tm = moves[i]; moves[i] = moves[best]; moves[best] = tm;
+        scores[best] = first; scores[i] = top;
+    }
+    return 0;
 }
 
 /* --- quiescence check evasions --------------------------------------------
@@ -3046,6 +3078,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     int32_t *scores;
     TtUndo u;
     int n, i, me = b->turn, in_chk = 0, legal = 0, caps, picked = 0;
+    int sorted = 0;
     int32_t stand;
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
@@ -3083,7 +3116,7 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     for (i = 0; i < n; i++) {
         int king, skip;
         if (!in_chk && picked == caps) break;
-        pick_move(moves, scores, n, i);
+        if (!sorted) sorted = pick_move(moves, scores, n, i);
         /* In check every legal move is a candidate; otherwise captures only. */
         if (!in_chk && !is_capture(b, moves[i])) continue;
         picked++;
@@ -3248,7 +3281,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     TtUndo u;
     TtEntry *slot = 0;
     int n, i, legal = 0, quiets = 0, me = b->turn, in_chk;
-    int louds = 0, louds_seen = 0, lmp_on = 0;
+    int louds = 0, louds_seen = 0, lmp_on = 0, sorted = 0;
     Pin pins[8];
     int king0, npins;
 
@@ -3342,7 +3375,7 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
          * picked, every remaining iteration is a pick, a test and a
          * `continue`, and stopping here searches exactly the same moves. */
         if (lmp_on && louds_seen == louds) break;
-        pick_move(moves, scores, n, i);
+        if (!sorted) sorted = pick_move(moves, scores, n, i);
         is_capture_before = is_capture(b, moves[i]);
         if (is_capture_before || MV_PROMO(moves[i])) louds_seen++;
 
@@ -3704,41 +3737,6 @@ static uint64_t paranoid_key(const TtBoard *b, int root)
            ^ ((uint64_t)root << 62);
 }
 
-/* pick_move, plus one fact carried between calls at the same node: whether
- * the unpicked tail is already non-increasing. Once it is, pick_move would
- * choose index i at every remaining call -- it takes a later move only on a
- * strictly greater score -- and swap nothing, so the scan can be skipped and
- * the moves come out in exactly the order they would have.
- *
- * Returns that fact for the NEXT call: true when [i, n) was non-increasing on
- * this scan, which also means this call picked i itself, so [i+1, n) is still
- * non-increasing. A scan that swaps reports false even if the swap happened
- * to leave the tail in order; the next scan finds out. Conservative is the
- * safe direction -- a missed shortcut is a scan, never a different order.
- *
- * Paranoid's own because of what FFA ordering looks like: score_moves is
- * called with no killer ply and history is off, so every quiet move scores
- * 0 and the tail after the last capture is one flat run. pick_move scanned
- * that run again for every quiet move searched, O(n^2) per node; the scans
- * this skips were 3.0% of an FFA search's instructions. alphabeta and
- * qsearch are left on
- * pick_move: their scores are not flat, and they are not this change. */
-static int pick_move_tail(uint32_t *moves, int32_t *scores, int n, int i,
-                          int tail_sorted)
-{
-    int best = i, j, mono = 1;
-    if (tail_sorted) return 1;
-    for (j = i + 1; j < n; j++) {
-        if (scores[j] > scores[j - 1]) mono = 0;
-        if (scores[j] > scores[best]) best = j;
-    }
-    if (best != i) {
-        uint32_t tm = moves[i]; moves[i] = moves[best]; moves[best] = tm;
-        int32_t ts = scores[i]; scores[i] = scores[best]; scores[best] = ts;
-    }
-    return mono;
-}
-
 static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
                         int root, int ply)
 {
@@ -3813,7 +3811,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         /* The Teams LMP's early stop, for the same reason: once FFALMP has
          * dropped a quiet it drops every later one. */
         if (lmp_on && louds_seen == louds) break;
-        tail_sorted = pick_move_tail(moves, scores, n, i, tail_sorted);
+        if (!tail_sorted) tail_sorted = pick_move(moves, scores, n, i);
         quiet = !is_capture(b, moves[i]) && !MV_PROMO(moves[i]);
         if (!quiet) louds_seen++;
         /* The same guard as the Teams LMP, and here it matters more: a node
