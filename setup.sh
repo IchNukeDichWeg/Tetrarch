@@ -182,6 +182,57 @@ done
 building without architecture tuning"
 say "arch:     ${ARCHFLAG:-none}"
 
+# -fno-semantic-interposition: a -fPIC library with default visibility lets
+# the dynamic linker swap any exported function for another object's, so GCC
+# must route every call from one tt_* to another through the PLT and may not
+# inline across them. In this file that was 197 call sites -- tt_make,
+# tt_unmake, tt_is_attacked, tt_gen_pseudo, tt_see from inside the search --
+# each an extra indirect jump through the GOT, and tt_in_check/tt_eval never
+# inlined. With the flag every one is a direct call (objdump: 197 @plt -> 0).
+# Nothing loads this library to interpose on it; ctypes looks names up with
+# dlsym, which still finds them all because the symbols stay exported. It is
+# a pure code-generation change: callgrind Ir in libtetrarch for one bench
+# round 3,417.8M -> 3,415.0M (-0.08%, gcc 13, -march=x86-64-v3), signature
+# unchanged. Small, because GCC would not inline the big ones anyway; it is
+# here because it is free, not because it is a large win.
+#
+# Probed with -Werror so a compiler that ignores it with a warning (or a clang
+# too old to know it) builds without it instead of warning on every build.
+# PE/Mach-O have no ELF interposition; the flag is harmless there.
+#
+# Measured on the same box and NOT adopted (Ir as above, one bench round;
+# CPU time paired over 16 reps had a null IQR of +-12%, so none of the time
+# figures below is resolvable and none is claimed):
+#   -O2                       +35.6% Ir: the NNUE loops stop vectorising.
+#   -funroll-loops            -3.8% Ir, +19% code size, time -1.8% (null -1.8%).
+#   -flto                     +0.02% Ir; one translation unit, nothing to link.
+#   visibility(protected)     `#pragma GCC visibility push(protected)` after
+#                             the includes gives the same code as this flag
+#                             and would also cover hand builds, but is
+#                             ELF-only and a source edit for a build concern.
+#                             -fvisibility=hidden alone does nothing here:
+#                             the API ctypes needs stays default, so stays
+#                             interposable.
+#   -fno-plt                  moot once internal calls are direct; the PLT is
+#                             left with cold libc calls (log, clock_gettime).
+#   -fno-stack-protector      -0.25% Ir more (Ubuntu gcc turns it on); not
+#                             worth dropping a hardening default for.
+#   clang 18 instead of gcc   -10.1% Ir, yet paired time -7.3% (SLOWER, inside
+#                             the null): fewer instructions is not less time.
+#   gcc PGO                   -4.7% Ir, time +4.7% median (inside the null);
+#                             the same Ir when trained on positions the bench
+#                             does not contain, so it is not overfit -- but it
+#                             needs a training run inside setup, a different
+#                             toolchain on clang (whose profile runtime is not
+#                             even installed on stock Ubuntu), and it makes
+#                             every A/B compare two different profiles.
+SEMFLAG=""
+if echo 'int main(void){return 0;}' \
+    | "$CC" -Werror -fno-semantic-interposition -x c - -o /dev/null 2>/dev/null; then
+    SEMFLAG="-fno-semantic-interposition"
+fi
+say "interpos: ${SEMFLAG:-default (flag not accepted)}"
+
 # --- python packages ---------------------------------------------------------
 
 missing=""
@@ -230,7 +281,7 @@ for src in "$ROOT"/src/c/*.c; do
     # src/c/. Better to have nothing than to have yesterday's engine.
     rm -f "$out"
     # shellcheck disable=SC2086
-    "$CC" $CFLAGS_COMMON $ARCHFLAG "$src" -o "$out" -lm
+    "$CC" $CFLAGS_COMMON $ARCHFLAG $SEMFLAG "$src" -o "$out" -lm
     built=$((built + 1))
 done
 [ "$built" -eq 0 ] && say "no C sources under src/c/ yet"
