@@ -214,14 +214,15 @@ static inline int is_enemy(const TtBoard *b, uint8_t piece, int mover)
 }
 
 /* Could this piece deliver check to `me`? Dead seats' pieces block but do not
- * attack (§9.1). */
-static inline int hostile(const TtBoard *b, uint8_t piece, int me)
+ * attack (§9.1). No caller is left -- the attack tables below and
+ * compute_evasions use the colour-mask form -- but it stays as the definition
+ * those masks are checked against, so it is marked unused rather than cut. */
+static inline __attribute__((unused)) int hostile(const TtBoard *b,
+                                                  uint8_t piece, int me)
 {
     int c = P.pc_color[piece];
     return c < 4 && b->alive[c] && !same_team(b->mode, c, me);
 }
-
-static inline int queenish(int t) { return t == QUEEN || t == PQUEEN; }
 
 /* What tt_is_attacked needs to know about a piece, in two table loads
  * instead of a type compare chain plus hostile()'s three tests. Built once in
@@ -4136,7 +4137,7 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     uint32_t *moves, ttmove = 0, best_move = 0;
     int32_t *scores, orig_alpha = alpha, orig_beta = beta;
     TtEntry *slot = 0;
-    uint64_t probe;
+    uint64_t probe = 0;   /* read only when slot is set, which sets it; gcc 15 cannot see that */
     TtUndo u;
     Pin pins[8];
     uint64_t evade[4];
