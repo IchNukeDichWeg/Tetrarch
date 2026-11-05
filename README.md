@@ -29,7 +29,7 @@ No virtualenv. Everything is a plain `python3 something.py`.
 
 ```bash
 python3 uci.py                 # the engine, speaking the protocol
-python3 selftest.py            # the full ladder: ~715 checks, ~80s on an 18-core M4
+python3 selftest.py            # the full ladder: 750 checks, ~20s on an 18-core M5 Pro
 python3 gui/app.py             # viewer + play, http://127.0.0.1:7442
 ```
 
@@ -41,13 +41,23 @@ mode and setup (`nets/bundle.txt`).
 
 ## Strength
 
-Every gain below is measured over at least 10,000 games with a full four-game seat
-rotation, against a null self-test of −2.64 ± 6.24 on the same harness. The
-harness has since been re-certified at −0.31 ± 6.58 after an orientation fix
+Every release below is confirmed over at least 10,000 games with a full four-game
+seat rotation, against a null self-test on the same harness. The fixed-nodes
+harness is certified at −0.31 ± 6.58 after an orientation fix; the fixed-time
+harness at −3.56 ± 9.91 in Teams and −3.62 ± 7.61 in FFA
 ([`docs/AB.md`](docs/AB.md), Harness validity).
+
+**v9 against v8**, fixed time, 10,000 games each: **Teams +300.58 ± 9.39**
+(movetime 200) and **FFA +168.75 ± 5.47** (movetime 100). Rows below that list
+two instruments give fixed nodes / fixed time.
 
 | release | feature | Elo | instrument |
 |---|---|---|---|
+| [v9](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v9) | reverse futility pruning | **+133.95 ± 7.00** / **+155.54 ± 11.10** | both |
+| [v9](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v9) | FFA late move pruning | **+121.23 ± 5.36** / **+104.33 ± 7.58** | both |
+| [v9](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v9) | FFA late move reductions | **+46.67 ± 4.99** / **+14.28 ± 7.83** | both |
+| [v9](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v9) | null-move pruning | **+20.28 ± 6.54** / **+27.33 ± 10.09** | both |
+| [v9](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v9) | SEE king-recapture fix | **+17.70 ± 6.41** / **+12.77 ± 10.26** | both |
 | [v8](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v8) | FFA: paranoid search + net-ffa1 | **+106.05 ± 5.55** | fixed time |
 | [v8](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v8) | FFA transposition table | **+15.90 ± 7.28** | fixed nodes |
 | [v7](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v7) | lazy accumulator perspectives | **+63.37 ± 4.68** | fixed time |
@@ -59,8 +69,10 @@ harness has since been re-certified at −0.31 ± 6.58 after an orientation fix
 | [v2](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v2) | late move reductions | +35.07 ± 6.51 | fixed nodes |
 | [v1](https://github.com/IchNukeDichWeg/Tetrarch/releases/tag/v1) | killer moves | +50.42 ± 6.41 | fixed nodes |
 
-Since v0 the search tree at classic depth 5 has gone from 228,628 nodes to 5,982,
-and mean depth at a 20,000-node budget from 3.73 to 5.25.
+Since v0 the search tree at classic depth 5 has gone from 228,628 nodes to 3,227.
+Mean depth at a 20,000-node budget went from 3.73 to 5.25 before v9 and has not been
+re-measured since. v9 also made the core +70% faster on x86 (2x EPYC 7443) and
++18% on Apple (M5 Pro), node for node identical.
 
 The largest gain is the one that was predicted to be negative. Chess intuition
 about a feature's value does not survive the move to four seats -- see
@@ -110,9 +122,9 @@ make dist       # source tarball
 
 `selftest.py` runs before every commit, including pure-Python ones. It pins perft,
 cross-checks both move generators, asserts the C core and the Python reference agree
-on eval and Zobrist keys bit for bit, and checks that every dormant toggle is really
-dormant -- a toggle that silently flipped would make every later A/B a comparison
-against something nobody measured.
+on eval and Zobrist keys bit for bit, and checks that every search toggle sits at
+the default its A/B gave it -- a toggle that silently flipped would make every
+later A/B a comparison against something nobody measured.
 
 Measuring a change:
 
@@ -167,9 +179,17 @@ FFA played before: **+106.05 ± 5.55** over 10,000 games on a clock, and
 **+67.35 ± 10.38** at fixed nodes. All five setups are 8-10 sigma positive and
 one net covers them.
 
-Not yet built: multithreading and bitboards. An opening book landed for both
-modes; the FFA one is committed at `books/`. No null self-test has been run on
-the FFA fixed-time instrument -- the confirm is 19 sigma, but it is owed.
+**v9: the search prunes.** Reverse futility and null-move pruning in Teams, late
+move pruning and reductions in the paranoid FFA search, all confirmed at both
+instruments and default on. At 20,000 nodes the old FFA search reached 3.11
+plies, under one round, so the root seat never saw its own next move; LMP and
+LMR take it to five. FFA killers confirmed at fixed nodes and were NULL on the
+clock, so they stay off. Both fixed-time nulls have now been run.
+
+Not yet built: multithreading, full bitboards, and quiescence in FFA. The FFA
+clock still uses about a third of movetime, so every FFA number above is on
+that clock. An opening book landed for both modes; the FFA one is committed at
+`books/`.
 
 ## License and credit
 
