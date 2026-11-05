@@ -8,6 +8,81 @@ See [`docs/RELEASING.md`](docs/RELEASING.md) for the rules and
 Distribution shown is the nine-bucket seat rotation (score sums 0, 0.5, 1 … 4),
 never a pentanomial -- one opening here is four games, not two.
 
+## v9 -- the search prunes
+
+**v9 -- Teams +300 and FFA +169 over v8, at fixed time.** Four pruning toggles
+confirmed at both instruments and went default on: RFP and null move in Teams,
+LMP and LMR in the paranoid FFA search. SEE stopped letting the other side take
+a recapturing king for free. And the core got +70% faster on x86 and +18% on
+Apple, bit-exact.
+
+```
+Elo   | Teams +300.58 +/- 9.39 (95%)   FFA +168.75 +/- 5.47 (95%)
+SPRT  | none -- fixed-budget confirms, not sequential tests
+Conf  | FIXED TIME, hash 16, workers 48 (nproc / 2) on a 2x EPYC 7443
+      | Teams: classic, movetime 200, net-v5 both sides
+      | FFA:   book of 20,000 positions over all five setups, movetime 100,
+      |        net-ffa1 both sides
+Games | Teams 10,000 (2,500 x 4)   score 8,494.50 (84.9%)
+      | FFA   10,000 (2,500 x 4)   score 7,254.00 (72.5%)
+Dist  | Teams 0, 0, 13, 3, 276, 17, 865, 33, 1293
+      | FFA   0, 0, 2, 10, 35, 86, 215, 306, 442, 478, 457, 304, 165 (thirteen)
+Null  | Teams -3.56 +/- 9.91 over 4,000 games, same harness
+      | FFA   -3.62 +/- 7.61 over 4,000 games, same harness
+Base  | v8 (597,903), same nets and bundle on both sides
+Bench | 93,846,865 nodes perft, 146,019 search (was 597,903)
+Pins  | re-measured on all five setups, d4 and d5 moved
+```
+
+FFA placed first in 5,011 of 10,000 games, against 2,500 if level.
+
+### What changed
+
+Every toggle was measured one at a time, each on top of the ones already
+confirmed. Fixed nodes is 20,000 nodes over 10,000 games. Fixed time is
+4,000 games (FFAKillers 10,000).
+
+| toggle | fixed nodes | fixed time | default |
+|---|---|---|---|
+| FFALMP | +121.23 +/- 5.36 | +104.33 +/- 7.58 | **on** |
+| FFALMR (on FFALMP) | +46.67 +/- 4.99 | +14.28 +/- 7.83 | **on** |
+| FFAKillers (on both) | +9.16 +/- 4.98 | +3.08 +/- 4.91 | off, NULL |
+| RFP | +133.95 +/- 7.00 | +155.54 +/- 11.10 | **on** |
+| NullMove (on RFP) | +20.28 +/- 6.54 | +27.33 +/- 10.09 | **on** |
+| SEE king fix | +17.70 +/- 6.41 | +12.77 +/- 10.26 | fix |
+
+- **The FFA search finishes a round now.** At 20,000 nodes the old paranoid
+  search reached 3.11 plies, under one round, so the root seat never saw its
+  own next move. LMP and LMR take it to five.
+- **RFP gained more on the clock than at fixed nodes.** The worry was that its
+  extra evaluations are invisible to a node count. The subtrees it never
+  enters repay them.
+- **Bit-exact speedups:** 31 commits in the core that change no node count.
+  Rotated CPU-time bench against a byte-identical null: **+70.12%** on a
+  2x EPYC 7443 (AVX2, null +0.33%) and **+18.41%** on an Apple M5 Pro (NEON,
+  null +0.42%). The column-blocked NNUE layers, VNNI and the fused flush are
+  x86-only, which is most of the gap.
+- **13 correctness fixes**: go infinite could not be stopped and isready
+  waited for the search; one engine crash poisoned every later game in its
+  worker; the GUI played every setup with classic's net; malformed GUI requests
+  were 500s; gen_data --resume and train.py broke on a truncated line; a grey
+  piece wrote one row past the occupancy bitboard; the FFA table answered one
+  root's question with another root's score; and others in docs/AB.md.
+
+### Rejected in this window
+
+- **FFAKillers**: CONFIRMED at fixed nodes, NULL at fixed time. It saves
+  nodes, and the clock does not see the saving. It stays off.
+
+### Known limits
+
+- The FFA clock still uses about a third of movetime
+  (FFA_NEXT_DEPTH_FRACTION). Every FFA number above is on that clock; fixing it
+  changes what each toggle is worth.
+- FFA has no quiescence search.
+- The Teams confirm is classic only. FFA covers all five setups.
+- RFP margin 100 is untried as a second arm.
+
 ## v8 -- FFA
 
 Free-for-all is playable. It was parsed, generated and perft-tested from the

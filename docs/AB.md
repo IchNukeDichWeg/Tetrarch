@@ -1164,6 +1164,24 @@ in selftest.py are three to four times smaller from depth 4 on.
 Worth setting against the generational loop: net v5, a whole generation of
 self-play, is +10.50 at fixed nodes. This toggle is +16.32.
 
+### v9 against v8 -- CONFIRMED, and both fixed-time nulls pass
+
+The release confirm, against v8 (597,903). Same nets and bundle on both sides,
+FIXED TIME, hash 16, `--workers 48` (nproc / 2) on a 2x EPYC 7443 (Zen 3,
+AVX2, Ubuntu 26.04), 5 Nov.
+
+| | Elo | games | Dist |
+|---|---|---|---|
+| Teams classic, movetime 200, net-v5 | **+300.58 +/- 9.39** | 10,000 | 0, 0, 13, 3, 276, 17, 865, 33, 1293 |
+| FFA book, movetime 100, net-ffa1 | **+168.75 +/- 5.47** | 10,000 | 0, 0, 2, 10, 35, 86, 215, 306, 442, 478, 457, 304, 165 |
+| Teams null, same harness | -3.56 +/- 9.91 | 4,000 | 53, 5, 211, 19, 440, 16, 204, 5, 47 |
+| FFA null, same harness | -3.62 +/- 7.61 | 4,000 | 0, 14, 28, 86, 128, 174, 200, 141, 110, 63, 33, 18, 5 |
+
+FFA placed 5011 / 2531 / 1665 / 793 against v8. The nulls are the fixed-time
+certifications this file had owed since the orientation fix (Teams) and since
+v8 (FFA). Gains are not additive: the Teams total is more than the toggle rows
+summed because the +70% x86 speedup only shows on the clock.
+
 ### SEE king recapture (6ed2e5d) -- CONFIRMED at both instruments
 
 The swap-off priced a recapturing king at 0 and let the other side take it for
