@@ -1153,7 +1153,7 @@ in selftest.py are three to four times smaller from depth 4 on.
 Worth setting against the generational loop: net v5, a whole generation of
 self-play, is +10.50 at fixed nodes. This toggle is +16.32.
 
-### SEE king recapture (6ed2e5d) -- CONFIRMED at fixed nodes, fixed time owed
+### SEE king recapture (6ed2e5d) -- CONFIRMED at both instruments
 
 The swap-off priced a recapturing king at 0 and let the other side take it for
 free; it now stops at a king recapture onto a square the next side still
@@ -1164,10 +1164,12 @@ parent c75fa4d, Teams / classic, go nodes 20,000, 10,000 games each:
 |---|---|---|
 | net-v5 both sides | **+17.70 +/- 6.41** | 83, 17, 526, 81, 903, 84, 624, 35, 147 |
 | hand eval both sides | **+14.81 +/- 6.63** | 122, 13, 515, 50, 930, 36, 663, 13, 158 |
+| movetime 200, net-v5, 4,000 games | **+12.77 +/- 10.26** | 45, 1, 211, 12, 408, 20, 232, 4, 67 |
 
 Measured on a 2x EPYC 7443 (Zen 3, AVX2, Ubuntu 26.04), `--workers 0`.
 The 240-game smoke in the commit (+29.02 +/- 47.98) only ruled out a disaster;
-these are the numbers. Fixed time is still owed before a release quotes it.
+these are the numbers. The fixed-time row ran at `--workers 48` (nproc / 2) on
+the same box and agrees with fixed nodes within its margin.
 
 ### SEE in move ordering -- NOT screened, and probably will not be
 
