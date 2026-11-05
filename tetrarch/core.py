@@ -625,7 +625,8 @@ def ffa_killers_enabled():
 
 def set_ffa_lmr(on):
     """Late move reductions in the paranoid FFA search, sharing the Teams
-    table and LMRMinDepth/LMRMinMove. Default OFF. Not exact."""
+    table and LMRMinDepth/LMRMinMove. Default ON: +14.28 +/- 7.83 at movetime
+    100 on top of FFALMP (docs/AB.md). Not exact."""
     load().tt_set_ffa_lmr(1 if on else 0)
 
 

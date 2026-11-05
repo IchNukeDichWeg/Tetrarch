@@ -1079,7 +1079,7 @@ FFA_INEXACT_TOGGLES = (
 def ffa_exact():
     """FFA_INEXACT_TOGGLES off for the block, then back as they were. Any
     check of the FFA search against reference_paranoid needs it now that
-    FFALMP is default on."""
+    FFALMP and FFALMR are default on."""
     restore = [(setter, getter()) for _n, setter, getter in FFA_INEXACT_TOGGLES]
     for _n, setter, _g in FFA_INEXACT_TOGGLES:
         setter(False)
@@ -1794,12 +1794,13 @@ def test_ffa_elimination():
 
 
 #: bench.py's per-position node counts with the default net and the default
-#: toggles -- the signature every bit-exact commit quotes (424,923). Pinned
+#: toggles -- the signature every bit-exact commit quotes (414,562). Pinned
 #: here so a dormant toggle that leaks into the default path fails the gate
 #: rather than a reviewer's arithmetic. Was 597,933 (49806 / 189492 / 111487)
 #: until SEE stopped letting a recapturing king be taken for free, then
-#: 601,860 until FFALMP went default on (classic-24ply-ffa 190997 -> 14060).
-BENCH_PINS = [50063, 189490, 115159, 14060, 56151]
+#: 601,860 until FFALMP went default on (classic-24ply-ffa 190997 -> 14060),
+#: then 424,923 until FFALMR did (14060 -> 3699).
+BENCH_PINS = [50063, 189490, 115159, 3699, 56151]
 
 #: The pruning toggles built after the bench was pinned, each with the default
 #: its A/B gave it. (name, setter, getter, which bench positions it must move:
@@ -1809,8 +1810,8 @@ SEARCH_TOGGLES = (
     ("NullMove", core.set_null_move, core.null_move_enabled, "teams", False),
     ("RFP", core.set_rfp, core.rfp_enabled, "teams", False),
     ("FFAKillers", core.set_ffa_killers, core.ffa_killers_enabled, "ffa", False),
-    ("FFALMR", core.set_ffa_lmr, core.ffa_lmr_enabled, "ffa", False),
     # CONFIRMED at fixed nodes and movetime 100 (docs/AB.md).
+    ("FFALMR", core.set_ffa_lmr, core.ffa_lmr_enabled, "ffa", True),
     ("FFALMP", core.set_ffa_lmp, core.ffa_lmp_enabled, "ffa", True),
 )
 
@@ -1970,7 +1971,7 @@ def _paranoid_job(index):
 
     The FFA path shares none of the Teams heuristics -- no killers, no LMR,
     no LMP, no SEE pruning, no quiescence -- except through its own FFA*
-    toggles; the inexact ones (FFALMP is default on) are switched off here,
+    toggles; the inexact ones (FFALMP, FFALMR: default on) are off here,
     like INEXACT_TOGGLES for the Teams oracle, so a promoted one cannot
     blind this comparison.
 

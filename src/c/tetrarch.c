@@ -3115,9 +3115,17 @@ void tt_set_rfp_params(int max_depth, int margin)
  *   fixed nodes 20,000   +121.23 +/- 5.36   10,000 games
  *   movetime 100         +104.33 +/- 7.58    4,000 games
  * The clock kept most of the node-count gain, which is what a ply the base
- * never reached should do. See docs/AB.md. */
+ * never reached should do. See docs/AB.md.
+ *
+ * FFALMR: CONFIRMED and default ON, measured on top of FFALMP:
+ *   fixed nodes 20,000   +46.67 +/- 4.99   10,000 games
+ *   movetime 100         +14.28 +/- 7.83    4,000 games
+ * The clock kept under a third: with LMP on, the reductions buy less.
+ *
+ * FFAKillers: NULL at movetime 100 (+3.08 +/- 4.91 over 10,000 games on top
+ * of both, +9.16 +/- 4.98 at fixed nodes), so it stays off. */
 static int use_ffa_killers = 0;
-static int use_ffa_lmr = 0;
+static int use_ffa_lmr = 1;
 static int use_ffa_lmp = 1;
 
 void tt_set_ffa_killers(int on) { use_ffa_killers = on ? 1 : 0; }
