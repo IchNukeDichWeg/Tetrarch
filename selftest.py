@@ -20,11 +20,14 @@ Two things this file is deliberately built around:
 """
 
 import argparse
+import atexit
+import contextlib
 import json
 import os
 import random
 import sys
 import tempfile
+import threading
 import time
 
 from tetrarch.board import (
@@ -49,7 +52,24 @@ from tetrarch import pgn4
 
 HAVE_C = core.available()
 
-SCRATCH = tempfile.gettempdir()
+# A directory of this run's own, not the shared temp dir. Every scratch file
+# below has a fixed name, and two selftests running at once (two checkouts on
+# one machine) used to write, read and delete each other's copies: one run
+# died with FileNotFoundError on tetrarch_bundle_test.txt that the other had
+# just removed. Pool workers inherit the path through fork, so they write into
+# it too; only the process that made it removes it, so a worker exiting cannot
+# pull it out from under the rest of the run.
+SCRATCH = tempfile.mkdtemp(prefix="tetrarch-selftest-")
+_SCRATCH_OWNER = os.getpid()
+
+
+def _remove_scratch():
+    if os.getpid() == _SCRATCH_OWNER:
+        import shutil
+        shutil.rmtree(SCRATCH, ignore_errors=True)
+
+
+atexit.register(_remove_scratch)
 
 FAILURES = []
 CHECKS = [0]
@@ -848,6 +868,31 @@ def test_c_core(deep=False):
     check("C and Python agree on legal moves", move_bad == 0,
           "%d positions differ" % move_bad)
 
+    # A grey piece (DEAD_UNKNOWN, colour 4) indexed the per-seat occupancy
+    # bitboard one row past its end: the rebuild set a bit there and a capture
+    # cleared one. On this build that row is the `initialised` flag, so grey
+    # pieces on d1 and e1 -- squares 3 and 4 -- OR'd bits 3 and 4 into it
+    # (tt_ready() read 2097177 here, earlier random positions adding bit 21).
+    # Exactly 1 is asserted, not truthy: the OR leaves it truthy, which is why
+    # nothing noticed. The capture is driven through make/unmake with the bitboard
+    # live, which is the path the search takes.
+    b = position({"h1": (RED, KING), "a7": (BLUE, KING), "g14": (YELLOW, KING),
+                  "n8": (GREEN, KING), "d4": (RED, ROOK),
+                  "d1": (DEAD_UNKNOWN, PAWN), "e1": (DEAD_UNKNOWN, KNIGHT)},
+                  mode=MODE_FFA)
+    cb = core.CBoard(b)
+    ready = [lib.tt_ready()]
+    take = [m for m in cb.legal() if mv_to(m) == sq_from_name("d1")]
+    ready.append(lib.tt_ready())
+    for m in take:
+        cb.make(m)
+        cb.legal()
+        cb.unmake(m)
+    ready.append(lib.tt_ready())
+    check("a grey piece does not write past the occupancy bitboard",
+          len(take) == 1 and ready == [1, 1, 1],
+          "tt_ready() read %s, %d captures of d1" % (ready, len(take)))
+
 
 def test_rotation():
     section("board rotation (match.py seat rotation)")
@@ -978,12 +1023,17 @@ def test_eval():
 #: times smaller, which is the feature working and is worth 16.32 Elo at fixed
 #: nodes (docs/AB.md). A change here is either a deliberate default flip or a
 #: bug, and never a wash.
+#: Re-pinned when RFP became the default: classic d4 971 -> 927, rg d4
+#: 1088 -> 1044. RFP needs depth > 1 below a node to act, so d1-d3 and the
+#: d5 trees (where the table absorbs it) do not move.
+#: Re-pinned when NullMove became the default: every d4 and d5 moves (a pass
+#: needs depth >= 3), d1-d3 do not.
 SEARCH_PINS = {
-    "classic": [40, 84, 311, 971, 5982],
-    "modern": [40, 86, 322, 775, 6527],
-    "by": [40, 86, 322, 1217, 4789],
-    "byg": [40, 86, 322, 1217, 5371],
-    "rg": [40, 80, 342, 1088, 5155],
+    "classic": [40, 84, 311, 346, 3227],
+    "modern": [40, 86, 322, 515, 3905],
+    "by": [40, 86, 322, 474, 2815],
+    "byg": [40, 86, 322, 474, 5065],
+    "rg": [40, 80, 342, 402, 3646],
 }
 
 
@@ -1016,7 +1066,33 @@ INEXACT_TOGGLES = (
     ("lmr", core.set_lmr, core.lmr_enabled),
     ("lmp", core.set_lmp, core.lmp_enabled),
     ("see prune", core.set_see_prune, core.see_prune_enabled),
+    # Default off, so switching them off here is a no-op today. Listed so the
+    # oracle stays meaningful the day either is promoted.
+    ("null move", core.set_null_move, core.null_move_enabled),
+    ("rfp", core.set_rfp, core.rfp_enabled),
 )
+
+#: The same list for the paranoid oracle. FFAKillers is not on it: it only
+#: reorders, and test_search_toggles checks it against the oracle.
+FFA_INEXACT_TOGGLES = (
+    ("ffa lmr", core.set_ffa_lmr, core.ffa_lmr_enabled),
+    ("ffa lmp", core.set_ffa_lmp, core.ffa_lmp_enabled),
+)
+
+
+@contextlib.contextmanager
+def ffa_exact():
+    """FFA_INEXACT_TOGGLES off for the block, then back as they were. Any
+    check of the FFA search against reference_paranoid needs it now that
+    FFALMP and FFALMR are default on."""
+    restore = [(setter, getter()) for _n, setter, getter in FFA_INEXACT_TOGGLES]
+    for _n, setter, _g in FFA_INEXACT_TOGGLES:
+        setter(False)
+    try:
+        yield
+    finally:
+        for setter, value in restore:
+            setter(value)
 
 
 def _minimax_job(index):
@@ -1133,6 +1209,30 @@ def test_search(workers=1):
     check("the fast path declines it rather than allowing it",
           core.legality_disagreements(epb) == 0)
 
+    # The in-check half of the fast path calls a move certainly ILLEGAL when
+    # it neither moves the king nor lands on the checker or the line between.
+    # En passant is the one move that removes a piece from a square other than
+    # its destination, so it can capture a checking pawn without landing on
+    # it. Found by sampling once in 11,316 positions -- too rare to trust the
+    # random walk above to keep finding it, so pinned here. Blue's d11 pawn
+    # has just double-pushed and checks Yellow's king on e12; Yellow's d12
+    # pawn answers it by taking en passant on c11.
+    ep_evasion = ("Y-0,0,0,0-0,0,0,0-0,0,0,0-3,12,1,15-0-"
+                  "{'enPassant':('','c11:d11','','')}-"
+                  "3,yR,yN,yB,3,yN,yR,3/9,yP,4/3,yP,yK,yP,8/"
+                  "bR,2,bP,yP,5,yP,1,gP,gR/bN,1,bP,1,yB,5,gK,2,gN/"
+                  "bB,bP,bK,2,bB,4,gP,3/3,bP,10/1,bN,bQ,gQ,8,gP,1/"
+                  "1,bP,8,gP,2,gB/9,rN,rP,1,gP,gN/bR,bP,1,bP,gB,7,gP,gR/"
+                  "6,rP,7/5,rP,1,rP,rP,rP,4/3,rR,rN,1,rK,1,rB,1,rR,3")
+    evb = Board.from_fen4(ep_evasion, MODE_FFA)
+    check("the en passant evasion position is in check",
+          fast.in_check(evb, evb.turn))
+    check("and taking en passant answers it",
+          "d12c11" in [move_str(m) for m in fast.gen_legal(evb)]
+          and "d12c11" in [move_str(m) for m in core.gen_legal(evb)])
+    check("the fast path does not call it illegal",
+          core.legality_disagreements(evb) == 0)
+
     core.set_hash(16)
     pins = []
     for setup in SETUPS:
@@ -1164,11 +1264,15 @@ def test_search(workers=1):
 
     # The toggle must still reach the search, so it can be turned off for a
     # future A/B. A toggle wired to nothing passes every other check here.
+    # Depth 6, not 5: with NullMove default on, the depth-5 start tree is a
+    # few thousand nodes and killers happen to grow it (3,227 vs 2,736),
+    # while at depth 6 they cut it to 13% and over the bench to 26%. One
+    # shallow tree is noise; the deeper one measures the ordering.
     core.clear_hash()
-    on = core.search(start_board("classic"), 5).nodes
+    on = core.search(start_board("classic"), 6).nodes
     core.set_killers(False)
     core.clear_hash()
-    off = core.search(start_board("classic"), 5).nodes
+    off = core.search(start_board("classic"), 6).nodes
     core.set_killers(True)
     check("the killers toggle still reaches the search", on != off,
           "%d on, %d off" % (on, off))
@@ -1698,6 +1802,160 @@ def test_ffa_elimination():
 
 
 
+#: bench.py's per-position node counts with the default net and the default
+#: toggles -- the signature every bit-exact commit quotes (146,019). Pinned
+#: here so a dormant toggle that leaks into the default path fails the gate
+#: rather than a reviewer's arithmetic. Was 597,933 (49806 / 189492 / 111487)
+#: until SEE stopped letting a recapturing king be taken for free, then
+#: 601,860 until FFALMP went default on (classic-24ply-ffa 190997 -> 14060),
+#: then 424,923 until FFALMR did (14060 -> 3699), then 414,562 until RFP did
+#: (every Teams position), then 178,350 until NullMove did.
+BENCH_PINS = [28786, 55988, 44674, 3699, 12872]
+
+#: The pruning toggles built after the bench was pinned, each with the default
+#: its A/B gave it. (name, setter, getter, which bench positions it must move:
+#: "teams" or "ffa", default). None is exact except FFAKillers, which is
+#: ordering only and is checked against the oracle.
+SEARCH_TOGGLES = (
+    # CONFIRMED at fixed nodes and movetime 200 (docs/AB.md).
+    ("NullMove", core.set_null_move, core.null_move_enabled, "teams", True),
+    ("RFP", core.set_rfp, core.rfp_enabled, "teams", True),
+    ("FFAKillers", core.set_ffa_killers, core.ffa_killers_enabled, "ffa", False),
+    # CONFIRMED at fixed nodes and movetime 100 (docs/AB.md).
+    ("FFALMR", core.set_ffa_lmr, core.ffa_lmr_enabled, "ffa", True),
+    ("FFALMP", core.set_ffa_lmp, core.ffa_lmp_enabled, "ffa", True),
+)
+
+
+def test_search_toggles():
+    section("search toggles (each at the default its A/B gave it)")
+    if not HAVE_C:
+        check("C core is built", False, "run ./setup.sh")
+        return
+    import bench
+    import uci
+    from tetrarch import nnue
+
+    for name, _s, getter, _m, default in SEARCH_TOGGLES:
+        check("%s default %s" % (name, "on" if default else "off"),
+              getter() == default)
+
+    def bench_counts():
+        out = []
+        for label, mode, fen in bench.POSITIONS:
+            b = Board.from_fen4(fen, mode)
+            core.clear_hash()
+            out.append(core.search(b, 7 + bench.DEPTH_DELTA.get(label, 0)).nodes)
+        return out
+
+    core.load_net(nnue.Net.load(uci.DEFAULT_NET))
+    try:
+        base = bench_counts()
+        check("the bench signature is the pinned one at the defaults",
+              base == BENCH_PINS, "%s (%d)" % (base, sum(base)))
+        modes = [mode for _l, mode, _f in bench.POSITIONS]
+        for name, setter, _g, where, default in SEARCH_TOGGLES:
+            setter(not default)
+            on = bench_counts()
+            setter(default)
+            back = bench_counts()
+            want = MODE_FFA if where == "ffa" else MODE_TEAMS
+            moved_own = any(a != b_ for a, b_, m in zip(on, base, modes)
+                            if m == want)
+            moved_other = any(a != b_ for a, b_, m in zip(on, base, modes)
+                              if m != want)
+            # A toggle wired to nothing passes every other check and turns
+            # its A/B into a null self-test.
+            check("%s reaches the %s search" % (name, where), moved_own,
+                  "%d -> %d nodes" % (sum(base), sum(on)))
+            check("%s leaves the other mode's tree alone" % name,
+                  not moved_other)
+            check("%s back at its default restores the signature" % name,
+                  back == BENCH_PINS, str(back))
+    finally:
+        core.unload_net()
+
+    # The Teams prunings return early on a bound; they must never INVENT a
+    # mate. A pass proves a bound, not a mate -- the line behind it is not
+    # playable -- so a mate score out of the null search is clamped to beta.
+    rng = random.Random(4471)
+    invented = {"NullMove": 0, "RFP": 0}
+    setters = {"NullMove": core.set_null_move, "RFP": core.set_rfp}
+    compared = 0
+    for _ in range(300):
+        b = random_position(rng)
+        if b.mode != MODE_TEAMS or not all(b.alive) or not fast.gen_legal(b):
+            continue
+        compared += 1
+        was = {name: on() for name, on in (("NullMove", core.null_move_enabled),
+                                           ("RFP", core.rfp_enabled))}
+        for setter in setters.values():
+            setter(False)
+        core.clear_hash()
+        plain = core.search(b, 5).score
+        for name, setter in setters.items():
+            setter(True)
+            core.clear_hash()
+            got = core.search(b, 5).score
+            setter(False)
+        for name, setter in setters.items():
+            setter(was[name])
+            if abs(got) >= 29900 and abs(plain) < 29900:
+                invented[name] += 1
+    for name, n in invented.items():
+        check("%s never invents a mate" % name, n == 0,
+              "%d of %d positions" % (n, compared))
+
+    # FFA LMP drops moves; with the legal >= 1 guard a seat that has a move
+    # is never eliminated by the pruning, so neither a win nor a loss appears
+    # that the unpruned search does not see.
+    rng = random.Random(4472)
+    invented = compared = 0
+    for _ in range(200):
+        b = random_position(rng)
+        if b.mode != MODE_FFA or not fast.gen_legal(b) or sum(b.alive) < 2:
+            continue
+        compared += 1
+        was = (core.ffa_lmp_enabled(), core.ffa_lmr_enabled())
+        core.set_ffa_lmp(False)
+        core.set_ffa_lmr(False)
+        core.clear_hash()
+        plain = core.search(b, 4).score
+        core.set_ffa_lmp(True)
+        core.set_ffa_lmr(True)
+        core.clear_hash()
+        got = core.search(b, 4).score
+        core.set_ffa_lmp(was[0])
+        core.set_ffa_lmr(was[1])
+        if abs(got) >= 29900 and abs(plain) < 29900:
+            invented += 1
+    check("FFA LMP and LMR never invent a win or an elimination",
+          invented == 0, "%d of %d positions" % (invented, compared))
+    check("and the FFA sample was not empty", compared > 10, str(compared))
+
+    # Killers only reorder, so the paranoid value must not move at all.
+    core.set_ffa_killers(True)
+    bad = tested = 0
+    try:
+        with ffa_exact():
+            for index in range(40):
+                rng = random.Random(9000 + index)
+                b = _sparse_ffa(rng)
+                if not fast.gen_legal(b):
+                    continue
+                for depth in (1, 2, 3):
+                    core.clear_hash()
+                    got = core.search(b, depth).score
+                    if got != search.reference_paranoid(b.copy(), b.turn,
+                                                        depth):
+                        bad += 1
+                    tested += 1
+    finally:
+        core.set_ffa_killers(False)
+    check("FFA killers leave the paranoid value exact", bad == 0,
+          "%d of %d comparisons" % (bad, tested))
+
+
 def _sparse_ffa(rng):
     """Like _sparse_teams but FFA, and thin enough that seats really do run
     out of moves -- the elimination branch is the whole point of the FFA
@@ -1728,9 +1986,11 @@ def _probe_net():
 def _paranoid_job(index):
     """One seeded sparse FFA position against the unpruned paranoid oracle.
 
-    No toggle has to be switched off first: the FFA path shares none of the
-    Teams heuristics -- no TT, no killers, no LMR, no LMP, no SEE pruning, no
-    quiescence -- so the comparison is exact by construction.
+    The FFA path shares none of the Teams heuristics -- no killers, no LMR,
+    no LMP, no SEE pruning, no quiescence -- except through its own FFA*
+    toggles; the inexact ones (FFALMP, FFALMR: default on) are off here,
+    like INEXACT_TOGGLES for the Teams oracle, so a promoted one cannot
+    blind this comparison.
 
     Half the sample runs with a net loaded. That half is the only thing that
     exercises the incremental accumulator being READ from a perspective that
@@ -1746,19 +2006,37 @@ def _paranoid_job(index):
     rng = random.Random(9000 + index)
     b = _sparse_ffa(rng)
     if not fast.gen_legal(b):
-        return (0, 0, 0)
-    tested = bad = elim = 0
+        return (0, 0, 0, 0)
+    restore = [(setter, getter()) for _n, setter, getter in FFA_INEXACT_TOGGLES]
+    for _n, setter, _g in FFA_INEXACT_TOGGLES:
+        setter(False)
+    tested = bad = elim = acc_bad = 0
     for depth in (1, 2, 3):
         core.clear_hash()
         got = core.search(b, depth).score
+        # The FFA search queues accumulator deltas for the root seat alone,
+        # so the other three must come out of it still describing the root
+        # board. The oracle cannot see them -- it only reads the root seat's
+        # -- and the next search from another seat would. Checked before the
+        # oracle runs, because the oracle's own evaluations move it. Twice:
+        # the first search enters on a stale accumulator and refreshes at the
+        # root, the second enters on the one the first handed back.
+        if index % 2:
+            for _again in range(2):
+                if _again:
+                    core.search(b, depth)
+                if core.nnue_acc_matches(b) is not True:
+                    acc_bad += 1
         want = search.reference_paranoid(b.copy(), b.turn, depth)
         if got != want:
             bad += 1
         tested += 1
+    for setter, was in restore:
+        setter(was)
     # Did any line in this position actually eliminate somebody? Counted so
     # the section can prove it exercised the branch rather than assume it.
     elim = 1 if _has_elimination(b.copy(), 2) else 0
-    return (tested, bad, elim)
+    return (tested, bad, elim, acc_bad)
 
 
 def _has_elimination(b, depth):
@@ -1859,6 +2137,10 @@ def test_ffa_search(workers=1):
     check("the sample reaches the elimination branch", elim > 0,
           "%d of %d positions had a seat run out of moves"
           % (elim, FFA_POSITIONS))
+    check("all four accumulators survive an FFA search with a net",
+          sum(r[3] for r in results) == 0,
+          "%d searches left a seat's accumulator stale"
+          % sum(r[3] for r in results))
 
     # The FFA table must not hand back a score computed at another points
     # standing. The evaluation reads the standing -- nnue.extra_inputs feeds
@@ -1893,6 +2175,28 @@ def test_ffa_search(workers=1):
               warm == alone, "%d warm vs %d from a cleared table" % (warm, alone))
     finally:
         core.unload_net()
+
+    # Nor across roots. The paranoid key mixed the root in as zob_turn[root],
+    # which cancels the zob_turn[turn] already in b->key whenever the root is
+    # to move, so Red's root-to-move nodes and Blue's shared keys. Searching a
+    # placement for Red and then the same squares with Blue to move gave Blue
+    # Red's scores at ply 4 (modern depth 5: -8488 warm, -8500 cold). The
+    # table always replaces, so with no cross-root hit the warm search is the
+    # cold one exactly: score, move AND nodes.
+    red = start_board("modern", MODE_FFA)
+    blue = red.copy()
+    blue.turn = BLUE
+    blue.recompute_key()
+    core.clear_hash()
+    cold = core.search(blue, 5)
+    core.clear_hash()
+    core.search(red, 5)
+    warm = core.search(blue, 5)
+    check("a warm FFA table does not answer for another root",
+          (warm.score, warm.best, warm.nodes)
+          == (cold.score, cold.best, cold.nodes),
+          "warm %d/%d nodes, cold %d/%d" % (warm.score, warm.nodes,
+                                            cold.score, cold.nodes))
 
 
 def test_net_bundle():
@@ -1940,7 +2244,7 @@ def test_net_bundle():
 
     # And the dispatch itself: selecting a setup must select its net, and a
     # setup the bundle does not name must fall back rather than fail.
-    scratch = os.path.join(tempfile.gettempdir(), "tetrarch_bundle_test.txt")
+    scratch = os.path.join(SCRATCH, "tetrarch_bundle_test.txt")
     nets_dir = os.path.dirname(path)
     # Absolute, because load_bundle resolves a relative name against the
     # manifest's own directory and this manifest lives in the temp dir.
@@ -2168,22 +2472,23 @@ def test_repetition():
     check("the FFA table is default on", core.ffa_tt_enabled())
     core.clear_hash()
     bad = tested = 0
-    for i in range(24):
-        pos = _sparse_ffa(random.Random(9000 + i))
-        for seat in range(4):
-            view = pos.copy()
-            view.turn = seat
-            view.recompute_key()
-            if not fast.gen_legal(view):
-                continue
-            for depth in (2, 3):
-                got = core.search(view, depth).score
-                want = search.reference_paranoid(view.copy(), seat, depth)
-                tested += 1
-                bad += got != want
-        # A Teams search into the same table, so the two are proved not to
-        # answer each other.
-        core.search(start_board("classic"), 4)
+    with ffa_exact():
+        for i in range(24):
+            pos = _sparse_ffa(random.Random(9000 + i))
+            for seat in range(4):
+                view = pos.copy()
+                view.turn = seat
+                view.recompute_key()
+                if not fast.gen_legal(view):
+                    continue
+                for depth in (2, 3):
+                    got = core.search(view, depth).score
+                    want = search.reference_paranoid(view.copy(), seat, depth)
+                    tested += 1
+                    bad += got != want
+            # A Teams search into the same table, so the two are proved not
+            # to answer each other.
+            core.search(start_board("classic"), 4)
     check("the table survives every root and both modes over %d searches"
           % tested, bad == 0, "%d disagreements" % bad)
 
@@ -2307,6 +2612,17 @@ def test_see():
     check("a teammate's defender counts", see(mate, "g5g9") == -300,
           str(see(mate, "g5g9")))
 
+    # The king prices at 0 in the piece table, so the swap-off let the other
+    # side take a recapturing king for nothing: rook takes a pawn only Blue's
+    # king defends, a second rook behind, read -400 and SEEPrune dropped a
+    # capture that wins a pawn. The king may not recapture onto a square that
+    # is still attacked; with no rook behind it may, and the -400 stands.
+    guarded = pos({"b9": (BLUE, PAWN), "e9": (RED, ROOK), "g9": (RED, ROOK)})
+    alone = pos({"b9": (BLUE, PAWN), "e9": (RED, ROOK)})
+    check("a king cannot recapture onto a square still attacked",
+          (see(guarded, "e9b9"), see(alone, "e9b9")) == (100, -400),
+          "guarded %s, alone %s" % (see(guarded, "e9b9"), see(alone, "e9b9")))
+
     # An en-passant capture onto an occupied skipped square takes BOTH the
     # occupant and the passing pawn (§5.5), and tt_make removes both. Pricing
     # only the pawn under-rates it by a whole piece, and SEEPrune -- default on,
@@ -2322,6 +2638,23 @@ def test_see():
               core.see(ep, moves[0]) == eval_hand.PIECE_VALUE[PAWN]
                                         + eval_hand.PIECE_VALUE[KNIGHT],
               str(core.see(ep, moves[0])))
+
+    # Which of two equal recapturers goes first decides which x-ray opens
+    # behind it, so the pick order is part of the answer: the first in
+    # knights, pawns, rays in queen_dirs order, kings last, with a strict
+    # `value <`. Found by sampling (13 in 534,683 SEE calls change when the
+    # ray pick takes the last equal instead of the first; this is one of
+    # them), and pinned because a rewrite that keeps the attackers but not
+    # their order passes every hand case above.
+    tie = Board.from_fen4(
+        "R-0,0,0,0-1,1,0,1-1,1,0,1-0,0,0,0-1-"
+        "3,yR,1,yB,yQ,1,yB,1,yR,3/3,yP,1,yP,yP,1,yK,1,yP,3/7,yP,yN,5/"
+        "bR,2,bN,8,gP,gR/3,yP,6,rQ,3/yN,bP,10,gP,1/1,bN,1,bP,7,gP,gN,gQ/"
+        "bK,2,bP,8,gP,gK/bB,bP,11,gB/1,bP,9,gP,1,gN/bR,2,bP,2,rP,rP,5,gR/"
+        "4,rP,4,rP,gP,3/3,rP,1,rP,bQ,1,rP,1,rP,3/3,rR,1,rB,1,rK,rB,1,rR,3",
+        MODE_TEAMS)
+    check("equal recapturers are taken in scan order",
+          see(tie, "k10m8") == -600, str(see(tie, "k10m8")))
 
     # FFA has no alternating swap-off, and returning a plausible number there
     # would be worse than refusing.
@@ -2413,7 +2746,7 @@ def test_book():
     # The mode is written into the book and read back, so a book cannot be
     # fed to the wrong kind of run. Absent, it means Teams: books built before
     # FFA existed still mean what they meant.
-    scratch = os.path.join(tempfile.gettempdir(), "tetrarch_book_mode.txt")
+    scratch = os.path.join(SCRATCH, "tetrarch_book_mode.txt")
     for written, expect in (("# mode ffa\n", "ffa"),
                             ("# mode teams\n", "teams"),
                             ("", "teams"),
@@ -2426,7 +2759,7 @@ def test_book():
     os.remove(scratch)
 
     # And the file round-trips, since both consumers read it back.
-    path = os.path.join(tempfile.gettempdir(), "tetrarch_book_selftest.txt")
+    path = os.path.join(SCRATCH, "tetrarch_book_selftest.txt")
     with open(path, "w") as handle:
         handle.write("# a comment\n\n")
         for st, fen4, _k, _s in found[:5]:
@@ -2633,6 +2966,33 @@ def test_resume():
     nxt, lines = gen_data.resume_index(path)
     check("a truncated final line is not counted as a game",
           (nxt, lines) == (13, 5), "next=%d lines=%d" % (nxt, lines))
+
+    # ...and must not swallow the next one. Appending straight after the
+    # fragment glued the first resumed game onto it, so that game was written,
+    # reported, and unreadable -- and the next resume skipped past its index.
+    # Through main, at a game count already reached, so nothing is played.
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    subprocess.run([sys.executable, os.path.join(root, "gen_data.py"), "13",
+                    "--out", path, "--resume"], cwd=root,
+                   capture_output=True, timeout=120)
+    with open(path, "a") as fh:
+        fh.write(json.dumps({"i": 13, "moves": "a", "scores": [1],
+                             "result": 1.0}) + "\n")
+    nxt, lines = gen_data.resume_index(path)
+    check("a game appended after a truncated line is still readable",
+          (nxt, lines) == (14, 6), "next=%d lines=%d" % (nxt, lines))
+    # A record that is whole but lost its newline is a game, not a fragment.
+    with open(path, "a") as fh:
+        fh.write(json.dumps({"i": 14, "moves": "a", "scores": [1],
+                             "result": 1.0}))
+    gen_data.seal_tail(path)
+    with open(path, "a") as fh:
+        fh.write(json.dumps({"i": 15, "moves": "a", "scores": [1],
+                             "result": 1.0}) + "\n")
+    nxt, lines = gen_data.resume_index(path)
+    check("and a whole record missing only its newline is kept",
+          (nxt, lines) == (16, 8), "next=%d lines=%d" % (nxt, lines))
     os.remove(path)
 
 
@@ -2837,8 +3197,8 @@ def test_ffa_data():
     # eliminations the replay drifts off the recorded game at the first mate --
     # the same bug uci.py had -- and every later position is mislabelled
     # silently rather than producing a visible bad move.
-    scratch = os.path.join(tempfile.gettempdir(), "tetrarch_ffa_data_test.jsonl")
-    cache = os.path.join(tempfile.gettempdir(), "tetrarch_ffa_cache_test.npz")
+    scratch = os.path.join(SCRATCH, "tetrarch_ffa_data_test.jsonl")
+    cache = os.path.join(SCRATCH, "tetrarch_ffa_cache_test.npz")
     with open(scratch, "w") as fh:
         for r in records:
             fh.write(json.dumps(r) + "\n")
@@ -2877,6 +3237,41 @@ def test_ffa_data():
     except ValueError as exc:
         check("a file mixing the two modes is refused", "mixes" in str(exc),
               str(exc))
+
+    # A truncated final line -- what a hard-killed gen_data run leaves, and
+    # what --resume exists for -- reached json.loads inside the cache worker
+    # unguarded and took the whole build down. It is skipped and counted.
+    with open(scratch, "w") as fh:
+        fh.write(json.dumps(records[0]) + "\n")
+        fh.write(json.dumps(records[0])[:-40])
+    try:
+        built = train_mod.build_cache(scratch, cache, quiet=True, workers=1)
+        want = len(records[0]["scores"])
+        ok, why = (len(built["cp"]) == want,
+                   "%d rows, expected %d" % (len(built["cp"]), want))
+    except ValueError as exc:
+        ok, why = False, repr(exc)
+    check("a truncated line is skipped, not fatal to the cache build", ok, why)
+
+    # One game is always held out, so a one-game cache left nothing to train
+    # on -- and still ran every epoch and saved the untrained init as
+    # net-best.nnue. Refused before the first epoch instead.
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(scratch, "w") as fh:
+        fh.write(json.dumps(records[0]) + "\n")
+    os.remove(cache)
+    with tempfile.TemporaryDirectory() as out_dir:
+        run = subprocess.run(
+            [sys.executable, os.path.join(root, "train.py"), "--data",
+             scratch, "--cache", cache, "--out", out_dir, "--epochs", "1",
+             "--quiet"], cwd=root, capture_output=True, text=True,
+            timeout=300)
+        check("a cache with no training rows is refused, not trained",
+              run.returncode != 0 and "nothing left to train" in run.stderr
+              and not os.path.exists(os.path.join(out_dir, "net-best.nnue")),
+              (run.stderr.strip().splitlines() or ["exit %d"
+                                                   % run.returncode])[-1])
     for path in (scratch, cache):
         if os.path.exists(path):
             os.remove(path)
@@ -3167,7 +3562,17 @@ def test_js_replay():
             return "%s|%s|%s" % (meta[0], meta[1], fen[cut + 1:])
 
         cases.append({"setup": setup, "pgn4": text,
+                      "py_setup": pgn4.parse(text).setup,
                       "frames": [key(f) for f in frames]})
+
+    # A modern start written with the code rather than with no tag. pgn4.py
+    # always read "4PC" as modern; the viewer had no entry for it and replayed
+    # the game from the classic start.
+    modern = cases[list(SETUPS).index("modern")]
+    tagged = '[StartFen4 "4PC"]\n' + modern["pgn4"]
+    cases.append({"setup": "modern-4PC", "pgn4": tagged,
+                  "py_setup": pgn4.parse(tagged).setup,
+                  "frames": modern["frames"]})
 
     path = os.path.join(SCRATCH, "tetrarch-js-cases.json")
     with open(path, "w") as fh:
@@ -3582,6 +3987,71 @@ def test_match_log_header():
         check("and says its instrument is unknown",
               "no header line" in run.stderr)
 
+    # --- one engine crash must not take the rest of the run with it --------
+    # A process that died stayed in the worker's engine cache, so every later
+    # game in that worker came back "engine start: BrokenPipeError": one crash
+    # in game 2 lost 11 of 12 games. The fixture plays the first legal move
+    # and exits on its 5th `go`, so EVERY game it is in ends on its crash --
+    # what must not happen is a game that never starts.
+    import match
+    with tempfile.TemporaryDirectory() as d:
+        flaky = os.path.join(d, "flaky.py")
+        with open(flaky, "w") as fh:
+            fh.write(FLAKY_ENGINE)
+        cmd = "%s %s %s" % (sys.executable, flaky, root)
+        records = []
+        try:
+            for job in [(i, 3 + i // 4, i % 4, "classic", MODE_TEAMS, 4,
+                         match.RANDOM_ENGINE, cmd, "go nodes 100", i, False,
+                         None, None, 16, (), ()) for i in range(6)]:
+                records.append(match.play_game(job))
+        finally:
+            for engine in match._ENGINE_CACHE.values():
+                if engine is not match.RANDOM_ENGINE:
+                    engine.close()
+            match._ENGINE_CACHE.clear()
+        starts = [r for r in records if r and r.get("error")]
+        crashes = [r for r in records
+                   if r and "engine failure" in (r.get("reason") or "")]
+        check("an engine that died is replaced for the next game",
+              not starts and len(crashes) == len(records),
+              "%d engine-start errors, %d crashes scored, of %d games"
+              % (len(starts), len(crashes), len(records)))
+
+
+#: A protocol-speaking engine that plays its first legal move and exits on its
+#: fifth `go`. argv[1] is the repo root.
+FLAKY_ENGINE = '''
+import sys
+sys.path.insert(0, sys.argv[1])
+from tetrarch.board import Board, MODE_TEAMS, MODE_FFA, move_str
+from tetrarch import movegen as gen, game
+
+mode, board, gos = MODE_TEAMS, None, 0
+for line in sys.stdin:
+    parts = line.split()
+    if not parts:
+        continue
+    if parts[0] == "uci":
+        print("uciok", flush=True)
+    elif parts[0] == "isready":
+        print("readyok", flush=True)
+    elif parts[:4] == ["setoption", "name", "Mode", "value"]:
+        mode = MODE_FFA if parts[4] == "ffa" else MODE_TEAMS
+    elif parts[0] == "position":
+        board = Board.from_fen4(parts[2], mode)
+        if "moves" in parts:
+            for token in parts[parts.index("moves") + 1:]:
+                game.play_token(board, token)
+    elif parts[0] == "go":
+        gos += 1
+        if gos == 5:
+            sys.exit(1)
+        print("bestmove %s" % move_str(gen.gen_legal(board)[0]), flush=True)
+    elif parts[0] == "quit":
+        break
+'''
+
 
 def test_bench_tooling():
     section("bench.py instruments")
@@ -3602,6 +4072,12 @@ def test_bench_tooling():
           if run.returncode else "exit 0")
     check("and reports a search line", "search:" in run.stdout,
           "%d bytes of output" % len(run.stdout))
+    run = subprocess.run([sys.executable, os.path.join(root, "bench.py"),
+                          "--rounds", "0"], cwd=root, capture_output=True,
+                         text=True)
+    check("bench.py --rounds 0 is refused, not an IndexError",
+          run.returncode == 2 and "at least 1" in run.stderr,
+          (run.stderr.strip().splitlines() or ["exit %d" % run.returncode])[-1])
 
     # The contract the loop variable carries: `profile` and `search_round`
     # must search the same tree. If `profile` loses the label it cannot apply
@@ -3697,6 +4173,71 @@ def test_protocol_contracts():
     out = uci(["position fen4 " + DEAD_SEAT_FEN4, "go depth 2"]).stdout
     check("go answers with a bestmove on a position the search refuses",
           "bestmove " in out, out.strip().splitlines()[-1:] or ["no output"])
+
+    # --- stop and isready during a search ----------------------------------
+    # `go` ran on the thread reading stdin, so `stop` was never read while a
+    # search ran. `go infinite`, a bare `go` and a standard host's `go wtime`
+    # (wtime names no seat) each searched to depth 48 with no way out, and an
+    # `isready` sent meanwhile -- which UCI says must be answered at once --
+    # waited just as long. A watchdog kills the engine, so a regression reads
+    # as a failed check rather than a hung ladder.
+    proc = subprocess.Popen([sys.executable, os.path.join(root, "uci.py")],
+                            cwd=root, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            text=True, bufsize=1)
+    watchdog = threading.Timer(60, proc.kill)
+    watchdog.start()
+
+    def send(*lines):
+        for text in lines:
+            proc.stdin.write(text + "\n")
+        proc.stdin.flush()
+
+    def read_until(prefix):
+        seen = []
+        for text in proc.stdout:
+            seen.append(text.strip())
+            if text.startswith(prefix):
+                break
+        return seen
+
+    try:
+        send("position startpos", "go infinite")
+        read_until("info depth 1 ")
+        send("isready")
+        seen = read_until("readyok")
+        check("isready during go infinite is answered before any bestmove",
+              seen[-1:] == ["readyok"]
+              and not any(l.startswith("bestmove") for l in seen),
+              seen[-1:] or "no output")
+        send("stop")
+        seen = read_until("bestmove")
+        check("stop ends go infinite with a bestmove",
+              seen[-1:] and seen[-1].startswith("bestmove h"), seen[-1:])
+        # Both lines can be read before the search starts, leaving the stop
+        # queued behind a search that never ends.
+        send("go infinite", "stop")
+        seen = read_until("bestmove")
+        check("and a stop sent right behind go is not lost",
+              seen[-1:] and seen[-1].startswith("bestmove"), seen[-1:])
+        send("go wtime 1000 btime 1000", "stop")
+        seen = read_until("bestmove")
+        check("as is one behind a go whose clocks bind no seat",
+              seen[-1:] and seen[-1].startswith("bestmove"), seen[-1:])
+        send("go infinite")
+        proc.stdin.close()
+        seen = read_until("bestmove")
+        proc.wait(timeout=30)
+        check("end of input stops a search and the engine exits",
+              seen[-1:] and seen[-1].startswith("bestmove")
+              and proc.returncode == 0,
+              "%s, exit %r" % (seen[-1:], proc.returncode))
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        check("the stop/isready exchange completes", False, repr(exc))
+    finally:
+        watchdog.cancel()
+        if proc.poll() is None:
+            proc.kill()
 
 
 
@@ -3935,6 +4476,16 @@ def test_protocol_contracts():
 
 
     # --- the GUI answers bad input with 400, never 500 ---------------------
+    # flask is gui/app.py's dependency and nothing else's, so a box without it
+    # skips these as it skips the JS differential without node: setup.sh warns
+    # rather than dies when flask will not install, and the ladder must not
+    # then fail on a GUI the box cannot serve anyway. Installed but broken
+    # still fails below.
+    import importlib.util
+    if importlib.util.find_spec("flask") is None:
+        check("flask available for the GUI checks", True,
+              "skipped: flask is not installed, and only the GUI needs it")
+        return
     try:
         sys.path.insert(0, os.path.join(root, "gui"))
         import importlib
@@ -3949,6 +4500,63 @@ def test_protocol_contracts():
             codes.append((route, client.post(route, json=body).status_code))
         check_all("a Teams position with a dead seat is a 400, not a 500",
                   [("%s -> %d" % (r, c), c == 400) for r, c in codes])
+
+        # The net that plays follows mode AND setup (nets/bundle.txt), and
+        # both pages left the setup out of their engine requests, so every
+        # game was played by classic's net: net-v5 on modern, where the bundle
+        # records it at -22.15 +/- 10.81. Asserted on the pages' own request
+        # bodies -- the server side was always right when it was told.
+        import re
+        for page, route in (("play.html", "/api/play/engine"),
+                            ("viewer.html", "/api/eval")):
+            html = open(os.path.join(root, "gui", page)).read()
+            calls = [m for m in re.finditer(
+                r'(?:post|fetch)\("%s"(.*?)\}\);' % re.escape(route), html,
+                re.S)]
+            bodies = [m.group(1) for m in calls
+                      if "fen4" in m.group(1)]
+            check("%s sends the setup with every %s request" % (page, route),
+                  bodies and all(re.search(r"\bsetup\b", b) for b in bodies),
+                  "%d requests" % len(bodies))
+
+        start = start_board("modern", MODE_TEAMS).to_fen4().replace("\n", "")
+        client.post("/api/play/engine", json={"fen4": start, "movetime": 50,
+                                              "setup": "modern"})
+        check("and given it, the engine plays the bundle's net for it",
+              gui_app._LOADED_NET == "net-v7.nnue", gui_app._LOADED_NET)
+        reply = client.post("/api/play/engine",
+                            json={"fen4": start, "movetime": 50,
+                                  "net": "no-such.nnue"}).get_json()
+        loaded = gui_app._LOADED_NET
+        # Malformed fields, not malformed positions: each was read with a
+        # bare int() or .strip() and came back as a 500 and a traceback.
+        # A null movetime is what JSON.stringify makes of parseInt("").
+        shapes = []
+        for route, body in (
+                ("/api/play/engine", {"fen4": start, "movetime": "abc"}),
+                ("/api/play/engine", {"fen4": start, "setup": ["modern"]}),
+                ("/api/eval", {"fen4": start, "depth": "x"}),
+                ("/api/eval", {"fen4": start, "lines": [1]}),
+                ("/api/eval", [1, 2]),
+                ("/api/play/move", {"fen4": 5, "move": "h2h3"}),
+                ("/api/play/move", {"fen4": start, "move": 5}),
+                ("/api/play/pgn", {"moves": None, "setup": "modern",
+                                   "mode": "ffa", "x": 1}),
+                ("/api/play/pgn", {"moves": [3]}),
+                ("/api/play/new", {"setup": ["x"]}),
+                ("/api/parse", {"pgn4": 5}),
+                ("/api/legal", {"fen4": None})):
+            code = client.post(route, json=body).status_code
+            shapes.append(("%s %s -> %d" % (route, json.dumps(body)[:30], code),
+                           code < 500))
+        check_all("malformed request fields are a 4xx, never a 500", shapes)
+        code = client.post("/api/play/engine",
+                           json={"fen4": start, "movetime": None}).status_code
+        check("and a null movetime means the default", code == 200, code)
+
+        check("an unknown net really is replaced by the hand eval it reports",
+              loaded is None and "hand eval" in reply["note"],
+              "loaded %r, note %r" % (loaded, reply.get("note")))
     except ImportError as exc:                               # noqa: BLE001
         check("flask available for the GUI checks", False, repr(exc))
 
@@ -4009,6 +4617,7 @@ def main():
     run(test_eval)
     run(test_search, workers)
     run(test_ffa_search, workers)
+    run(test_search_toggles)
     run(test_ffa_points)
     run(test_ffa_multipv_info)
     run(test_ffa_elimination)

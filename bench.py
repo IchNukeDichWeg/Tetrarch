@@ -337,6 +337,10 @@ def main():
                          "discarded when N > 1")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+    # --rounds 0 ran nothing and then indexed an empty list of rates.
+    for name in ("rounds", "depth", "iters"):
+        if getattr(args, name) < 1:
+            ap.error("--%s must be at least 1" % name)
 
     if not core.available():
         print("bench.py needs the C core: run ./setup.sh", file=sys.stderr)

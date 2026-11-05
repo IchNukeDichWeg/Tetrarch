@@ -168,13 +168,16 @@ typedef struct {
 
 static TtParams P;
 static int initialised = 0;
+static int ph_ok = 0;              /* points_hash's memo is valid; see there */
 
 /* NNUE accumulator hooks. The net itself is defined further down; the deltas
  * are applied here, where the board actually changes. */
 static int  nn_delta_on_for(uint64_t key);
-static void nn_toggle(uint8_t piece, int sq, int sign);
+static inline void nn_toggle(uint8_t piece, int sq, int sign);
 static void build_ray_steps(void);
+static void build_attack_tables(void);
 static void nn_acc_set_key(uint64_t key);
+static void nn_build_tables(void);
 
 /* --- introspection, so the binding can assert layout agreement ---------- */
 
@@ -186,6 +189,9 @@ void tt_init(const TtParams *p)
 {
     memcpy(&P, p, sizeof(TtParams));
     build_ray_steps();
+    ph_ok = 0;                     /* points_hash's memo used the old zobrist */
+    nn_build_tables();
+    build_attack_tables();
     initialised = 1;
 }
 
@@ -208,71 +214,129 @@ static inline int is_enemy(const TtBoard *b, uint8_t piece, int mover)
 }
 
 /* Could this piece deliver check to `me`? Dead seats' pieces block but do not
- * attack (§9.1). */
-static inline int hostile(const TtBoard *b, uint8_t piece, int me)
+ * attack (§9.1). No caller is left -- the attack tables below and
+ * compute_evasions use the colour-mask form -- but it stays as the definition
+ * those masks are checked against, so it is marked unused rather than cut. */
+static inline __attribute__((unused)) int hostile(const TtBoard *b,
+                                                  uint8_t piece, int me)
 {
     int c = P.pc_color[piece];
     return c < 4 && b->alive[c] && !same_team(b->mode, c, me);
 }
 
-static inline int queenish(int t) { return t == QUEEN || t == PQUEEN; }
+/* What tt_is_attacked needs to know about a piece, in two table loads
+ * instead of a type compare chain plus hostile()'s three tests. Built once in
+ * tt_init from the pushed-in piece encoding; piece 0 (empty) has neither, so
+ * the empty square fails both tests without a separate branch.
+ *
+ * att_cbit is 1 << colour, so DEAD_UNKNOWN (colour 4) lands on bit 4, which
+ * no hostile mask ever sets -- exactly hostile()'s `c < 4`. */
+#define AC_KNIGHT 1
+#define AC_KING   2
+#define AC_PAWN   4
+#define AC_ORTHO  8              /* rook, queen, promoted queen */
+#define AC_DIAG   16             /* bishop, queen, promoted queen */
+static uint8_t att_class[NPIECE];
+static uint8_t att_cbit[NPIECE];
+static uint8_t att_dir_class[8];  /* AC_ORTHO or AC_DIAG for queen_dirs[i] */
+static uint8_t see_pawn_slot[8];  /* j with diag[j] == -queen_dirs[i], else 4 */
+/* The on-board knight jumps from each square, in knight_deltas order. The
+ * order is irrelevant to the answer; it is kept so nobody has to argue it. */
+static uint8_t kn_to[NSQ][8];
+static uint8_t kn_n[NSQ];
+static uint8_t kg_to[NSQ][8];     /* the same for king steps, queen_dirs order */
+static uint8_t kg_n[NSQ];
 
+static void build_attack_tables(void)
+{
+    int p, i, sq;
+    for (p = 0; p < NPIECE; p++) {
+        int t = P.pc_type[p];
+        att_class[p] = (uint8_t)(t == KNIGHT ? AC_KNIGHT
+                       : t == KING ? AC_KING
+                       : t == PAWN ? AC_PAWN
+                       : t == ROOK ? AC_ORTHO
+                       : t == BISHOP ? AC_DIAG
+                       : (t == QUEEN || t == PQUEEN) ? (AC_ORTHO | AC_DIAG) : 0);
+        att_cbit[p] = (uint8_t)(1u << P.pc_color[p]);
+    }
+    att_class[0] = att_cbit[0] = 0;
+    for (i = 0; i < 8; i++) {
+        int d = P.queen_dirs[i], j, diag = 0;
+        for (j = 0; j < 4; j++) if (P.diag[j] == d) diag = 1;
+        att_dir_class[i] = diag ? AC_DIAG : AC_ORTHO;
+    }
+    for (i = 0; i < 8; i++) {
+        int j;
+        see_pawn_slot[i] = 4;
+        for (j = 0; j < 4; j++)
+            if (P.diag[j] == -P.queen_dirs[i]) see_pawn_slot[i] = (uint8_t)j;
+    }
+    for (sq = 0; sq < NSQ; sq++) {
+        kn_n[sq] = kg_n[sq] = 0;
+        if (!P.valid[sq]) continue;
+        for (i = 0; i < 8; i++) {
+            int t = (sq + P.knight_deltas[i]) & 255;
+            if (P.valid[t]) kn_to[sq][kn_n[sq]++] = (uint8_t)t;
+            t = (sq + P.queen_dirs[i]) & 255;
+            if (P.valid[t]) kg_to[sq][kg_n[sq]++] = (uint8_t)t;
+        }
+    }
+}
+
+/* A pure predicate, so the order of the probes is free to change: only speed
+ * depends on it. Two things make this cheaper than the five separate loops it
+ * replaced (knights, kings, pawns, rook lines, bishop lines):
+ *
+ * - Hostility is decided once per call, as a mask over colours, rather than
+ *   per piece found. A seat is hostile when alive and not on `me`'s side,
+ *   which is what hostile() asks of a piece's colour.
+ * - The king and pawn probes read the same eight neighbours the ray walks
+ *   start on, so they are folded into the first step of each ray instead of
+ *   being two more passes over those squares. A pawn on sq+d attacks sq when
+ *   -d is one of its seat's capture deltas; those are all diagonal, so the
+ *   test fails by itself on an orthogonal neighbour.
+ *
+ * ponytail: per-seat occupancy (occ[]) could reject a whole ray with no
+ * hostile piece on it, but it is only valid when occ_key matches, and a ray
+ * from a king usually ends on the first square at our own piece anyway. */
 int tt_is_attacked(const TtBoard *b, int sq, int me)
 {
-    int i, t;
-    uint8_t p;
+    unsigned hm = 0;
+    int c, i, n;
 
-    for (i = 0; i < 8; i++) {
-        t = (sq + P.knight_deltas[i]) & 255;
-        if (P.valid[t]) {
-            p = b->sq[t];
-            if (p && P.pc_type[p] == KNIGHT && hostile(b, p, me)) return 1;
-        }
+    for (c = 0; c < 4; c++)
+        if (b->alive[c] && !same_team(b->mode, c, me)) hm |= 1u << c;
+    if (!hm) return 0;               /* nothing on the board can attack us */
+
+    n = kn_n[sq];
+    for (i = 0; i < n; i++) {
+        uint8_t p = b->sq[kn_to[sq][i]];
+        if ((att_class[p] & AC_KNIGHT) && (att_cbit[p] & hm)) return 1;
     }
     for (i = 0; i < 8; i++) {
-        t = (sq + P.queen_dirs[i]) & 255;
-        if (P.valid[t]) {
-            p = b->sq[t];
-            if (p && P.pc_type[p] == KING && hostile(b, p, me)) return 1;
-        }
-    }
-    /* A pawn on sq-d attacks sq exactly when d is one of that seat's own
-     * capture deltas, which differ per seat (§4.1). All are diagonal. */
-    for (i = 0; i < 4; i++) {
-        int d = P.diag[i];
-        t = (sq - d) & 255;
-        if (P.valid[t]) {
-            p = b->sq[t];
-            if (p && P.pc_type[p] == PAWN && hostile(b, p, me)) {
-                int c = P.pc_color[p];
-                if (P.pawn_takes[c][0] == d || P.pawn_takes[c][1] == d) return 1;
+        int d = P.queen_dirs[i], t = (sq + d) & 255;
+        unsigned want = att_dir_class[i];
+        uint8_t p;
+        if (!P.valid[t]) continue;
+        p = b->sq[t];
+        if (p) {
+            if (att_cbit[p] & hm) {
+                unsigned cl = att_class[p];
+                if (cl & (want | AC_KING)) return 1;
+                if (cl & AC_PAWN) {
+                    const int32_t *tk = P.pawn_takes[P.pc_color[p]];
+                    if (tk[0] == -d || tk[1] == -d) return 1;
+                }
             }
+            continue;
         }
-    }
-    for (i = 0; i < 4; i++) {
-        int d = P.ortho[i];
-        t = (sq + d) & 255;
-        while (P.valid[t]) {
+        for (t = (t + d) & 255; P.valid[t]; t = (t + d) & 255) {
             p = b->sq[t];
             if (p) {
-                int pt = P.pc_type[p];
-                if ((pt == ROOK || queenish(pt)) && hostile(b, p, me)) return 1;
+                if ((att_class[p] & want) && (att_cbit[p] & hm)) return 1;
                 break;
             }
-            t = (t + d) & 255;
-        }
-    }
-    for (i = 0; i < 4; i++) {
-        int d = P.diag[i];
-        t = (sq + d) & 255;
-        while (P.valid[t]) {
-            p = b->sq[t];
-            if (p) {
-                int pt = P.pc_type[p];
-                if ((pt == BISHOP || queenish(pt)) && hostile(b, p, me)) return 1;
-                break;
-            }
-            t = (t + d) & 255;
         }
     }
     return 0;
@@ -307,17 +371,32 @@ int tt_in_check(const TtBoard *b, int color)
  * ponytail: key the three differences from seat 0 if the split ever measures.
  *
  * Splitmix64's finaliser after the multiply, because the low bits of a bare
- * multiply barely move and the table indexes with the low bits. */
+ * multiply barely move and the table indexes with the low bits.
+ *
+ * Memoised on the last standing it hashed, packed whole into one word. Every
+ * paranoid node probes, so this ran once per node -- twelve multiplies -- yet
+ * the standing only moves on a capture, a multi-check or an elimination: a
+ * quiet move hands its child the standing its parent hashed, and the probes
+ * arrive in exactly that order. The tag is all four points, so a hit returns
+ * what the computation would have, never an approximation of it. tt_init
+ * drops the memo because zob_points may change under it. */
+static uint64_t ph_tag, ph_val;
+
 static uint64_t points_hash(const TtBoard *b)
 {
-    uint64_t k = 0;
+    uint64_t k = 0, tag;
     int c;
+    memcpy(&tag, b->points, sizeof(tag));
+    if (ph_ok && tag == ph_tag) return ph_val;
     for (c = 0; c < 4; c++) {
         uint64_t x = (uint64_t)(b->points[c] + 1u) * P.zob_points[c];
         x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ull;
         x ^= x >> 27; x *= 0x94D049BB133111EBull;
         k ^= x ^ (x >> 31);
     }
+    ph_tag = tag;
+    ph_val = k;
+    ph_ok = 1;
     return k;
 }
 
@@ -393,8 +472,19 @@ static int ep_offers(const TtBoard *b, int me, int *targets, int *victims)
  * compact squares. The compact map would save one word per iteration but
  * needs an inverse table and makes the ascending-order argument depend on
  * compact[] being monotonic in sq. Indexing by sq keeps node-identity
- * self-evident. Switch to 160 bits if this ever shows up hot again. */
-static uint64_t occ[4][4];
+ * self-evident. Switch to 160 bits if this ever shows up hot again.
+ *
+ * FIVE rows, not four. The row is pc_color, and a grey piece of unknown
+ * origin (FEN4 `d`, §9.1) has colour DEAD_UNKNOWN = 4. With four rows the
+ * rebuild, and make/unmake capturing such a piece, read and wrote occ[4][*]:
+ * past the array, onto whatever the linker put next -- on this build the
+ * `initialised` flag, which picked up a bit per grey square below rank 3
+ * (tt_ready() read 2097177 by the end of selftest's C section), and a
+ * different layout puts P, the rules tables, there instead. Row 4 is maintained
+ * and never read: no seat moves grey pieces, so the generator only ever walks
+ * occ[b->turn]. Guarding every occ_set/occ_clr site with `colour < 4` was the
+ * alternative; one spare row costs 32 bytes and no branch on the hot path. */
+static uint64_t occ[5][4];
 static uint64_t occ_key;
 static int occ_ok = 0;
 
@@ -425,7 +515,11 @@ static void occ_rebuild(const TtBoard *b)
  * assuming it was made the tool contradict its own output. */
 static uint64_t search_gens;
 
-int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
+/* `restrict`: the move buffer is a search, perft or caller-owned array and
+ * never overlaps the board or P. Without it every store to out[] could, as
+ * far as the compiler knows, rewrite P's int32 tables, which forces their
+ * reloads inside the loops. */
+int tt_gen_pseudo(const TtBoard *b, uint32_t *restrict out)
 {
     search_gens++;
     int me = b->turn, n = 0, sq, i, j, wi;
@@ -435,30 +529,42 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
     const int32_t *choices = P.promo_choices[b->mode];
     int push = P.pawn_push[me];
     int base = b->pawn_base_rank;
+    int dbl = base ? base - 1 : -1;
+    const uint8_t *pcoord = P.pawn_coord[me];
+    const int32_t *takes = P.pawn_takes[me];
     int ep_target[4], ep_victim[4];
     int n_offers = ep_offers(b, me, ep_target, ep_victim);
+    /* is_enemy() as a mask over colours, decided once per call rather than
+     * per target square: DEAD_UNKNOWN and dead seats are fair game to all,
+     * and otherwise it is the other side. Bit c answers is_enemy for colour
+     * c; att_cbit[p] is 1 << colour, and 0 for an empty square. */
+    unsigned em = 1u << DEAD_UNKNOWN;
+    int c;
+    for (c = 0; c < 4; c++)
+        if (!b->alive[c] || !same_team(b->mode, c, me)) em |= 1u << c;
 
     if (!occ_ok || occ_key != b->key) occ_rebuild(b);
 
     for (wi = 0; wi < 4; wi++)
     for (w = occ[me][wi]; w; w &= w - 1) {
-        uint8_t p;
-        int ptype, sliding, nd;
         const int32_t *deltas;
+        const uint8_t *steps;
+        int nd;
         sq = (wi << 6) + __builtin_ctzll(w);
-        p = b->sq[sq];
-        ptype = P.pc_type[p];
 
-        if (ptype == PAWN) {
+        switch (P.pc_type[b->sq[sq]]) {
+        case PAWN: {
             int to = (sq + push) & 255;
             if (P.valid[to] && !b->sq[to]) {
-                if (P.pawn_coord[me][to] == promo_coord) {
+                if (pcoord[to] == promo_coord) {
                     for (j = 0; j < nchoice; j++)
                         out[n++] = MK_MOVE(sq, to, F_NORMAL, choices[j]);
                 } else {
                     out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
                 }
-                if (base && P.pawn_coord[me][sq] == base - 1) {
+                /* dbl is -1 when there is no base rank, which no coordinate
+                 * equals: the old `base &&` test folded into the compare. */
+                if (pcoord[sq] == dbl) {
                     int to2 = (sq + 2 * push) & 255;
                     if (P.valid[to2] && !b->sq[to2])
                         out[n++] = MK_MOVE(sq, to2, F_DOUBLE, 0);
@@ -466,7 +572,7 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
             }
             for (i = 0; i < 2; i++) {
                 int flag = F_NORMAL, is_offer = 0;
-                to = (sq + P.pawn_takes[me][i]) & 255;
+                to = (sq + takes[i]) & 255;
                 if (!P.valid[to]) continue;
                 for (j = 0; j < n_offers; j++)
                     if (ep_target[j] == to) { is_offer = 1; break; }
@@ -476,10 +582,9 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
                      * passing pawn (§5.5). */
                     flag = F_EP;
                 } else {
-                    uint8_t target = b->sq[to];
-                    if (!(target && is_enemy(b, target, me))) continue;
+                    if (!(att_cbit[b->sq[to]] & em)) continue;
                 }
-                if (P.pawn_coord[me][to] == promo_coord) {
+                if (pcoord[to] == promo_coord) {
                     for (j = 0; j < nchoice; j++)
                         out[n++] = MK_MOVE(sq, to, flag, choices[j]);
                 } else {
@@ -488,32 +593,36 @@ int tt_gen_pseudo(const TtBoard *b, uint32_t *out)
             }
             continue;
         }
-
-        if (ptype == KNIGHT) {
-            deltas = P.knight_deltas; nd = 8; sliding = 0;
-        } else if (ptype == KING) {
-            deltas = P.queen_dirs; nd = 8; sliding = 0;
-        } else if (ptype == BISHOP) {
-            deltas = P.diag; nd = 4; sliding = 1;
-        } else if (ptype == ROOK) {
-            deltas = P.ortho; nd = 4; sliding = 1;
-        } else if (queenish(ptype)) {
-            deltas = P.queen_dirs; nd = 8; sliding = 1;
-        } else {
-            continue;
+        /* Knights and kings walk their on-board steps in delta order: the
+         * same squares in the same order as testing every delta. */
+        case KNIGHT: steps = kn_to[sq]; nd = kn_n[sq]; break;
+        case KING:   steps = kg_to[sq]; nd = kg_n[sq]; break;
+        case BISHOP: deltas = P.diag; nd = 4; goto slide;
+        case ROOK:   deltas = P.ortho; nd = 4; goto slide;
+        case QUEEN:
+        case PQUEEN: deltas = P.queen_dirs; nd = 8; goto slide;
+        default:     continue;
         }
 
+        for (i = 0; i < nd; i++) {
+            int to = steps[i];
+            uint8_t target = b->sq[to];
+            if (!target || (att_cbit[target] & em))
+                out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
+        }
+        continue;
+
+    slide:
         for (i = 0; i < nd; i++) {
             int d = deltas[i];
             int to = (sq + d) & 255;
             while (P.valid[to]) {
                 uint8_t target = b->sq[to];
                 if (target) {
-                    if (is_enemy(b, target, me)) out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
+                    if (att_cbit[target] & em) out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
                     break;
                 }
                 out[n++] = MK_MOVE(sq, to, F_NORMAL, 0);
-                if (!sliding) break;
                 to = (to + d) & 255;
             }
         }
@@ -849,9 +958,19 @@ void tt_unmake(TtBoard *b, uint32_t m, const TtUndo *u)
  * every move of every position rather than sampling. */
 static int8_t ray_step[NSQ][NSQ];
 
+/* Is (dst - src) & 255 one of the eight knight deltas? `(src + d) & 255 ==
+ * dst` holds exactly when `d == dst - src` mod 256, so one lookup answers what
+ * piece_attacks used to loop eight deltas for -- the same answer for every
+ * pair of squares, by arithmetic rather than by test. That loop ran on every
+ * knight move of every FFA make (8.3 asks whether the moved piece hits each
+ * other live king). */
+static uint8_t knight_hit[256];
+
 static void build_ray_steps(void)
 {
     int a, i;
+    memset(knight_hit, 0, sizeof(knight_hit));
+    for (i = 0; i < 8; i++) knight_hit[P.knight_deltas[i] & 255] = 1;
     memset(ray_step, 0, sizeof(ray_step));
     for (a = 0; a < NSQ; a++) {
         if (!P.valid[a]) continue;
@@ -883,12 +1002,7 @@ static int piece_attacks(const TtBoard *b, int src, int dst)
     if (!p || src == dst) return 0;
     type = P.pc_type[p];
 
-    if (type == KNIGHT) {
-        int i;
-        for (i = 0; i < 8; i++)
-            if (((src + P.knight_deltas[i]) & 255) == dst) return 1;
-        return 0;
-    }
+    if (type == KNIGHT) return knight_hit[(dst - src) & 255];
 
     step = ray_step[src][dst];
     if (!step) return 0;                       /* not on any line at all */
@@ -931,13 +1045,20 @@ static int piece_attacks(const TtBoard *b, int src, int dst)
  */
 static int ffa_multicheck_points(const TtBoard *b, int to, int mover)
 {
-    int seat, checked = 0, queenish, type;
+    int seat, checked = 0, missed = 0, queenish, type;
     if (b->mode != MODE_FFA) return 0;
     type = P.pc_type[b->sq[to]];
     for (seat = 0; seat < 4; seat++) {
         int k = b->kings[seat];
         if (seat == mover || !b->alive[seat] || k < 0) continue;
         if (piece_attacks(b, to, k)) checked++;
+        /* There are at most three other kings, so two misses leave one hit
+         * at most, and only two or more pays. Nearly every move hits no king
+         * at all, so this skips the third test on nearly every make without
+         * changing a single award. Gathering the candidate kings first and
+         * testing a third only after a hit came out SLOWER (+0.46% FFA
+         * instructions): the gather cost more than the test it saved. */
+        else if (++missed == 2) return 0;
     }
     if (checked < 2) return 0;
     queenish = (type == QUEEN || type == PQUEEN);
@@ -951,10 +1072,15 @@ typedef struct { int16_t sq; int16_t dir; } Pin;
  * it if they moved off the line. At most one per direction, so at most 8. */
 static int compute_pins(const TtBoard *b, int me, int king, Pin *pins)
 {
-    int i, n = 0;
+    int i, n = 0, c;
+    unsigned hm = 0;
     if (king < 0) return 0;
+    /* hostile() as a colour mask, decided once: see tt_is_attacked. */
+    for (c = 0; c < 4; c++)
+        if (b->alive[c] && !same_team(b->mode, c, me)) hm |= 1u << c;
     for (i = 0; i < 8; i++) {
-        int d = P.queen_dirs[i], diag = is_diag(d);
+        int d = P.queen_dirs[i];
+        unsigned want = att_dir_class[i];
         int t = (king + d) & 255, own = -1;
         while (P.valid[t]) {
             uint8_t p = b->sq[t];
@@ -965,9 +1091,7 @@ static int compute_pins(const TtBoard *b, int me, int king, Pin *pins)
                     if (P.pc_color[p] != me) break;
                     own = t;
                 } else {
-                    int pt = P.pc_type[p];
-                    if (hostile(b, p, me)
-                        && (queenish(pt) || (diag ? pt == BISHOP : pt == ROOK))) {
+                    if ((att_class[p] & want) && (att_cbit[p] & hm)) {
                         pins[n].sq = (int16_t)own;
                         pins[n].dir = (int16_t)d;
                         n++;
@@ -1012,10 +1136,107 @@ static int surely_legal(uint32_t m, int king, const Pin *pins, int npins,
 #endif
 }
 
+/* The other side of the same coin: in check, most pseudo-legal moves are
+ * illegal, and every one of them used to be made, scanned and unmade. In a
+ * bench round that was 122k of the 179k makes inside quiescence -- the
+ * evasion search tries every move, and a quiet move by a piece that neither
+ * captures the checker nor blocks the line answers nothing.
+ *
+ * `ev` is a 256-bit set over the mailbox: the squares a move by anything
+ * other than the king must land on. Each checker contributes its own square
+ * plus, for a slider, the squares between it and the king; the sets of all
+ * checkers are intersected, so a double check leaves the set empty and only
+ * king moves survive to the scan. Intersecting rather than counting checkers
+ * means no argument about whose lines can cross is needed.
+ *
+ * Why a move landing outside the set is CERTAINLY illegal: the checker still
+ * stands (the move did not land on it, and only en passant removes a piece
+ * from a square other than `to`, so F_EP is declined), every square between
+ * it and the king is still empty (they were empty, `to` is not one of them,
+ * and vacating `frm` only empties more), the king has not moved (frm != king;
+ * castling is a king move and falls out here too), and nothing about who is
+ * hostile to whom changes inside tt_make. So the same attack is there after
+ * the move and the scan would reject it. Like surely_legal this is one-sided:
+ * "certainly illegal" or "do not know", and selftest compares it against the
+ * scan on every move of every position it samples. */
+static void compute_evasions(const TtBoard *b, int me, int king, uint64_t ev[4])
+{
+    unsigned hm = 0;
+    int i, c, n;
+    ev[0] = ev[1] = ev[2] = ev[3] = ~0ULL;
+    /* The same probes as tt_is_attacked, collecting every checker instead of
+     * stopping at the first; see there for the tables and the folding of the
+     * king and pawn probes into each ray's first step. */
+    for (c = 0; c < 4; c++)
+        if (b->alive[c] && !same_team(b->mode, c, me)) hm |= 1u << c;
+#define EV_ONLY(s) do {                                                    \
+        uint64_t keep_ = ev[(s) >> 6] & (1ULL << ((s) & 63));              \
+        ev[0] = ev[1] = ev[2] = ev[3] = 0;                                 \
+        ev[(s) >> 6] = keep_;                                              \
+    } while (0)
+    n = kn_n[king];
+    for (i = 0; i < n; i++) {
+        int t = kn_to[king][i];
+        uint8_t p = b->sq[t];
+        if ((att_class[p] & AC_KNIGHT) && (att_cbit[p] & hm)) EV_ONLY(t);
+    }
+    for (i = 0; i < 8; i++) {
+        int d = P.queen_dirs[i], t = (king + d) & 255;
+        unsigned want = att_dir_class[i];
+        uint8_t p;
+        if (!P.valid[t]) continue;
+        p = b->sq[t];
+        if (p) {
+            if (att_cbit[p] & hm) {
+                unsigned cl = att_class[p];
+                const int32_t *tk = P.pawn_takes[P.pc_color[p]];
+                /* Adjacent: its own square is the whole answer. */
+                if ((cl & (want | AC_KING))
+                    || ((cl & AC_PAWN) && (tk[0] == -d || tk[1] == -d)))
+                    EV_ONLY(t);
+            }
+            continue;
+        }
+        for (t = (t + d) & 255; P.valid[t]; t = (t + d) & 255) {
+            p = b->sq[t];
+            if (p) {
+                if ((att_class[p] & want) && (att_cbit[p] & hm)) {
+                    /* The line from the king out to the checker, inclusive. */
+                    uint64_t line[4] = { 0, 0, 0, 0 };
+                    int s = king;
+                    do {
+                        s = (s + d) & 255;
+                        line[s >> 6] |= 1ULL << (s & 63);
+                    } while (s != t);
+                    ev[0] &= line[0]; ev[1] &= line[1];
+                    ev[2] &= line[2]; ev[3] &= line[3];
+                }
+                break;
+            }
+        }
+    }
+#undef EV_ONLY
+}
+
+/* 1 when the move certainly leaves this seat's king attacked; only meaningful
+ * in check, with `ev` from compute_evasions. Never says legal. */
+static inline int surely_illegal(uint32_t m, int king, const uint64_t ev[4])
+{
+#ifdef NO_PIN_FASTPATH
+    (void)m; (void)king; (void)ev;
+    return 0;
+#else
+    int to = MV_TO(m);
+    if (MV_FLAG(m) == F_EP || MV_FROM(m) == king) return 0;
+    return !((ev[to >> 6] >> (to & 63)) & 1);
+#endif
+}
+
 /* Differential for selftest: does the fast path ever call a move certainly
- * legal that the scan rejects? Returns the number of such moves, so 0 is the
- * only acceptable answer. Counting rather than flagging means a regression
- * reports how wrong it is. */
+ * legal that the scan rejects, or (in check) certainly illegal that the scan
+ * accepts? Returns the number of such moves, so 0 is the only acceptable
+ * answer. Counting rather than flagging means a regression reports how wrong
+ * it is. */
 int tt_legality_disagreements(TtBoard *b)
 {
     uint32_t buf[MAX_MOVES];
@@ -1026,14 +1247,20 @@ int tt_legality_disagreements(TtBoard *b)
     int king0 = b->kings[me];
     int in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     int npins = compute_pins(b, me, king0, pins);
+    uint64_t evade[4];
+    if (in_chk) compute_evasions(b, me, king0, evade);
     for (i = 0; i < n; i++) {
-        int king, really;
-        if (!surely_legal(buf[i], king0, pins, npins, in_chk)) continue;
+        int king, really, legal_claim, illegal_claim;
+        legal_claim = surely_legal(buf[i], king0, pins, npins, in_chk);
+        illegal_claim = in_chk && surely_illegal(buf[i], king0, evade);
+        if (!legal_claim && !illegal_claim) continue;
         tt_make(b, buf[i], &u);
         king = b->kings[me];
         really = king < 0 || !tt_is_attacked(b, king, me);
         tt_unmake(b, buf[i], &u);
-        if (!really) bad++;
+        /* Both claims at once is itself a contradiction. */
+        if (legal_claim && !really) bad++;
+        if (illegal_claim && really) bad++;
     }
     return bad;
 }
@@ -1055,79 +1282,184 @@ int tt_legality_disagreements(TtBoard *b)
  * recapture that turns out to be illegal makes the estimate pessimistic, never
  * unsound as an ordering key. */
 
-/* Cheapest piece of `seat`'s team attacking `to`, skipping squares already
- * spent in the exchange. Returns the square, or -1. */
-static int see_attacker(const TtBoard *b, int to, int seat, const uint8_t *gone)
-{
-    int best = -1, best_val = 1 << 30, i;
+/* The attackers of `to`, gathered once per exchange rather than rescanned per
+ * recapture.
+ *
+ * This used to be see_attacker(): every recapture walked all eight knight
+ * squares, four pawn squares, eight rays and eight king squares again, over a
+ * 256-byte `gone` array zeroed per call. Only one square changes between two
+ * recaptures -- the attacker just spent -- so almost all of that rescan
+ * re-read what the last one read.
+ *
+ * What is kept is exactly what the rescan looked at, in its order: the knight
+ * squares in knight_deltas order, the pawn squares in diag order, the first
+ * unspent piece on each ray in queen_dirs order, the kings in queen_dirs order.
+ * The pick is the same strict `value < best` over that same order, kings only
+ * when nothing else answers, so ties go to the same square and the x-rays
+ * that follow are the same.
+ *
+ * Why only one ray ever needs re-walking: a spent piece is a knight (on no
+ * ray from `to`), or the first piece of its ray -- an adjacent pawn or king
+ * is the first piece of the ray it stands on, and a slider is picked only as
+ * a ray's first piece. So spending it moves that one ray's front outward and
+ * nothing else; every square further out is still unspent, except `frm`,
+ * which the walk skips the way `gone[frm]` made it transparent before. A
+ * spent knight, pawn or king has its team cleared so it can never be picked
+ * again.
+ *
+ * `tm` is the team as a bit: 1 << (colour & 1) for a seat, 0 for
+ * DEAD_UNKNOWN, which same_team() never matches. Teams only; tt_see returns
+ * before any of this in FFA. */
+typedef struct {
+    int16_t sq[8];
+    uint8_t tm[8];
+    uint8_t ray[8];      /* pawns and kings: the ray they front */
+    int n;
+} SeeList;
 
-    for (i = 0; i < 8; i++) {
-        int t = (to + P.knight_deltas[i]) & 255;
-        uint8_t p;
-        if (!P.valid[t] || gone[t]) continue;
-        p = b->sq[t];
-        if (p && P.pc_type[p] == KNIGHT && same_team(b->mode, P.pc_color[p], seat)
-            && P.piece_value[KNIGHT] < best_val) {
-            best = t; best_val = P.piece_value[KNIGHT];
+typedef struct {
+    SeeList kn, pw, kg;
+    int16_t fr[8];       /* first unspent piece on each ray, or -1 */
+    uint8_t fr_tm[8];    /* its team if it is a slider that hits along it */
+    int32_t fr_val[8];
+} SeeState;
+
+static inline unsigned see_team(int colour)
+{
+    return colour < 4 ? 1u << (colour & 1) : 0u;
+}
+
+static inline void see_front(const TtBoard *b, SeeState *s, int i, int start,
+                             int frm)
+{
+    int d = P.queen_dirs[i], t = (start + d) & 255;
+    s->fr[i] = -1;
+    s->fr_tm[i] = 0;
+    for (; P.valid[t]; t = (t + d) & 255) {
+        uint8_t p = b->sq[t];
+        if (!p || t == frm) continue;
+        s->fr[i] = (int16_t)t;
+        if (att_class[p] & att_dir_class[i]) {
+            s->fr_tm[i] = (uint8_t)see_team(P.pc_color[p]);
+            s->fr_val[i] = P.piece_value[P.pc_type[p]];
+        }
+        return;
+    }
+}
+
+static void see_gather(const TtBoard *b, SeeState *s, int to, int frm)
+{
+    int i, n = kn_n[to];
+    s->kn.n = s->kg.n = 0;
+    for (i = 0; i < n; i++) {
+        int t = kn_to[to][i];
+        uint8_t p = b->sq[t];
+        if ((att_class[p] & AC_KNIGHT) && t != frm) {
+            s->kn.sq[s->kn.n] = (int16_t)t;
+            s->kn.tm[s->kn.n++] = (uint8_t)see_team(P.pc_color[p]);
         }
     }
-    /* A pawn on to-d attacks `to` when d is one of that seat's capture deltas. */
-    for (i = 0; i < 4; i++) {
-        int d = P.diag[i], t = (to - d) & 255;
+    /* Pawns sit in fixed slots by diag index, so the pick still sees them in
+     * the diag order the old pawn loop used even though they are found here
+     * in queen_dirs order. Kings are found in queen_dirs order, which is
+     * already the old king loop's. */
+    for (i = 0; i < 4; i++) s->pw.tm[i] = 0;
+    for (i = 0; i < 8; i++) {
+        int d = P.queen_dirs[i], t = (to + d) & 255;
         uint8_t p;
-        if (!P.valid[t] || gone[t]) continue;
+        s->fr[i] = -1;
+        s->fr_tm[i] = 0;
+        if (!P.valid[t]) continue;
         p = b->sq[t];
-        if (p && P.pc_type[p] == PAWN && same_team(b->mode, P.pc_color[p], seat)) {
+        if (!p || t == frm) {
+            see_front(b, s, i, t, frm);
+            continue;
+        }
+        /* The first piece on this ray is adjacent: the old king and pawn
+         * probes read exactly these squares. */
+        s->fr[i] = (int16_t)t;
+        if (att_class[p] & att_dir_class[i]) {
+            s->fr_tm[i] = (uint8_t)see_team(P.pc_color[p]);
+            s->fr_val[i] = P.piece_value[P.pc_type[p]];
+        } else if (att_class[p] & AC_KING) {
+            s->kg.sq[s->kg.n] = (int16_t)t;
+            s->kg.tm[s->kg.n] = (uint8_t)see_team(P.pc_color[p]);
+            s->kg.ray[s->kg.n++] = (uint8_t)i;
+        } else if ((att_class[p] & AC_PAWN) && see_pawn_slot[i] < 4) {
             int c = P.pc_color[p];
-            if ((P.pawn_takes[c][0] == d || P.pawn_takes[c][1] == d)
-                && P.piece_value[PAWN] < best_val) {
-                best = t; best_val = P.piece_value[PAWN];
+            if (P.pawn_takes[c][0] == -d || P.pawn_takes[c][1] == -d) {
+                int j = see_pawn_slot[i];
+                s->pw.sq[j] = (int16_t)t;
+                s->pw.tm[j] = (uint8_t)see_team(c);
+                s->pw.ray[j] = (uint8_t)i;
             }
         }
     }
-    /* Sliders, walked outward so a piece behind a spent one takes its place --
-     * the x-ray that makes an exchange come out differently than it looks. */
-    for (i = 0; i < 8; i++) {
-        int d = P.queen_dirs[i], t = (to + d) & 255, diag = is_diag(d);
-        while (P.valid[t]) {
-            uint8_t p = b->sq[t];
-            if (!gone[t] && p) {
-                int pt = P.pc_type[p];
-                int hits = queenish(pt) || (diag ? pt == BISHOP : pt == ROOK);
-                if (hits && same_team(b->mode, P.pc_color[p], seat)
-                    && P.piece_value[pt] < best_val) {
-                    best = t; best_val = P.piece_value[pt];
-                }
+}
+
+/* Does `seat`'s team have any unspent attacker of `to` left? see_next's
+ * candidates, kings included, without picking or spending one. */
+static int see_any(const SeeState *s, int seat)
+{
+    unsigned want = 1u << (seat & 1);
+    int i;
+    for (i = 0; i < s->kn.n; i++) if (s->kn.tm[i] & want) return 1;
+    for (i = 0; i < 4; i++) if (s->pw.tm[i] & want) return 1;
+    for (i = 0; i < 8; i++) if (s->fr_tm[i] & want) return 1;
+    for (i = 0; i < s->kg.n; i++) if (s->kg.tm[i] & want) return 1;
+    return 0;
+}
+
+/* Cheapest unspent piece of `seat`'s team attacking `to`; spends it and
+ * returns its square, or -1. */
+static int see_next(const TtBoard *b, SeeState *s, int to, int frm, int seat)
+{
+    unsigned want = 1u << (seat & 1);
+    int best = -1, kind = 0, idx = 0, i;
+    int32_t best_val = 1 << 30;
+
+    for (i = 0; i < s->kn.n; i++)
+        if ((s->kn.tm[i] & want) && P.piece_value[KNIGHT] < best_val) {
+            best = s->kn.sq[i]; best_val = P.piece_value[KNIGHT];
+            kind = 1; idx = i;
+        }
+    for (i = 0; i < 4; i++)
+        if ((s->pw.tm[i] & want) && P.piece_value[PAWN] < best_val) {
+            best = s->pw.sq[i]; best_val = P.piece_value[PAWN];
+            kind = 2; idx = i;
+        }
+    for (i = 0; i < 8; i++)
+        if ((s->fr_tm[i] & want) && s->fr_val[i] < best_val) {
+            best = s->fr[i]; best_val = s->fr_val[i];
+            kind = 3; idx = i;
+        }
+    if (best < 0) {
+        for (i = 0; i < s->kg.n; i++)
+            if (s->kg.tm[i] & want) {
+                best = s->kg.sq[i]; kind = 4; idx = i;
                 break;
             }
-            t = (t + d) & 255;
-        }
     }
-    /* The king last: it is only a legal recapturer when nothing else answers,
-     * and giving it a value here would let it out-bid a real piece. */
-    for (i = 0; i < 8; i++) {
-        int t = (to + P.queen_dirs[i]) & 255;
-        uint8_t p;
-        if (!P.valid[t] || gone[t]) continue;
-        p = b->sq[t];
-        if (p && P.pc_type[p] == KING && same_team(b->mode, P.pc_color[p], seat)
-            && best < 0) {
-            best = t; best_val = P.piece_value[KING];
-        }
+    switch (kind) {
+    case 1: s->kn.tm[idx] = 0; break;
+    case 2: s->pw.tm[idx] = 0; see_front(b, s, s->pw.ray[idx], best, frm); break;
+    case 3: see_front(b, s, idx, best, frm); break;
+    case 4: s->kg.tm[idx] = 0; see_front(b, s, s->kg.ray[idx], best, frm); break;
+    default: break;
     }
+    (void)to;
     return best;
 }
 
 int32_t tt_see(const TtBoard *b, uint32_t m)
 {
-    uint8_t gone[NSQ];
+    SeeState st;
     int32_t gain[40];
     int to = MV_TO(m), frm = MV_FROM(m), d = 0;
     int seat = b->turn, attacker;
     int32_t attacker_val;
 
     if (b->mode == MODE_FFA) return 0;          /* see the note above */
-    memset(gone, 0, sizeof(gone));
 
     if (MV_FLAG(m) == F_EP) {
         /* An en-passant capture onto an OCCUPIED skipped square takes both the
@@ -1142,7 +1474,7 @@ int32_t tt_see(const TtBoard *b, uint32_t m)
     }
 
     attacker_val = P.piece_value[P.pc_type[b->sq[frm]]];
-    gone[frm] = 1;
+    see_gather(b, &st, to, frm);
 
     /* The usual implementation breaks out early once neither side would enter
      * the continuation. That is a real speedup and it is why most engines do
@@ -1157,15 +1489,51 @@ int32_t tt_see(const TtBoard *b, uint32_t m)
         d++;
         gain[d] = attacker_val - gain[d - 1];
         seat = (seat + 1) & 3;
-        attacker = see_attacker(b, to, seat, gone);
+        attacker = see_next(b, &st, to, frm, seat);
         if (attacker < 0 || d >= 38) break;
         attacker_val = P.piece_value[P.pc_type[b->sq[attacker]]];
-        gone[attacker] = 1;
+        /* A king may recapture only onto a square nobody can take it on. The
+         * piece table prices the king at 0 -- right for material, where it is
+         * never captured -- so the swap-off used to let the other side "take"
+         * it for free and fold that back as a real line: rook takes a pawn
+         * the king alone defends, with a second rook behind, scored -400
+         * where it wins +100, and SEEPrune threw the capture away. Pins are
+         * ignored everywhere here; this is not a pin, it is the one move the
+         * exchange may never contain. The test sees through the king's own
+         * square, as the next capturer would: see_next has already spent the
+         * king and moved its ray's front past it. */
+        if (P.pc_type[b->sq[attacker]] == KING
+            && see_any(&st, (seat + 1) & 3))
+            break;
     }
     /* Fold back: at every step the side to move could have stopped instead. */
     while (--d > 0)
         if (-gain[d] < gain[d - 1]) gain[d - 1] = -gain[d];
     return gain[0];
+}
+
+/* 1 when tt_see(b, m) >= 0 is already certain from the first capture alone,
+ * so a caller that only wants the sign can skip the exchange.
+ *
+ * Exact, not a heuristic, and it follows from the fold above rather than from
+ * chess intuition. The fold only ever lowers an entry (it takes the min with
+ * -gain[d]), so the final gain[1] <= its initial attacker_val - gain[0], and
+ * the final gain[0] = min(gain[0], -gain[1]) >= min(V, V - A), where V is the
+ * initial gain[0] and A the first attacker's value. With V >= 0 and V >= A
+ * that is >= 0 whatever the rest of the exchange does. FFA returns 0, which
+ * is >= 0 too. V is computed exactly as tt_see computes it, en-passant onto
+ * an occupied square included, so the two cannot disagree on any move.
+ *
+ * Taking a piece worth at least the taker is most captures quiescence sees,
+ * and each one used to run the full swap-off -- the attacker gather and a
+ * pick per step -- only to report a sign this already knew. */
+static inline int see_surely_nonneg(const TtBoard *b, uint32_t m)
+{
+    int to = MV_TO(m);
+    int32_t v = b->sq[to] ? P.piece_value[P.pc_type[b->sq[to]]] : 0;
+    int32_t a = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
+    if (MV_FLAG(m) == F_EP) v += P.piece_value[PAWN];
+    return v >= 0 && v >= a;
 }
 
 int tt_gen_legal(TtBoard *b, uint32_t *out)
@@ -1178,12 +1546,15 @@ int tt_gen_legal(TtBoard *b, uint32_t *out)
     int king0 = b->kings[me];
     int in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     int npins = compute_pins(b, me, king0, pins);
+    uint64_t evade[4];
+    if (in_chk) compute_evasions(b, me, king0, evade);
     for (i = 0; i < n; i++) {
         int king, ok;
         if (surely_legal(buf[i], king0, pins, npins, in_chk)) {
             out[k++] = buf[i];
             continue;
         }
+        if (in_chk && surely_illegal(buf[i], king0, evade)) continue;
         tt_make(b, buf[i], &u);
         king = b->kings[me];
         ok = king < 0 || !tt_is_attacked(b, king, me);
@@ -1332,6 +1703,12 @@ typedef struct {
     const int32_t *b4;
 } TtNetView;
 
+/* L1 weights, NN_FEATURES rows of NN_L1 int16, 64-byte aligned. malloc
+ * returns 16-byte alignment, and with a 512-byte row stride every row then
+ * sits at the same offset into its line -- 48 on Linux/glibc here -- so half
+ * of nn_apply's 32-byte AVX-512 loads straddle two lines on every row.
+ * tt_load_net over-allocates and rounds up. (The AVX2 path's 16-byte loads
+ * never straddle at a multiple of 16, which is why only one path cared.) */
 static int16_t *nn_w1;
 static int32_t nn_b1[NN_L1];
 /* L2 rows, split out of the single (NN_L1 + NN_EXTRA)-stride block the .nnue
@@ -1345,7 +1722,21 @@ static int32_t nn_b1[NN_L1];
 static int8_t nn_w2main[NN_L2 * NN_L1] __attribute__((aligned(64)));
 static int8_t nn_w2extra[NN_L2 * NN_EXTRA];
 static int32_t nn_b2[NN_L2];
+/* nn_b2 less 128 * (row sum of the extras' weights): see nn_l2's VNNI path. */
+static int32_t nn_b2vnni[NN_L2];
 static int8_t nn_w3[NN_L3 * NN_L2];
+/* The same L2 and L3 weights again, COLUMN-BLOCKED for the x86 path (see
+ * nn_sums_run): block c holds input bytes 4c..4c+3 of every output row, row
+ * after row, so one 32-byte load is those four inputs' weights for eight
+ * outputs. nn_w2col runs on past the 256 main inputs into two blocks of the
+ * extras, padded with a zero weight, which the VNNI path reads; AVX2 reads
+ * nn_w2excol instead, the extras as int16 pairs. Built by tt_load_net
+ * alongside the row copies, which the scalar and NEON paths still read. */
+#define NN_EXPAIRS ((NN_EXTRA + 1) / 2)
+_Static_assert(NN_EXTRA < 8, "the extras pad to two 4-byte blocks");
+static int8_t nn_w2col[(NN_L1 + 8) * NN_L2] __attribute__((aligned(64)));
+static int16_t nn_w2excol[NN_EXPAIRS * NN_L2 * 2] __attribute__((aligned(64)));
+static int8_t nn_w3col[NN_L2 * NN_L3] __attribute__((aligned(64)));
 static int32_t nn_b3[NN_L3];
 static int8_t nn_w4[NN_L3];
 static int32_t nn_b4;
@@ -1357,16 +1748,27 @@ static int nn_version = 1;
  * without going through make/unmake fails the comparison and forces a
  * refresh, so a missed path degrades to the old cost rather than to a wrong
  * evaluation. */
-static int32_t nn_acc[4][NN_L1];
+/* 64-byte aligned for the aligned zmm loads in nn_apply. */
+static int32_t nn_acc[4][NN_L1] __attribute__((aligned(64)));
 static uint64_t nn_acc_key;
 static int nn_acc_ok = 0;
 
-/* Add (sign +1) or remove (sign -1) one piece's contribution, in all four
- * perspectives at once. */
+/* The feature a piece on a square switches on, seen from `persp`: a piece
+ * half (colour made relative to the perspective, and type) plus a square half
+ * (the square turned to the perspective, then compacted). */
+static int nn_piece_base(int persp, int color, int type)
+{
+    return (((color - persp) & 3) * 6 + type) * 160;
+}
+
+static int nn_square_index(int sq, int persp)
+{
+    return P.compact[P.rot_to_persp[persp][sq]];
+}
+
 static int nn_feature_of(int sq, int persp, int color, int type)
 {
-    int rel = (color - persp) & 3;
-    return (rel * 6 + type) * 160 + P.compact[P.rot_to_persp[persp][sq]];
+    return nn_piece_base(persp, color, type) + nn_square_index(sq, persp);
 }
 
 /* One perspective, one feature row, applied now. */
@@ -1397,29 +1799,185 @@ static void nn_row(int persp, int feature, int sign)
  * The queue is bounded and flushes when full, so a pathological line costs
  * time rather than correctness. */
 #define NN_PEND_MAX 1024
-typedef struct { int32_t feature; int32_t sign; } NnPend;
-static NnPend nn_pend[4][NN_PEND_MAX];
+/* One entry is `feature << 1 | (sign < 0)`: an entry's exact inverse is
+ * `e ^ 1`, so the cancellation test is a single compare. */
+static int32_t nn_pend[4][NN_PEND_MAX];
 static int nn_pend_n[4];
 
+/* Apply a flush's rows in ONE pass over the accumulator.
+ *
+ * nn_flush used to call nn_row once per queued row, and every nn_row is a
+ * full read-modify-write of the 1 KB accumulator. A flush is 5.9 rows on
+ * average over the bench (2,231,897 rows in 379,536 flushes), so most of that
+ * traffic was the accumulator going out to L1 and straight back. Here a slice
+ * of it is held in registers while every row's slice is added or subtracted
+ * into it, and it is loaded and stored once per flush instead of once per row.
+ * The caller splits the rows into an add list and a subtract list, so the
+ * inner loops carry no sign branch.
+ *
+ * Bit-exact: the accumulator is int32 and is never clamped or saturated, the
+ * widened int16 weights are added exactly, and integer addition is
+ * associative, so the order the rows land in cannot change a bit of it. No
+ * partial sum is near overflow: |w1| < 2^15 and a queue is at most 1,024 rows.
+ *
+ * Intrinsics rather than the plain loop because neither plain form came out
+ * well. Written as a fused C loop over a local slice, GCC vectorises it but
+ * round-trips the slice through a stack copy at every pass: 392M instructions
+ * in nn_flush over the bench against 350M for the old row-at-a-time loop,
+ * i.e. worse. GCC's generic vector extensions kept the slice on the stack
+ * entirely under AVX2. -DNN_SCALAR forces the reference loop, as for nn_dot,
+ * and it is also what NEON gets: the compiler vectorises it by itself. A
+ * first attempt at vectorising nn_row alone was 4% slower (docs/AB.md, lazy
+ * perspectives); this is a different change -- it removes accumulator
+ * traffic rather than speeding up the arithmetic the compiler already
+ * vectorised. */
+#if !defined(NN_SCALAR) && (defined(__AVX512BW__) || defined(__AVX2__))
+#include <immintrin.h>
+#endif
+#if !defined(NN_SCALAR) && defined(__AVX512BW__)
+/* 128 lanes = 8 zmm per pass, two passes. */
+static void nn_apply(int32_t *acc, const int32_t *adds, int na,
+                     const int32_t *subs, int ns)
+{
+    int c, i;
+    for (c = 0; c < NN_L1; c += 128) {
+        const int16_t *w = nn_w1 + c;
+        __m512i t0 = _mm512_load_si512((const void *)(acc + c + 0));
+        __m512i t1 = _mm512_load_si512((const void *)(acc + c + 16));
+        __m512i t2 = _mm512_load_si512((const void *)(acc + c + 32));
+        __m512i t3 = _mm512_load_si512((const void *)(acc + c + 48));
+        __m512i t4 = _mm512_load_si512((const void *)(acc + c + 64));
+        __m512i t5 = _mm512_load_si512((const void *)(acc + c + 80));
+        __m512i t6 = _mm512_load_si512((const void *)(acc + c + 96));
+        __m512i t7 = _mm512_load_si512((const void *)(acc + c + 112));
+#define NN_W(k) _mm512_cvtepi16_epi32( \
+                    _mm256_loadu_si256((const __m256i *)(row + 16 * (k))))
+        for (i = 0; i < na; i++) {
+            const int16_t *row = w + adds[i];
+            t0 = _mm512_add_epi32(t0, NN_W(0)); t1 = _mm512_add_epi32(t1, NN_W(1));
+            t2 = _mm512_add_epi32(t2, NN_W(2)); t3 = _mm512_add_epi32(t3, NN_W(3));
+            t4 = _mm512_add_epi32(t4, NN_W(4)); t5 = _mm512_add_epi32(t5, NN_W(5));
+            t6 = _mm512_add_epi32(t6, NN_W(6)); t7 = _mm512_add_epi32(t7, NN_W(7));
+        }
+        for (i = 0; i < ns; i++) {
+            const int16_t *row = w + subs[i];
+            t0 = _mm512_sub_epi32(t0, NN_W(0)); t1 = _mm512_sub_epi32(t1, NN_W(1));
+            t2 = _mm512_sub_epi32(t2, NN_W(2)); t3 = _mm512_sub_epi32(t3, NN_W(3));
+            t4 = _mm512_sub_epi32(t4, NN_W(4)); t5 = _mm512_sub_epi32(t5, NN_W(5));
+            t6 = _mm512_sub_epi32(t6, NN_W(6)); t7 = _mm512_sub_epi32(t7, NN_W(7));
+        }
+#undef NN_W
+        _mm512_store_si512((void *)(acc + c + 0), t0);
+        _mm512_store_si512((void *)(acc + c + 16), t1);
+        _mm512_store_si512((void *)(acc + c + 32), t2);
+        _mm512_store_si512((void *)(acc + c + 48), t3);
+        _mm512_store_si512((void *)(acc + c + 64), t4);
+        _mm512_store_si512((void *)(acc + c + 80), t5);
+        _mm512_store_si512((void *)(acc + c + 96), t6);
+        _mm512_store_si512((void *)(acc + c + 112), t7);
+    }
+}
+#elif !defined(NN_SCALAR) && defined(__AVX2__)
+/* 64 lanes = 8 ymm per pass, four passes. All 16 ymm would leave no
+ * register for the widened row. */
+static void nn_apply(int32_t *acc, const int32_t *adds, int na,
+                     const int32_t *subs, int ns)
+{
+    int c, i;
+    for (c = 0; c < NN_L1; c += 64) {
+        const int16_t *w = nn_w1 + c;
+        __m256i t0 = _mm256_load_si256((const __m256i *)(acc + c + 0));
+        __m256i t1 = _mm256_load_si256((const __m256i *)(acc + c + 8));
+        __m256i t2 = _mm256_load_si256((const __m256i *)(acc + c + 16));
+        __m256i t3 = _mm256_load_si256((const __m256i *)(acc + c + 24));
+        __m256i t4 = _mm256_load_si256((const __m256i *)(acc + c + 32));
+        __m256i t5 = _mm256_load_si256((const __m256i *)(acc + c + 40));
+        __m256i t6 = _mm256_load_si256((const __m256i *)(acc + c + 48));
+        __m256i t7 = _mm256_load_si256((const __m256i *)(acc + c + 56));
+#define NN_W(k) _mm256_cvtepi16_epi32( \
+                    _mm_loadu_si128((const __m128i *)(row + 8 * (k))))
+        for (i = 0; i < na; i++) {
+            const int16_t *row = w + adds[i];
+            t0 = _mm256_add_epi32(t0, NN_W(0)); t1 = _mm256_add_epi32(t1, NN_W(1));
+            t2 = _mm256_add_epi32(t2, NN_W(2)); t3 = _mm256_add_epi32(t3, NN_W(3));
+            t4 = _mm256_add_epi32(t4, NN_W(4)); t5 = _mm256_add_epi32(t5, NN_W(5));
+            t6 = _mm256_add_epi32(t6, NN_W(6)); t7 = _mm256_add_epi32(t7, NN_W(7));
+        }
+        for (i = 0; i < ns; i++) {
+            const int16_t *row = w + subs[i];
+            t0 = _mm256_sub_epi32(t0, NN_W(0)); t1 = _mm256_sub_epi32(t1, NN_W(1));
+            t2 = _mm256_sub_epi32(t2, NN_W(2)); t3 = _mm256_sub_epi32(t3, NN_W(3));
+            t4 = _mm256_sub_epi32(t4, NN_W(4)); t5 = _mm256_sub_epi32(t5, NN_W(5));
+            t6 = _mm256_sub_epi32(t6, NN_W(6)); t7 = _mm256_sub_epi32(t7, NN_W(7));
+        }
+#undef NN_W
+        _mm256_store_si256((__m256i *)(acc + c + 0), t0);
+        _mm256_store_si256((__m256i *)(acc + c + 8), t1);
+        _mm256_store_si256((__m256i *)(acc + c + 16), t2);
+        _mm256_store_si256((__m256i *)(acc + c + 24), t3);
+        _mm256_store_si256((__m256i *)(acc + c + 32), t4);
+        _mm256_store_si256((__m256i *)(acc + c + 40), t5);
+        _mm256_store_si256((__m256i *)(acc + c + 48), t6);
+        _mm256_store_si256((__m256i *)(acc + c + 56), t7);
+    }
+}
+#else
+static void nn_apply(int32_t *acc, const int32_t *adds, int na,
+                     const int32_t *subs, int ns)
+{
+    int i, j;
+    for (i = 0; i < na; i++) {
+        const int16_t *row = nn_w1 + adds[i];
+        for (j = 0; j < NN_L1; j++) acc[j] += row[j];
+    }
+    for (i = 0; i < ns; i++) {
+        const int16_t *row = nn_w1 + subs[i];
+        for (j = 0; j < NN_L1; j++) acc[j] -= row[j];
+    }
+}
+#endif
+
+/* REJECTED here, so it is not re-derived: cancelling inverse pairs that are
+ * NOT adjacent in the queue. They exist -- a sibling line replaying a move
+ * the previous line also made leaves +f ... -f with other entries between --
+ * and they are 526,518 of the bench's 2,231,897 flushed rows (23.6%). But
+ * pairing them off (a generation-stamped last-index-per-feature table, one
+ * lookup per entry) saved only 6.9M instructions of 2,765M (0.25%), and the
+ * cache simulation showed why: D1 read misses in nn_flush were unchanged
+ * (4.59M both ways). The rows it skips were already L1 hits -- the second of
+ * a pair re-reads the row the first just loaded, and the first is a feature
+ * the earlier line's evaluation applied moments before. A forward scan for
+ * the inverse in a 64-entry window cost 30M instructions MORE than it saved.
+ * The FFA search, which queues only the root seat, flushes short queues at
+ * every evaluation, and there the table was a net LOSS: nn_flush 89.6M ->
+ * 99.3M on the FFA position, because most queues are too short to hold a
+ * pair and still pay the pass. (callgrind, one bench round, x86-64-v3.) */
 static void nn_flush(int persp)
 {
-    int i;
-    for (i = 0; i < nn_pend_n[persp]; i++)
-        nn_row(persp, nn_pend[persp][i].feature, nn_pend[persp][i].sign);
+    int n = nn_pend_n[persp], i, na = 0, ns = 0;
+    int32_t *q = nn_pend[persp];
+    int32_t subs[NN_PEND_MAX];
+    if (n == 0) return;
     nn_pend_n[persp] = 0;
+    for (i = 0; i < n; i++) {
+        int32_t e = q[i];
+        /* Row offsets into nn_w1. Adds are compacted into q itself, which
+         * is being emptied; the write index never passes the read index. */
+        if (e & 1) subs[ns++] = (e >> 1) * NN_L1;
+        else       q[na++] = (e >> 1) * NN_L1;
+    }
+    nn_apply(nn_acc[persp], q, na, subs, ns);
 }
 
-static void nn_push(int persp, int feature, int sign)
+static void nn_push(int persp, int32_t e)
 {
     int n = nn_pend_n[persp];
-    if (n > 0 && nn_pend[persp][n - 1].feature == feature
-              && nn_pend[persp][n - 1].sign == -sign) {
+    if (n > 0 && nn_pend[persp][n - 1] == (e ^ 1)) {
         nn_pend_n[persp] = n - 1;
         return;
     }
     if (n == NN_PEND_MAX) { nn_flush(persp); n = 0; }
-    nn_pend[persp][n].feature = feature;
-    nn_pend[persp][n].sign = sign;
+    nn_pend[persp][n] = e;
     nn_pend_n[persp] = n + 1;
 }
 
@@ -1434,15 +1992,72 @@ static void nn_toggle_now(uint8_t piece, int sq, int sign)
         nn_row(persp, nn_feature_of(sq, persp, color, type), sign);
 }
 
-static void nn_toggle(uint8_t piece, int sq, int sign)
+/* nn_feature_of's two halves for all four perspectives, precomputed in
+ * queue-entry units (feature * 2), so nn_toggle's work per perspective is two
+ * loads and an add. In place it was the colour rotation, the type fold
+ * through two tables and two dependent square lookups, per perspective, on
+ * every make and unmake. Built from P by tt_init. A piece with no recorded
+ * colour gets -1, which nn_toggle tests instead of pc_color. */
+static int16_t nn_piece_entry[NPIECE][4];
+static int16_t nn_square_entry[NSQ][4];
+
+static void nn_build_tables(void)
 {
-    int persp, color = P.pc_color[piece], type;
+    int p, sq, persp;
+    for (p = 0; p < NPIECE; p++) {
+        int color = P.pc_color[p];
+        for (persp = 0; persp < 4; persp++)
+            nn_piece_entry[p][persp] = (int16_t)(color == DEAD_UNKNOWN ? -1
+                : 2 * nn_piece_base(persp, color, P.feature_type[P.pc_type[p]]));
+    }
+    for (sq = 0; sq < NSQ; sq++)
+        for (persp = 0; persp < 4; persp++)
+            nn_square_entry[sq][persp] = (int16_t)(2 * nn_square_index(sq, persp));
+}
+
+/* One-perspective maintenance, for the paranoid FFA search.
+ *
+ * Every FFA node is scored in the ROOT seat's terms, so of the four queues
+ * nn_toggle feeds, three are never flushed during an FFA search: each entry
+ * is pushed on the way down and cancelled by its exact inverse on the way
+ * back up. That was pure overhead -- three feature computations and three
+ * push-or-pop per toggle, 6.2% of an FFA search's instructions with the
+ * inlining below -- for queues that end the search exactly where they
+ * started.
+ *
+ * While nn_only >= 0 only that perspective is queued. The other three are
+ * left untouched, so they still describe the board the search was entered
+ * with, and the search hands that same board back. The one way that fails is
+ * a refresh inside the search, which rebuilds all four from a board deep in
+ * the tree; nn_single_begin refreshes at the root first so that cannot happen
+ * on any path the search takes, and nn_single_end distrusts the accumulator
+ * if it happened anyway. -1 is the ordinary mode, all four. */
+static int nn_only = -1;
+static int nn_only_refreshed;
+
+static __attribute__((noinline)) void nn_toggle_all(uint8_t piece, int sq,
+                                                    int sign)
+{
+    const int16_t *pe = nn_piece_entry[piece], *se = nn_square_entry[sq];
+    int persp, neg = sign < 0;
     /* A piece with no recorded origin has no colour to make relative, so it
      * switches on no feature -- the same rule the full refresh applies. */
-    if (color == DEAD_UNKNOWN) return;
-    type = P.feature_type[P.pc_type[piece]];
+    if (pe[0] < 0) return;
     for (persp = 0; persp < 4; persp++)
-        nn_push(persp, nn_feature_of(sq, persp, color, type), sign);
+        nn_push(persp, pe[persp] + se[persp] + neg);
+}
+
+/* The one-seat path is inlined into make and unmake and the four-seat path is
+ * kept out of line, so the call FFA makes 800k times a bench round is two
+ * table lookups and a push rather than a call that saves the registers the
+ * four-way loop needs. Teams pays the same out-of-line call it always did. */
+static inline void nn_toggle(uint8_t piece, int sq, int sign)
+{
+    int persp = nn_only, e;
+    if (persp < 0) { nn_toggle_all(piece, sq, sign); return; }
+    e = nn_piece_entry[piece][persp];
+    if (e < 0) return;
+    nn_push(persp, e + nn_square_entry[sq][persp] + (sign < 0));
 }
 
 /* Deltas are safe only when the accumulator actually describes the board in
@@ -1477,6 +2092,30 @@ static void nn_refresh(const TtBoard *b)
     }
     nn_acc_key = b->key;
     nn_acc_ok = 1;
+    nn_only_refreshed = 1;
+}
+
+/* Enter and leave one-perspective mode (see nn_only). Refreshing at the root
+ * costs nothing extra: a stale accumulator would be refreshed at the first
+ * evaluation anyway, and a refresh is exact, so it is the same arithmetic
+ * either way and no evaluation moves. */
+static void nn_single_begin(const TtBoard *b, int persp)
+{
+    if (!nn_loaded) return;
+    if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
+    nn_only_refreshed = 0;
+    nn_only = persp;
+}
+
+static void nn_single_end(void)
+{
+    if (nn_only < 0) return;
+    nn_only = -1;
+    /* A refresh in mode rebuilt the other three from a board the search has
+     * since left. Unreachable while every path below the root maintains the
+     * key, but if one ever does not, this degrades to one refresh at the next
+     * evaluation rather than to three silently wrong perspectives. */
+    if (nn_only_refreshed) nn_acc_ok = 0;
 }
 
 /* Differential check for selftest: does the maintained accumulator equal a
@@ -1512,8 +2151,10 @@ void tt_nnue_dims(int32_t *out)
 int tt_load_net(const TtNetView *v)
 {
     if (!nn_w1) {
-        nn_w1 = (int16_t *)malloc((size_t)NN_FEATURES * NN_L1 * sizeof(int16_t));
-        if (!nn_w1) return 0;
+        /* Never freed, as before: it lives as long as the library. */
+        void *mem = malloc((size_t)NN_FEATURES * NN_L1 * sizeof(int16_t) + 63);
+        if (!mem) return 0;
+        nn_w1 = (int16_t *)(((uintptr_t)mem + 63) & ~(uintptr_t)63);
     }
     memcpy(nn_w1, v->w1, (size_t)NN_FEATURES * NN_L1 * sizeof(int16_t));
     memcpy(nn_b1, v->b1, sizeof(nn_b1));
@@ -1525,6 +2166,30 @@ int tt_load_net(const TtNetView *v)
             memcpy(nn_w2main + (size_t)k * NN_L1, src, NN_L1);
             memcpy(nn_w2extra + (size_t)k * NN_EXTRA, src + NN_L1, NN_EXTRA);
         }
+    }
+    {   /* The column-blocked copies: element (row k, input j) goes to block
+         * j/4, slot k, byte j%4. */
+        int k, j;
+        for (k = 0; k < NN_L2; k++)
+            for (j = 0; j < NN_L1 + 8; j++)
+                nn_w2col[(j / 4) * (NN_L2 * 4) + k * 4 + j % 4] =
+                    j < NN_L1 + NN_EXTRA
+                        ? v->w2[(size_t)k * (NN_L1 + NN_EXTRA) + j] : 0;
+        for (k = 0; k < NN_L2; k++) {
+            int32_t sum = 0;
+            for (j = 0; j < NN_EXTRA; j++)
+                sum += v->w2[(size_t)k * (NN_L1 + NN_EXTRA) + NN_L1 + j];
+            nn_b2vnni[k] = v->b2[k] - 128 * sum;
+        }
+        for (k = 0; k < NN_L2; k++)
+            for (j = 0; j < NN_EXPAIRS * 2; j++)
+                nn_w2excol[(j / 2) * (NN_L2 * 2) + k * 2 + j % 2] = (int16_t)(
+                    j < NN_EXTRA ? v->w2[(size_t)k * (NN_L1 + NN_EXTRA)
+                                         + NN_L1 + j] : 0);
+        for (k = 0; k < NN_L3; k++)
+            for (j = 0; j < NN_L2; j++)
+                nn_w3col[(j / 4) * (NN_L3 * 4) + k * 4 + j % 4] =
+                    v->w3[(size_t)k * NN_L2 + j];
     }
     memcpy(nn_b2, v->b2, sizeof(nn_b2));
     memcpy(nn_w3, v->w3, sizeof(nn_w3));
@@ -1547,13 +2212,6 @@ void tt_unload_net(void)
 }
 
 int tt_net_loaded(void) { return nn_loaded; }
-
-static inline int32_t nn_crelu(int32_t x, int shift)
-{
-    x >>= shift;
-    if (x < 0) return 0;
-    return x > NN_CRELU ? NN_CRELU : x;
-}
 
 /* The seven values that bypass the accumulator, rotated to `persp`. */
 static void nn_extras(const TtBoard *b, int persp, int32_t *out)
@@ -1600,28 +2258,272 @@ static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
 }
 #elif !defined(NN_SCALAR) && defined(__AVX2__)
 #include <immintrin.h>
+/* x86 runs L2 and L3 column-blocked (nn_sums_run, below); NEON and the scalar
+ * reference keep the row-at-a-time loop. */
+#define NN_COLUMNS 1
+
+/* acc + four adjacent u8 x s8 products per int32 lane, 256 bits wide.
+ *
+ * With VNNI this is one vpdpbusd, which sums in int32 and has no saturation
+ * constraint at all. Without it, maddubs sums two products into one int16
+ * WITH saturation. The widest pair is 127 * -128 * 2 = -32,512 against a
+ * -32,768 floor (127 * 127 * 2 = 32,258 on the other side), so it cannot
+ * saturate -- but the margin is under 1%, so it is a real constraint on the
+ * quantisation rather than a comfortable one. Raising NN_CRELU past 127 would
+ * break the AVX2-only path silently, and only that path. */
+#if defined(__AVX512VNNI__) && defined(__AVX512VL__)
+#define NN_VNNI 1
+static inline __m256i nn_dpbusd(__m256i acc, __m256i a, __m256i b)
+{
+    return _mm256_dpbusd_epi32(acc, a, b);
+}
+#elif defined(__AVXVNNI__)
+#define NN_VNNI 1
+static inline __m256i nn_dpbusd(__m256i acc, __m256i a, __m256i b)
+{
+    return _mm256_dpbusd_avx_epi32(acc, a, b);
+}
+#else
+static inline __m256i nn_dpbusd(__m256i acc, __m256i a, __m256i b)
+{
+    return _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(a, b),
+                                                   _mm256_set1_epi16(1)));
+}
+#endif
+
 static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
 {
-    /* maddubs sums two products into one int16 with saturation. The widest
-     * pair here is 127*127 + 127*127 = 32,258 against a 32,767 ceiling, so it
-     * cannot saturate -- but the margin is 1.6%, so it is a real constraint on
-     * the quantisation rather than a comfortable one. Raising NN_CRELU past
-     * 127 would break this path silently. */
     __m256i acc = _mm256_setzero_si256();
-    const __m256i ones = _mm256_set1_epi16(1);
     __m128i lo;
     int i;
-    for (i = 0; i < n; i += 32) {
-        __m256i va = _mm256_loadu_si256((const __m256i *)(a + i));
-        __m256i vb = _mm256_loadu_si256((const __m256i *)(b + i));
-        acc = _mm256_add_epi32(
-            acc, _mm256_madd_epi16(_mm256_maddubs_epi16(va, vb), ones));
-    }
+    for (i = 0; i < n; i += 32)
+        acc = nn_dpbusd(acc, _mm256_loadu_si256((const __m256i *)(a + i)),
+                        _mm256_loadu_si256((const __m256i *)(b + i)));
     lo = _mm_add_epi32(_mm256_castsi256_si128(acc),
                        _mm256_extracti128_si256(acc, 1));
     lo = _mm_hadd_epi32(lo, lo);
     lo = _mm_hadd_epi32(lo, lo);
     return _mm_cvtsi128_si32(lo);
+}
+
+/* The vector the column-blocked layers accumulate in: a zmm where AVX-512
+ * VNNI is there to fill it, a ymm otherwise. NN_VPR is how many of them hold
+ * one layer's 32 int32 sums. */
+#if defined(__AVX512VNNI__) && defined(__AVX512BW__)
+#define NN_ZMM 1
+#define NN_VPR 2
+typedef __m512i NnVec;
+static inline NnVec nn_vzero(void) { return _mm512_setzero_si512(); }
+static inline NnVec nn_vbcast(int32_t v) { return _mm512_set1_epi32(v); }
+static inline NnVec nn_vloadu(const void *p) { return _mm512_loadu_si512(p); }
+static inline NnVec nn_vadd(NnVec a, NnVec b) { return _mm512_add_epi32(a, b); }
+static inline NnVec nn_vdp(NnVec acc, NnVec a, const int8_t *w)
+{
+    return _mm512_dpbusd_epi32(acc, a, _mm512_load_si512((const void *)w));
+}
+static inline void nn_vsplit(NnVec v, __m256i *s)
+{
+    s[0] = _mm512_castsi512_si256(v);
+    s[1] = _mm512_extracti64x4_epi64(v, 1);
+}
+#else
+#define NN_VPR 4
+typedef __m256i NnVec;
+static inline NnVec nn_vzero(void) { return _mm256_setzero_si256(); }
+static inline NnVec nn_vbcast(int32_t v) { return _mm256_set1_epi32(v); }
+static inline NnVec nn_vloadu(const void *p)
+{
+    return _mm256_loadu_si256((const __m256i *)p);
+}
+static inline NnVec nn_vadd(NnVec a, NnVec b) { return _mm256_add_epi32(a, b); }
+static inline NnVec nn_vdp(NnVec acc, NnVec a, const int8_t *w)
+{
+    return nn_dpbusd(acc, a, _mm256_load_si256((const __m256i *)w));
+}
+static inline void nn_vsplit(NnVec v, __m256i *s) { s[0] = v; }
+#endif
+
+/* Independent accumulator chains per output vector. maddubs+madd+add carries
+ * only the 1-cycle add from one block to the next, so one chain keeps up.
+ * vpdpbusd carries its whole ~5-cycle latency into the next block, so a
+ * single chain would leave it latency-bound at a fraction of its throughput.
+ * Measured with tt_bench_eval on a Sapphire Rapids Xeon, ns per eval:
+ *     zmm   groups 2 / 4 / 8     91.6 / 69.4 / 71.2
+ *     ymm (AVX-VNNI only, built -march=alderlake)
+ *           groups 1 / 2 / 4    132.4 / 91.3 / 106.8   (4 spills: 16 regs)
+ *     AVX2  groups 1 / 2        142.6 / 142.2 */
+#if defined(NN_ZMM)
+#define NN_GROUPS 4
+#elif defined(NN_VNNI)
+#define NN_GROUPS 2
+#else
+#define NN_GROUPS 1
+#endif
+_Static_assert((NN_L1 / 4) % NN_GROUPS == 0 && (NN_L2 / 4) % NN_GROUPS == 0
+               && NN_L2 == 32 && NN_L3 == 32,
+               "nn_sums_run hands out whole groups of 32-output blocks");
+
+/* One 32-output layer's running sums. */
+typedef struct { NnVec v[NN_GROUPS][NN_VPR]; } NnSums;
+
+static inline void nn_sums_init(NnSums *a, const int32_t *bias)
+{
+    int g, r;
+    for (r = 0; r < NN_VPR; r++) {
+        a->v[0][r] = nn_vloadu(bias + r * (32 / NN_VPR));
+        for (g = 1; g < NN_GROUPS; g++) a->v[g][r] = nn_vzero();
+    }
+}
+
+/* Four input bytes `four` against column block `wc`, into chain `g`. */
+static inline void nn_sums_block(NnSums *a, int g, int32_t four,
+                                 const int8_t *wc)
+{
+    NnVec xb = nn_vbcast(four);
+    int r;
+    for (r = 0; r < NN_VPR; r++)
+        a->v[g][r] = nn_vdp(a->v[g][r], xb, wc + r * (128 / NN_VPR));
+}
+
+/* `n` unsigned input bytes against the column-blocked weights `w`.
+ *
+ * No horizontal reduction anywhere: a block of four inputs is broadcast to
+ * every lane and each lane is one output, so the 32 sums come out already in
+ * vector form. The row-at-a-time loop this replaced paid a full 8-to-1
+ * reduction and a scalar crelu per output, 32 times per layer. */
+static inline void nn_sums_run(NnSums *a, const int8_t *x, int n,
+                               const int8_t *w)
+{
+    int c, g;
+    for (c = 0; c < n / 4; c += NN_GROUPS)
+        for (g = 0; g < NN_GROUPS; g++) {
+            int32_t four;
+            memcpy(&four, x + 4 * (c + g), 4);
+            nn_sums_block(a, g, four, w + (size_t)(c + g) * 128);
+        }
+}
+
+/* The chains summed, as four ymm of eight int32: outputs 0..31 in order. */
+static inline void nn_sums_out(NnSums *a, __m256i *s)
+{
+    int g, r;
+    for (r = 0; r < NN_VPR; r++) {
+        for (g = 1; g < NN_GROUPS; g++)
+            a->v[0][r] = nn_vadd(a->v[0][r], a->v[g][r]);
+        nn_vsplit(a->v[0][r], s + r * (4 / NN_VPR));
+    }
+}
+
+/* Four vectors of eight int32, outputs 0..31 in order, to crelu(v >> shift)
+ * as 32 int8. The two saturating packs then max(0) are exactly
+ * clamp(v, 0, 127): saturation is monotone and both of its bounds lie outside
+ * [0, 127]. The packs interleave the 128-bit lanes, which the final permute
+ * undoes. */
+static inline void nn_crelu32(__m256i a, __m256i b, __m256i c, __m256i d,
+                              int shift, int8_t *out)
+{
+    __m256i p = _mm256_packs_epi16(
+        _mm256_packs_epi32(_mm256_srai_epi32(a, shift),
+                           _mm256_srai_epi32(b, shift)),
+        _mm256_packs_epi32(_mm256_srai_epi32(c, shift),
+                           _mm256_srai_epi32(d, shift)));
+    p = _mm256_max_epi8(p, _mm256_setzero_si256());
+    p = _mm256_permutevar8x32_epi32(p, _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7));
+    _mm256_storeu_si256((__m256i *)out, p);
+}
+
+/* The accumulator to L2's input bytes. */
+static inline void nn_l1(const int32_t *acc, int8_t *x)
+{
+    int j;
+#if defined(NN_ZMM)
+    /* nn_crelu32 64 at a time: the packs interleave four 128-bit lanes now,
+     * so the permute gathers dword m of every lane into quarter m. */
+    const __m512i order = _mm512_setr_epi32(0, 4, 8, 12, 1, 5, 9, 13,
+                                            2, 6, 10, 14, 3, 7, 11, 15);
+    for (j = 0; j < NN_L1; j += 64) {
+        __m512i p = _mm512_packs_epi16(
+            _mm512_packs_epi32(
+                _mm512_srai_epi32(_mm512_loadu_si512(acc + j), NN_SHIFT1),
+                _mm512_srai_epi32(_mm512_loadu_si512(acc + j + 16), NN_SHIFT1)),
+            _mm512_packs_epi32(
+                _mm512_srai_epi32(_mm512_loadu_si512(acc + j + 32), NN_SHIFT1),
+                _mm512_srai_epi32(_mm512_loadu_si512(acc + j + 48), NN_SHIFT1)));
+        p = _mm512_max_epi8(p, _mm512_setzero_si512());
+        _mm512_storeu_si512(x + j, _mm512_permutexvar_epi32(order, p));
+    }
+#else
+    for (j = 0; j < NN_L1; j += 32)
+        nn_crelu32(_mm256_loadu_si256((const __m256i *)(acc + j)),
+                   _mm256_loadu_si256((const __m256i *)(acc + j + 8)),
+                   _mm256_loadu_si256((const __m256i *)(acc + j + 16)),
+                   _mm256_loadu_si256((const __m256i *)(acc + j + 24)),
+                   NN_SHIFT1, x + j);
+#endif
+}
+
+/* L2. `x` is NN_L1 crelu bytes, then the extras as int8, then one zero.
+ *
+ * The extras run negative, so they cannot be the unsigned operand of maddubs
+ * or vpdpbusd as they stand. With VNNI they go in offset by +128 -- the XOR
+ * flips each byte's sign bit, which is exactly that -- as two more column
+ * blocks, and the +128 * (row sum of the extras' weights) that adds is taken
+ * back out of the bias at load time (nn_b2vnni). Integer, so exact. maddubs
+ * cannot take the offset bytes, 255 * 127 * 2 saturates int16, so AVX2 runs
+ * them through madd_epi16 instead, as int16 pairs against int16 weights:
+ * exact too, |product pair| <= 2 * 127 * 128. Either way this replaces a
+ * scalar tail per row; see docs/AB.md for why CACHING that tail was rejected
+ * -- this does not cache, it stops doing it seven multiplies at a time.
+ *
+ * `extras` 0 drops the tail for tt_bench_nnue_stage. */
+static inline void nn_l2(const int8_t *x, int8_t *h1, int extras)
+{
+    NnSums a;
+    __m256i s[4];
+#if defined(NN_VNNI)
+    nn_sums_init(&a, extras ? nn_b2vnni : nn_b2);
+    nn_sums_run(&a, x, NN_L1, nn_w2col);
+    if (extras) {
+        uint64_t e;
+        memcpy(&e, x + NN_L1, 8);
+        e ^= 0x8080808080808080ULL;
+        nn_sums_block(&a, 0, (int32_t)(uint32_t)e,
+                      nn_w2col + (size_t)NN_L1 / 4 * 128);
+        nn_sums_block(&a, 1 % NN_GROUPS, (int32_t)(uint32_t)(e >> 32),
+                      nn_w2col + ((size_t)NN_L1 / 4 + 1) * 128);
+    }
+    nn_sums_out(&a, s);
+#else
+    nn_sums_init(&a, nn_b2);
+    nn_sums_run(&a, x, NN_L1, nn_w2col);
+    nn_sums_out(&a, s);
+    if (extras) {
+        __m256i xe = _mm256_broadcastsi128_si256(_mm_cvtepi8_epi16(
+            _mm_loadl_epi64((const __m128i *)(x + NN_L1))));
+        __m256i xp[4];
+        int p, r;
+        xp[0] = _mm256_shuffle_epi32(xe, 0x00);
+        xp[1] = _mm256_shuffle_epi32(xe, 0x55);
+        xp[2] = _mm256_shuffle_epi32(xe, 0xAA);
+        xp[3] = _mm256_shuffle_epi32(xe, 0xFF);
+        for (r = 0; r < 4; r++)
+            for (p = 0; p < NN_EXPAIRS; p++)
+                s[r] = _mm256_add_epi32(s[r], _mm256_madd_epi16(xp[p],
+                    _mm256_load_si256((const __m256i *)
+                        (nn_w2excol + p * NN_L2 * 2 + r * 16))));
+    }
+#endif
+    nn_crelu32(s[0], s[1], s[2], s[3], NN_SHIFT2, h1);
+}
+
+static inline void nn_l3(const int8_t *h1, int8_t *h2)
+{
+    NnSums a;
+    __m256i s[4];
+    nn_sums_init(&a, nn_b3);
+    nn_sums_run(&a, h1, NN_L2, nn_w3col);
+    nn_sums_out(&a, s);
+    nn_crelu32(s[0], s[1], s[2], s[3], NN_SHIFT2, h2);
 }
 #else
 static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
@@ -1633,28 +2535,24 @@ static inline int32_t nn_dot(const int8_t *a, const int8_t *b, int n)
 }
 #endif
 
-/* The net has always been perspective-relative -- the accumulator is kept for
- * all four seats and the features rotate -- so evaluating from a seat other
- * than the mover costs nothing but the argument. The paranoid FFA search needs
- * exactly that: every node scored in the root seat's terms. */
-static int32_t nnue_eval_for(const TtBoard *b, int persp)
+#ifndef NN_COLUMNS
+/* The row-at-a-time layers, for NEON and the scalar reference. */
+static inline int32_t nn_crelu(int32_t x, int shift)
 {
-    const int32_t *acc;
-    int8_t x[NN_L1 + NN_EXTRA], h1[NN_L2], h2[NN_L3];
-    int32_t ex[NN_EXTRA];
-    int32_t out;
-    int j, k;
+    x >>= shift;
+    if (x < 0) return 0;
+    return x > NN_CRELU ? NN_CRELU : x;
+}
 
-    if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
-    nn_flush(persp);
-    acc = nn_acc[persp];
-
-    /* crelu bounds these to [0,127] and the extras to [-127,127], so the whole
-     * propagation is int8 by construction. */
+static inline void nn_l1(const int32_t *acc, int8_t *x)
+{
+    int j;
     for (j = 0; j < NN_L1; j++) x[j] = (int8_t)nn_crelu(acc[j], NN_SHIFT1);
-    nn_extras(b, persp, ex);
-    for (j = 0; j < NN_EXTRA; j++) x[NN_L1 + j] = (int8_t)ex[j];
+}
 
+static inline void nn_l2(const int8_t *x, int8_t *h1, int extras)
+{
+    int j, k;
     for (k = 0; k < NN_L2; k++) {
         const int8_t *erow = nn_w2extra + (size_t)k * NN_EXTRA;
         int32_t z = nn_b2[k] + nn_dot(x, nn_w2main + (size_t)k * NN_L1, NN_L1);
@@ -1663,13 +2561,50 @@ static int32_t nnue_eval_for(const TtBoard *b, int persp)
          * this tail was built and measured, and REJECTED: -1.7 to -4.4% in
          * FFA. The tail already hides under the 256-wide dot, so a cache only
          * adds a tag check and a dependent load. See docs/AB.md. */
-        for (j = 0; j < NN_EXTRA; j++) z += x[NN_L1 + j] * erow[j];
+        if (extras)
+            for (j = 0; j < NN_EXTRA; j++) z += x[NN_L1 + j] * erow[j];
         h1[k] = (int8_t)nn_crelu(z, NN_SHIFT2);
     }
+}
+
+static inline void nn_l3(const int8_t *h1, int8_t *h2)
+{
+    int k;
     for (k = 0; k < NN_L3; k++) {
         const int8_t *row = nn_w3 + (size_t)k * NN_L2;
         h2[k] = (int8_t)nn_crelu(nn_b3[k] + nn_dot(h1, row, NN_L2), NN_SHIFT2);
     }
+}
+#endif
+
+/* The net has always been perspective-relative -- the accumulator is kept for
+ * all four seats and the features rotate -- so evaluating from a seat other
+ * than the mover costs nothing but the argument. The paranoid FFA search needs
+ * exactly that: every node scored in the root seat's terms. */
+static int32_t nnue_eval_for(const TtBoard *b, int persp)
+{
+    const int32_t *acc;
+    /* x carries one zero past the extras so they pad to int16 pairs. */
+    int8_t x[NN_L1 + 2 * NN_EXPAIRS] __attribute__((aligned(32)));
+    int8_t h1[NN_L2] __attribute__((aligned(32)));
+    int8_t h2[NN_L3] __attribute__((aligned(32)));
+    int32_t ex[NN_EXTRA];
+    int32_t out;
+    int j;
+
+    if (!nn_acc_ok || nn_acc_key != b->key) nn_refresh(b);
+    nn_flush(persp);
+    acc = nn_acc[persp];
+
+    /* crelu bounds these to [0,127] and the extras to [-127,127], so the whole
+     * propagation is int8 by construction. */
+    nn_l1(acc, x);
+    nn_extras(b, persp, ex);
+    for (j = 0; j < NN_EXTRA; j++) x[NN_L1 + j] = (int8_t)ex[j];
+    for (j = NN_L1 + NN_EXTRA; j < (int)sizeof(x); j++) x[j] = 0;
+
+    nn_l2(x, h1, 1);
+    nn_l3(h1, h2);
     out = nn_b4 + nn_dot(h2, nn_w4, NN_L3);
     return out >> NN_SHIFT_OUT;
 }
@@ -2069,6 +3004,150 @@ void tt_set_lmp_params(int max_depth, int base)
     lmp_base = base < 1 ? 1 : base;
 }
 
+/* --- null-move pruning (toggle: off by default, pending its A/B) ----------
+ *
+ * Pass, and search the result shallower with a null window at beta. If our
+ * team is still above beta after handing the opponents a free move, the real
+ * moves will be too, and the node fails high without generating them. NOT
+ * exact: it is wrong exactly where passing would be better than any move.
+ *
+ * Why it is not obviously unsound in four seats. The "free move" goes to ONE
+ * opponent: after Red passes, Blue moves, then Yellow -- Red's partner, who
+ * can still parry -- then Green. The opponents gain one tempo out of four, not
+ * the game's only tempo as in chess, so the threat test is weaker, and so is
+ * the risk. Zugzwang needs every move of a seat to be bad AND its partner to
+ * be unable to help, which is rarer than in chess; the non-pawn guard covers
+ * the endgames where it can happen.
+ *
+ * Teams only. In the paranoid FFA search a pass at a MIN node hands the turn
+ * from one opponent to the next and tests nothing about the root.
+ *
+ * Cheap measurement, 300 Teams positions (book + 0-49 self-play plies), net
+ * bundle, no games: mean depth at 20,000 nodes 4.72 -> 4.95, nodes for an
+ * ID to depth 6 69.7% of base, and the 20,000-node move -3 +/- 14 cp (one
+ * s.e.) against a 400,000-node oracle -- inside noise. R=3 (5.01, +6 cp) and
+ * min depth 4 (4.87, +3 cp) are no better. The weaker of the two Teams
+ * toggles: a third of RFP's depth gain, and little on top of it (5.45 ->
+ * 5.63 together). Expected to be small; that is why it is separate.
+ *
+ * CONFIRMED and default ON, measured on top of RFP. Teams / classic, net-v5:
+ *   fixed nodes 20,000   +20.28 +/- 6.54   10,000 games
+ *   movetime 200         +27.33 +/- 10.09   4,000 games
+ * The expectation above was wrong: a quarter-round tempo still refutes enough
+ * to pay for itself, and RFP did not already take what it gives.
+ */
+static int use_null_move = 1;
+static int null_min_depth = 3;
+static int null_r = 2;
+/* Set at ply p when the move into ply p was a pass. A second pass in a row
+ * would let both teams pass, which searches the same position two seats on
+ * and proves nothing. */
+static uint8_t null_into[MAX_DEPTH + 1];
+
+void tt_set_null_move(int on) { use_null_move = on ? 1 : 0; }
+int tt_get_null_move(void) { return use_null_move; }
+void tt_set_null_params(int min_depth, int r)
+{
+    null_min_depth = min_depth < 2 ? 2 : min_depth;
+    null_r = r < 1 ? 1 : r;
+}
+
+/* --- reverse futility pruning (toggle: off by default, pending its A/B) ----
+ *
+ * Also called static null move: at shallow depth, a static evaluation that
+ * already beats beta by a margin per remaining ply returns without searching.
+ * NOT exact. The margin has to cover what three other seats can do before
+ * this one moves again, which is why it is wider than a chess engine's.
+ *
+ * Cheap measurement, same 300 positions as NullMove: mean depth at 20,000
+ * nodes 4.72 -> 5.45 (margin 150, depth <= 3), ID-to-depth-6 nodes 47.1% of
+ * base, oracle regret -11 +/- 21 cp (one s.e.). Margin 100 reaches 5.68
+ * (-25 +/- 23), margin 250 only 5.18 (+1 +/- 18), depth <= 2 5.41. 150 is
+ * the default because 100 is the kind of number a 2-player engine picks and
+ * three seats move between here and the horizon; the A/B should try 100 as a
+ * second arm. Pre-screen at fixed nodes 20,000, 400 games: +110.41 +/- 38.06
+ * (docs/AB.md) -- a direction, not a confirm.
+ * The eval it reads is NOT free at fixed time (one more evaluation per
+ * shallow interior node), so fixed nodes will flatter it: screen both.
+ *
+ * CONFIRMED and default ON. Teams / classic, net-v5 both sides:
+ *   fixed nodes 20,000   +133.95 +/- 7.00   10,000 games
+ *   movetime 200         +155.54 +/- 11.10   4,000 games
+ * The worry above did not hold: the clock gained MORE than the node count,
+ * so the extra evaluation is repaid by the subtrees it never enters. Margin
+ * 100 as a second arm is still untried. See docs/AB.md. */
+static int use_rfp = 1;
+static int rfp_max_depth = 3;
+static int rfp_margin = 150;
+
+void tt_set_rfp(int on) { use_rfp = on ? 1 : 0; }
+int tt_get_rfp(void) { return use_rfp; }
+void tt_set_rfp_params(int max_depth, int margin)
+{
+    rfp_max_depth = max_depth < 1 ? 1 : max_depth;
+    rfp_margin = margin < 1 ? 1 : margin;
+}
+
+/* --- FFA: killers and late-move pruning/reduction in the paranoid search ---
+ *
+ * The paranoid loop had none of the Teams search's shallow pruning: no
+ * killers (it passes ply -1 to score_moves), no LMR, no LMP. A ply there costs
+ * a median 17x the one before it against Teams' 3.5x, which is exactly the
+ * regime where LMR and LMP bought Teams a whole ply. Each is its own toggle
+ * and its own A/B; the default each carries is the one its A/B gave it.
+ *
+ * Killers are an ordering change only: alpha-beta returns the same value in
+ * any order, so FFAKillers moves the node count and not the score (up to the
+ * table's path dependence). Killer slots are per ply, and in a paranoid tree
+ * the ply fixes the seat to move while every seat is alive.
+ *
+ * LMR and LMP are NOT exact, and in a paranoid tree they are not symmetric
+ * either: pruning at the root seat's node is pessimistic, pruning at an
+ * opponent's is optimistic -- it assumes that opponent will not find a late
+ * quiet move. Paranoid already assumes three opponents cooperating, so a
+ * little optimism at their nodes may move the search toward the real game
+ * rather than away from it; that is a hypothesis for the A/B, not a claim.
+ *
+ * Cheap measurement, 200 FFA positions (book + 0-79 self-play plies),
+ * net-ffa1, no games. Base reaches a mean depth of 3.11 at 20,000 nodes --
+ * less than one round, so the root seat never sees its own next move.
+ *
+ *                  depth @20k   ID nodes to depth 4   agrees w/ 400k base
+ *   base             3.11         11,883,965  100%       45.0%
+ *   FFAKillers       3.12         10,970,400   92%       44.5%
+ *   FFALMR           3.76          1,949,528   16%       44.0%
+ *   FFALMP           4.16            633,815    5%       49.5%
+ *   LMR + LMP        4.97            237,384    2%       46.5%
+ *   all three        5.06            222,059    2%       50.0%
+ *
+ * Agreement with a deep search is a weak instrument here: against a 400k
+ * oracle that runs all three prunings instead, every row lands in 32.5-35.0%
+ * and the order does not hold. The depth column is the reading to trust.
+ *
+ * FFALMP: CONFIRMED and default ON. FFA book, net-ffa1 both sides:
+ *   fixed nodes 20,000   +121.23 +/- 5.36   10,000 games
+ *   movetime 100         +104.33 +/- 7.58    4,000 games
+ * The clock kept most of the node-count gain, which is what a ply the base
+ * never reached should do. See docs/AB.md.
+ *
+ * FFALMR: CONFIRMED and default ON, measured on top of FFALMP:
+ *   fixed nodes 20,000   +46.67 +/- 4.99   10,000 games
+ *   movetime 100         +14.28 +/- 7.83    4,000 games
+ * The clock kept under a third: with LMP on, the reductions buy less.
+ *
+ * FFAKillers: NULL at movetime 100 (+3.08 +/- 4.91 over 10,000 games on top
+ * of both, +9.16 +/- 4.98 at fixed nodes), so it stays off. */
+static int use_ffa_killers = 0;
+static int use_ffa_lmr = 1;
+static int use_ffa_lmp = 1;
+
+void tt_set_ffa_killers(int on) { use_ffa_killers = on ? 1 : 0; }
+int tt_get_ffa_killers(void) { return use_ffa_killers; }
+void tt_set_ffa_lmr(int on) { use_ffa_lmr = on ? 1 : 0; }
+int tt_get_ffa_lmr(void) { return use_ffa_lmr; }
+void tt_set_ffa_lmp(int on) { use_ffa_lmp = on ? 1 : 0; }
+int tt_get_ffa_lmp(void) { return use_ffa_lmp; }
+
 static uint32_t search_buf[MAX_DEPTH][MAX_MOVES];
 static int32_t order_buf[MAX_DEPTH][MAX_MOVES];
 static uint64_t search_nodes;
@@ -2226,19 +3305,39 @@ static void killer_store(int ply, uint32_t m)
     killers[ply][0] = m;
 }
 
-/* MVV-LVA, with the transposition move first. */
-static void score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
-                        int n, uint32_t ttmove, int ply)
+/* MVV-LVA, with the transposition move first.
+ *
+ * Returns the number of captures and, through `loud` when it is non-null, the
+ * number of moves that are a capture or a promotion -- the moves LMP may never
+ * drop. Counted here because this loop already classifies every move; the
+ * callers use the counts to stop their loops once nothing searchable is left. */
+static int score_moves(const TtBoard *b, const uint32_t *restrict moves,
+                       int32_t *restrict scores, int n, uint32_t ttmove,
+                       int ply, int *loud)
 {
-    int i;
+    /* ply >= 0 is not redundant: quiescence passes -1 deliberately, so that
+     * it consults no killer slot, and the upper bound alone lets -1 through
+     * to killers[-1][0..1] -- eight bytes before the array, read for every
+     * quiet move at every qsearch node. It is harmless only by accident of the
+     * current link layout, and SEARCH_PINS depends on qsearch ordering, so the
+     * pinned counts were resting on out-of-bounds memory staying zero.
+     *
+     * With the slots off, both killers read as 0, which no generated move
+     * equals (a move never has from == to), so the compare below needs no
+     * guard of its own. */
+    const int kon = use_killers && ply >= 0 && ply < MAX_DEPTH;
+    const uint32_t k0 = kon ? killers[ply][0] : 0;
+    const uint32_t k1 = kon ? killers[ply][1] : 0;
+    const int see_order = use_see_order, hist = use_history;
+    int i, caps = 0, louds = 0;
     for (i = 0; i < n; i++) {
         uint32_t m = moves[i];
-        int32_t s = 0;
-        int capture = is_capture(b, m);
-        if (m == ttmove) {
-            s = 1 << 24;
-        } else if (capture) {
-            uint8_t victim = b->sq[MV_TO(m)];
+        uint8_t victim = b->sq[MV_TO(m)];
+        int capture = victim != 0 || MV_FLAG(m) == F_EP;
+        int32_t s;
+        caps += capture;
+        louds += capture || MV_PROMO(m);
+        if (capture) {
             int vv = victim ? P.piece_value[P.pc_type[victim]]
                             : P.piece_value[PAWN];
             int av = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
@@ -2246,38 +3345,109 @@ static void score_moves(const TtBoard *b, uint32_t *moves, int32_t *scores,
              * against a 65,536 base, so a losing capture still sorts above
              * every killer and history move. Whether it should is a separate
              * question and a separate experiment. */
-            s = (1 << 16) + (use_see_order ? tt_see(b, m) : vv * 16 - av);
+            s = (1 << 16) + (see_order ? tt_see(b, m) : vv * 16 - av);
         } else {
-            /* ply >= 0 is not redundant: quiescence passes -1 deliberately,
-             * so that it consults no killer slot, and the upper bound alone
-             * lets -1 through to killers[-1][0..1] -- eight bytes before the
-             * array, read for every quiet move at every qsearch node. It is
-             * harmless only by accident of the current link layout, and
-             * SEARCH_PINS depends on qsearch ordering, so the pinned counts
-             * were resting on out-of-bounds memory staying zero. */
-            if (use_killers && ply >= 0 && ply < MAX_DEPTH) {
-                if (m == killers[ply][0]) s = KILLER_BASE + 1;
-                else if (m == killers[ply][1]) s = KILLER_BASE;
-            }
-            if (!s && use_history)
-                s = history[b->turn][MV_FROM(m)][MV_TO(m)];
+            s = m == k0 ? KILLER_BASE + 1 : (m == k1 ? KILLER_BASE : 0);
+            if (!s && hist) s = history[b->turn][MV_FROM(m)][MV_TO(m)];
         }
+        /* The TT move overrides whatever it scored above. */
+        if (m == ttmove) s = 1 << 24;
         if (MV_PROMO(m)) s += (1 << 15);
         scores[i] = s;
     }
+    if (loud) *loud = louds;
+    return caps;
+}
+
+/* score_moves for quiescence outside check, where only captures are ever
+ * searched: a capture gets exactly the score score_moves gives it and every
+ * quiet gets 0. Returns the capture count, or -1 when the shortcut does not
+ * apply and the caller must use score_moves instead.
+ *
+ * Why the order is identical. Quiescence passes no transposition move and
+ * ply -1, so in score_moves a quiet scores at most (1 << 15) for a promotion
+ * plus a history value below HISTORY_MAX -- QS_QUIET_MAX below. While every
+ * capture scores above that, every capture outranks every quiet under both
+ * scorings, so each selection pick until the last capture -- which is where
+ * quiescence stops -- lands on the same capture: the first-index maximum among
+ * the captures, whose scores and positions agree. Quiet values never decide a
+ * pick and quiets are never searched, so the 0 changes nothing but the cost.
+ * The bound holds by a wide margin for any sane piece values (the weakest
+ * capture is 65,536 + 16 * 100 - 900), and it is checked rather than assumed,
+ * so a tuning run with strange values falls back instead of reordering.
+ *
+ * Most of the moves scored anywhere are quiets at a quiescence node; for
+ * those this is a load and a test instead of the TT-move, killer, history
+ * and promotion checks. */
+#define QS_QUIET_MAX ((1 << 15) + HISTORY_MAX - 1)
+
+static int score_captures(const TtBoard *b, const uint32_t *restrict moves,
+                          int32_t *restrict scores, int n)
+{
+    const int see_order = use_see_order;
+    int32_t low = INT32_MAX;
+    int i, caps = 0;
+    for (i = 0; i < n; i++) {
+        uint32_t m = moves[i];
+        uint8_t victim = b->sq[MV_TO(m)];
+        int32_t s = 0;
+        if (victim || MV_FLAG(m) == F_EP) {
+            int vv = victim ? P.piece_value[P.pc_type[victim]]
+                            : P.piece_value[PAWN];
+            int av = P.piece_value[P.pc_type[b->sq[MV_FROM(m)]]];
+            s = (1 << 16) + (see_order ? tt_see(b, m) : vv * 16 - av);
+            if (MV_PROMO(m)) s += (1 << 15);
+            if (s < low) low = s;
+            caps++;
+        }
+        scores[i] = s;
+    }
+    return low > QS_QUIET_MAX ? caps : -1;
 }
 
 /* Selection sort one move at a time: most of the list is never reached after
- * a cutoff, so sorting it all up front would be wasted work. */
-static void pick_move(uint32_t *moves, int32_t *scores, int n, int i)
+ * a cutoff, so sorting it all up front would be wasted work.
+ *
+ * Returns 1 when [i, n) is already non-increasing. The scan then picked i
+ * itself and swapped nothing (a later move wins only on a strictly greater
+ * score), [i+1, n) is still non-increasing, and nothing outside the scan
+ * writes the scores -- so every later call at this node would pick its own
+ * index and swap nothing too, and the caller stops calling. That is the
+ * common case, not a corner: with history off every plain quiet scores 0, so
+ * the tail after the last capture and killer is one flat run, and each pick
+ * from it was an O(n - i) scan that changed nothing. Skipping those scans
+ * cannot reorder anything. A scan that swaps reports 0 even if the swap left
+ * the tail in order; the next scan finds out. Conservative is the safe
+ * direction -- a missed shortcut costs a scan, never a different order.
+ *
+ * The FFA search found this first, as pick_move_tail (4c74f17): FFA quiets
+ * all score 0, and the scans it skipped were 3.0% of an FFA search. It is
+ * here now for every search loop, and paranoid uses this one.
+ *
+ * The scan itself is two passes. The first takes the maximum and the
+ * non-increasing test with no branch on the data, so gcc vectorises it
+ * (vpmaxsd under AVX2) where the old `if (scores[j] > scores[best]) best = j`
+ * loop could not; the second walks to the first index holding that maximum.
+ * The first index of the maximum is exactly what the strict `>` scan chose,
+ * so the swap, and with it every later tie-break, is the same. */
+static int pick_move(uint32_t *moves, int32_t *scores, int n, int i)
 {
-    int best = i, j;
-    for (j = i + 1; j < n; j++)
-        if (scores[j] > scores[best]) best = j;
-    if (best != i) {
-        uint32_t tm = moves[i]; moves[i] = moves[best]; moves[best] = tm;
-        int32_t ts = scores[i]; scores[i] = scores[best]; scores[best] = ts;
+    int best, j, rises = 0;
+    int32_t first = scores[i], top = first;
+    for (j = i + 1; j < n; j++) {
+        int32_t s = scores[j];
+        top = s > top ? s : top;
+        rises |= s > scores[j - 1];
     }
+    if (!rises) return 1;
+    if (top == first) return 0;
+    for (best = i + 1; scores[best] != top; best++)
+        ;
+    {
+        uint32_t tm = moves[i]; moves[i] = moves[best]; moves[best] = tm;
+        scores[best] = first; scores[i] = top;
+    }
+    return 0;
 }
 
 /* --- quiescence check evasions --------------------------------------------
@@ -2309,11 +3479,13 @@ int tt_get_qs_evasions(void) { return use_qs_evasions; }
 static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
 {
     Pin pins[8];
+    uint64_t evade[4];
     int king0, npins;
     uint32_t *moves;
     int32_t *scores;
     TtUndo u;
-    int n, i, me = b->turn, in_chk = 0, legal = 0, caps = 0, picked = 0;
+    int n, i, me = b->turn, in_chk = 0, legal = 0, caps, picked = 0;
+    int sorted = 0;
     int32_t stand;
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
@@ -2336,9 +3508,16 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, 0, -1);
+    caps = in_chk ? -1 : score_captures(b, moves, scores, n);
+    if (caps < 0) caps = score_moves(b, moves, scores, n, 0, -1, 0);
     king0 = b->kings[me];
-    npins = compute_pins(b, me, king0, pins);
+    /* Pins are found on first use, not here. They are a pure function of a
+     * board every make/unmake pair below restores, so computing them later
+     * gives the same list; and surely_legal never reads them in check, while
+     * a node whose captures are all pruned or that has none never reads them
+     * at all -- the common quiescence node. */
+    npins = -1;
+    if (in_chk) compute_evasions(b, me, king0, evade);
 
     /* Once the last capture has been picked, everything left is a quiet that
      * the loop would pick and immediately skip -- and pick_move is a selection
@@ -2346,17 +3525,12 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
      * Counting the captures up front lets the loop stop there. It cannot
      * change which moves are searched, in what order, or with what result: the
      * array, the scores and the selection are all untouched, and the tail
-     * being dropped is exactly the moves that were already being discarded. */
-    caps = 0;
-    if (!in_chk) {
-        for (i = 0; i < n; i++)
-            if (is_capture(b, moves[i])) caps++;
-    }
-
+     * being dropped is exactly the moves that were already being discarded.
+     * The scorer counts them, since it classifies every move anyway. */
     for (i = 0; i < n; i++) {
         int king, skip;
         if (!in_chk && picked == caps) break;
-        pick_move(moves, scores, n, i);
+        if (!sorted) sorted = pick_move(moves, scores, n, i);
         /* In check every legal move is a candidate; otherwise captures only. */
         if (!in_chk && !is_capture(b, moves[i])) continue;
         picked++;
@@ -2364,7 +3538,10 @@ static int32_t qsearch(TtBoard *b, int32_t alpha, int32_t beta, int ply)
          * line worth a subtree. Promotions are exempt: SEE prices the pieces
          * traded and not the piece gained, so it under-rates them. */
         if (use_see_prune && !in_chk && !MV_PROMO(moves[i])
+            && !see_surely_nonneg(b, moves[i])
             && tt_see(b, moves[i]) < 0) continue;
+        if (in_chk && surely_illegal(moves[i], king0, evade)) continue;
+        if (npins < 0) npins = in_chk ? 0 : compute_pins(b, me, king0, pins);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
@@ -2445,6 +3622,74 @@ int tt_pv(TtBoard *b, uint32_t first, uint32_t *out, int max)
     return n;
 }
 
+/* What a pass changes: the turn, the passing seat's own en-passant offer
+ * (which expires when its owner moves, and a pass is that seat's move), and
+ * the key. Nothing moves on the board, so the accumulator and the occupancy
+ * bitboard stay correct and only their key tag follows -- the same carry
+ * ffa_eliminate does, for the same reason.
+ *
+ * halfmove is zeroed so the repetition scan stops at the pass: a position on
+ * the far side of a null move was reached by a line nobody can play, and a
+ * "repetition" through it would score a draw that does not exist. */
+typedef struct {
+    uint64_t key;
+    int32_t halfmove;
+    int16_t ep_target;
+    int16_t ep_victim;
+    uint8_t turn;
+} NullUndo;
+
+static void null_make(TtBoard *b, NullUndo *u)
+{
+    int me = b->turn, c, t = me;
+    uint64_t key = b->key ^ P.zob_turn[me];
+    u->key = b->key;
+    u->halfmove = b->halfmove;
+    u->ep_target = b->ep_target[me];
+    u->ep_victim = b->ep_victim[me];
+    u->turn = (uint8_t)me;
+    if (b->ep_target[me] >= 0) {
+        key ^= P.zob_ep[me][b->ep_target[me]];
+        b->ep_target[me] = -1;
+        b->ep_victim[me] = -1;
+    }
+    for (c = 0; c < 4; c++) {
+        t = (t + 1) & 3;
+        if (b->alive[t]) break;
+    }
+    b->turn = (uint8_t)t;
+    key ^= P.zob_turn[t];
+    b->halfmove = 0;
+    if (nn_delta_on_for(u->key)) nn_acc_set_key(key);
+    if (occ_ok && occ_key == u->key) occ_key = key;
+    b->key = key;
+}
+
+static void null_unmake(TtBoard *b, const NullUndo *u)
+{
+    if (nn_delta_on_for(b->key)) nn_acc_set_key(u->key);
+    if (occ_ok && occ_key == b->key) occ_key = u->key;
+    b->ep_target[u->turn] = u->ep_target;
+    b->ep_victim[u->turn] = u->ep_victim;
+    b->turn = u->turn;
+    b->halfmove = u->halfmove;
+    b->key = u->key;
+}
+
+/* Does `seat` own anything but pawns and its king? The zugzwang guard: a
+ * seat down to king and pawns is where passing can genuinely beat moving. */
+static int has_piece(const TtBoard *b, int seat)
+{
+    int sq;
+    for (sq = 0; sq < NSQ; sq++) {
+        uint8_t p = b->sq[sq];
+        if (p && P.valid[sq] && P.pc_color[p] == seat
+            && P.pc_type[p] != PAWN && P.pc_type[p] != KING)
+            return 1;
+    }
+    return 0;
+}
+
 static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
                          int ply)
 {
@@ -2453,7 +3698,9 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     TtUndo u;
     TtEntry *slot = 0;
     int n, i, legal = 0, quiets = 0, me = b->turn, in_chk;
+    int louds = 0, louds_seen = 0, lmp_on = 0, sorted = 0;
     Pin pins[8];
+    uint64_t evade[4];
     int king0, npins;
 
     if (++search_nodes >= search_limit) { search_aborted = 1; return 0; }
@@ -2487,19 +3734,69 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     if (ply >= MAX_DEPTH - 2) return tt_eval(b);
 
     in_chk = tt_in_check(b, me);
+
+    /* The two pre-move prunings, both off by default. Each reads the static
+     * evaluation, so it is computed only when one of them could use it; with
+     * both off this block costs one branch and the tree is the pinned one.
+     * Never in check, never against a mate bound.
+     *
+     * Internal iterative reduction (a ply off any depth >= 4 node with no
+     * table move) was built here and dropped before an A/B: over 300 Teams
+     * positions it cut nodes-to-depth-6 by only 5%, left mean depth at 20,000
+     * nodes unmoved (4.72 -> 4.73), and its 20,000-node moves measured +17 cp
+     * WORSE against a 400,000-node oracle (+/-12). With always-replace and a
+     * per-search ID, a missing table move here usually means a genuinely new
+     * node, and reducing those is reducing the tree blind. */
+    if ((use_rfp || use_null_move) && ply > 0 && !in_chk
+        && beta < MATE_SCORE - MAX_DEPTH && beta > -(MATE_SCORE - MAX_DEPTH)) {
+        int rfp_on = use_rfp && depth <= rfp_max_depth;
+        int null_on = use_null_move && depth >= null_min_depth
+                      && !null_into[ply];
+        if (rfp_on || null_on) {
+            int32_t margin = rfp_on ? rfp_margin * depth : 0;
+            int32_t ev = tt_eval_bounded(b, beta - margin - 1, beta);
+            if (rfp_on && ev - margin >= beta) return ev;
+            if (null_on && ev >= beta && has_piece(b, me)) {
+                NullUndo nu;
+                int32_t s;
+                int r = null_r + (depth >= 7 ? 1 : 0);
+                null_make(b, &nu);
+                null_into[ply + 1] = 1;
+                s = -alphabeta(b, depth - 1 - r, -beta, -beta + 1, ply + 1);
+                null_into[ply + 1] = 0;
+                null_unmake(b, &nu);
+                if (search_aborted) return 0;
+                if (s >= beta) {
+                    /* A pass proves a bound, never a mate: the line it walked
+                     * is not playable. */
+                    if (s > MATE_SCORE - MAX_DEPTH) s = beta;
+                    return s;
+                }
+            }
+        }
+    }
+
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, ttmove, ply);
+    score_moves(b, moves, scores, n, ttmove, ply, &louds);
     king0 = b->kings[me];
-    npins = compute_pins(b, me, king0, pins);
+    npins = -1;                  /* on first use, as in qsearch */
+    if (in_chk) compute_evasions(b, me, king0, evade);
 
     for (i = 0; i < n; i++) {
         int king, skip;
         int32_t score;
         int is_capture_before, reduction;
-        pick_move(moves, scores, n, i);
+        /* Once LMP has dropped one move it drops every later quiet: `legal`
+         * and `quiets` only grow and nothing else in the test changes inside
+         * this loop. So when the last capture or promotion has also been
+         * picked, every remaining iteration is a pick, a test and a
+         * `continue`, and stopping here searches exactly the same moves. */
+        if (lmp_on && louds_seen == louds) break;
+        if (!sorted) sorted = pick_move(moves, scores, n, i);
         is_capture_before = is_capture(b, moves[i]);
+        if (is_capture_before || MV_PROMO(moves[i])) louds_seen++;
 
         /* Drop the quiet tail without even making the move. `legal >= 1` is
          * not an optimisation: without it a node could prune every move and
@@ -2507,10 +3804,13 @@ static int32_t alphabeta(TtBoard *b, int depth, int32_t alpha, int32_t beta,
         if (use_lmp && legal >= 1 && depth <= lmp_max_depth && !in_chk
             && !is_capture_before && !MV_PROMO(moves[i])
             && quiets >= lmp_base + depth * depth) {
+            lmp_on = 1;
             continue;
         }
         if (!is_capture_before) quiets++;
 
+        if (in_chk && surely_illegal(moves[i], king0, evade)) continue;
+        if (npins < 0) npins = in_chk ? 0 : compute_pins(b, me, king0, pins);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
@@ -2629,9 +3929,11 @@ double tt_bench_eval(TtBoard *b, int iters)
 double tt_bench_nnue_stage(TtBoard *b, int persp, int stage, int iters)
 {
     double t0;
-    int i, j, k;
+    int i, j;
     int64_t sink = 0;
-    int8_t x[NN_L1 + NN_EXTRA], h1[NN_L2], h2[NN_L3];
+    int8_t x[NN_L1 + 2 * NN_EXPAIRS] __attribute__((aligned(32)));
+    int8_t h1[NN_L2] __attribute__((aligned(32)));
+    int8_t h2[NN_L3] __attribute__((aligned(32)));
     int32_t ex[NN_EXTRA];
     const int32_t *acc;
 
@@ -2644,34 +3946,24 @@ double tt_bench_nnue_stage(TtBoard *b, int persp, int stage, int iters)
         sink += acc[0];
         if (stage < 1) continue;
 
-        for (j = 0; j < NN_L1; j++) x[j] = (int8_t)nn_crelu(acc[j], NN_SHIFT1);
+        nn_l1(acc, x);
         sink += x[0];
         if (stage < 2) continue;
 
         nn_extras(b, persp, ex);
         for (j = 0; j < NN_EXTRA; j++) x[NN_L1 + j] = (int8_t)ex[j];
+        for (j = NN_L1 + NN_EXTRA; j < (int)sizeof(x); j++) x[j] = 0;
         if (stage < 3) continue;
 
-        for (k = 0; k < NN_L2; k++) {
-            const int8_t *erow = nn_w2extra + (size_t)k * NN_EXTRA;
-            int32_t z = nn_b2[k]
-                      + nn_dot(x, nn_w2main + (size_t)k * NN_L1, NN_L1);
-            if (stage != 6)
-                for (j = 0; j < NN_EXTRA; j++) z += x[NN_L1 + j] * erow[j];
-            h1[k] = (int8_t)nn_crelu(z, NN_SHIFT2);
-        }
+        /* 6 is 3 with the extras tail removed. Stage 3 minus stage 6 is what
+         * that tail costs, which is the thing the "cached extras" item
+         * proposed to remove. */
+        nn_l2(x, h1, stage != 6);
         sink += h1[0];
-        /* 6 is 3 with the extras tail removed: 7 scalar multiply-adds per row,
-         * 32 rows, deliberately off the vector path. Stage 3 minus stage 6 is
-         * what that tail costs, which is the thing the "cached extras" item
-         * proposes to remove. */
         if (stage == 6) continue;
         if (stage < 4) continue;
 
-        for (k = 0; k < NN_L3; k++) {
-            const int8_t *row = nn_w3 + (size_t)k * NN_L2;
-            h2[k] = (int8_t)nn_crelu(nn_b3[k] + nn_dot(h1, row, NN_L2), NN_SHIFT2);
-        }
+        nn_l3(h1, h2);
         sink += h2[0];
         if (stage < 5) continue;
 
@@ -2846,10 +4138,24 @@ int tt_get_ffa_tt(void) { return use_ffa_tt; }
  * The points standing goes in here too, and only here: the evaluation reads
  * it, so it is part of what identifies the position, but b->key doubles as the
  * repetition key where a monotonic term would stop any position ever repeating
- * (see points_hash). */
+ * (see points_hash).
+ *
+ * zob_turn[root] alone did NOT keep roots apart. b->key already carries
+ * zob_turn[b->turn], so the two cancel whenever the root is to move -- every
+ * root-to-move node of every root mapped to one key -- and (turn t, root r)
+ * collided with (turn r, root t). Searching a placement for Red and then the
+ * same placement with Blue to move for Blue handed the second search Red's
+ * scores at ply 4: modern depth 5 came back -8488 where a cleared table says
+ * -8500, and classic depth 5 changed its move. The root is therefore also
+ * tagged in the top two bits. Those bits are above any tt_mask, so within one
+ * search -- one root -- every index and every key equality is exactly what
+ * it was, and only cross-root hits change. Replacing zob_turn[root] with a
+ * fresh table was the other fix; it moves every FFA index and so every FFA
+ * node count, for no gain over this. */
 static uint64_t paranoid_key(const TtBoard *b, int root)
 {
-    return b->key ^ P.zob_turn[root] ^ points_hash(b);
+    return (b->key ^ P.zob_turn[root] ^ points_hash(b))
+           ^ ((uint64_t)root << 62);
 }
 
 static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
@@ -2858,10 +4164,12 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     uint32_t *moves, ttmove = 0, best_move = 0;
     int32_t *scores, orig_alpha = alpha, orig_beta = beta;
     TtEntry *slot = 0;
-    uint64_t probe;
+    uint64_t probe = 0;   /* read only when slot is set, which sets it; gcc 15 cannot see that */
     TtUndo u;
     Pin pins[8];
-    int n, i, me = b->turn, legal = 0, king0, npins, in_chk;
+    uint64_t evade[4];
+    int n, i, me = b->turn, legal = 0, quiets = 0, king0, npins, in_chk;
+    int tail_sorted = 0, louds = 0, louds_seen = 0, lmp_on = 0;
     int maximising = (me == root);
     int32_t best;
 
@@ -2910,16 +4218,36 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
     moves = search_buf[ply];
     scores = order_buf[ply];
     n = tt_gen_pseudo(b, moves);
-    score_moves(b, moves, scores, n, ttmove, -1);
+    /* -1 keeps the killer slots out of it unless FFAKillers is on; see the
+     * note on that toggle. */
+    score_moves(b, moves, scores, n, ttmove, use_ffa_killers ? ply : -1,
+                &louds);
     king0 = b->kings[me];
     in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
-    npins = compute_pins(b, me, king0, pins);
+    npins = -1;                  /* on first use, as in qsearch */
+    if (in_chk) compute_evasions(b, me, king0, evade);
 
     best = maximising ? -INF_SCORE : INF_SCORE;
     for (i = 0; i < n; i++) {
-        int king, skip;
+        int king, skip, quiet, reduction = 0;
         int32_t score;
-        pick_move(moves, scores, n, i);
+        /* The Teams LMP's early stop, for the same reason: once FFALMP has
+         * dropped a quiet it drops every later one. */
+        if (lmp_on && louds_seen == louds) break;
+        if (!tail_sorted) tail_sorted = pick_move(moves, scores, n, i);
+        quiet = !is_capture(b, moves[i]) && !MV_PROMO(moves[i]);
+        if (!quiet) louds_seen++;
+        /* The same guard as the Teams LMP, and here it matters more: a node
+         * that pruned every move would read as having no legal move, and in
+         * FFA that does not claim a mate, it ELIMINATES the seat. */
+        if (use_ffa_lmp && quiet && legal >= 1 && depth <= lmp_max_depth
+            && !in_chk && quiets >= lmp_base + depth * depth) {
+            lmp_on = 1;
+            continue;
+        }
+        if (quiet) quiets++;
+        if (in_chk && surely_illegal(moves[i], king0, evade)) continue;
+        if (npins < 0) npins = in_chk ? 0 : compute_pins(b, me, king0, pins);
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];
@@ -2928,7 +4256,31 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
             continue;
         }
         legal++;
-        score = paranoid(b, depth - 1, alpha, beta, root, ply + 1);
+        if (use_ffa_lmr && quiet && !in_chk && legal > lmr_min_move
+            && depth >= lmr_min_depth) {
+            reduction = lmr_table[depth < MAX_DEPTH ? depth : MAX_DEPTH - 1]
+                                 [legal < LMR_MAX_MOVE ? legal : LMR_MAX_MOVE - 1];
+            if (reduction > depth - 2) reduction = depth - 2;
+            if (reduction < 0) reduction = 0;
+        }
+        if (reduction) {
+            /* A null window on the side this node moves: the root seat asks
+             * "does this beat alpha?", an opponent "does this get under
+             * beta?". Only a yes earns the full-depth search. */
+            if (maximising) {
+                score = paranoid(b, depth - 1 - reduction, alpha, alpha + 1,
+                                 root, ply + 1);
+                if (!search_aborted && score > alpha)
+                    score = paranoid(b, depth - 1, alpha, beta, root, ply + 1);
+            } else {
+                score = paranoid(b, depth - 1 - reduction, beta - 1, beta,
+                                 root, ply + 1);
+                if (!search_aborted && score < beta)
+                    score = paranoid(b, depth - 1, alpha, beta, root, ply + 1);
+            }
+        } else {
+            score = paranoid(b, depth - 1, alpha, beta, root, ply + 1);
+        }
         tt_unmake(b, moves[i], &u);
         if (search_aborted) return 0;
         if (maximising) {
@@ -2938,7 +4290,10 @@ static int32_t paranoid(TtBoard *b, int depth, int32_t alpha, int32_t beta,
             if (score < best) { best = score; best_move = moves[i]; }
             if (best < beta) beta = best;
         }
-        if (alpha >= beta) break;
+        if (alpha >= beta) {
+            if (use_ffa_killers && quiet) killer_store(ply, moves[i]);
+            break;
+        }
     }
 
     if (!legal) {
@@ -2994,6 +4349,7 @@ static void tt_search_ffa(TtBoard *b, int depth, TtResult *out)
     TtUndo u;
     int n, i, legal = 0, me = b->turn;
 
+    nn_single_begin(b, me);
     moves = search_buf[0];
     scores = order_buf[0];
     n = tt_gen_pseudo(b, moves);
@@ -3002,7 +4358,7 @@ static void tt_search_ffa(TtBoard *b, int depth, TtResult *out)
         TtEntry *slot = &tt_table[probe & tt_mask];
         if (slot->key == probe) ttmove = slot->best;
     }
-    score_moves(b, moves, scores, n, ttmove, 0);
+    score_moves(b, moves, scores, n, ttmove, 0, 0);
 
     for (i = 0; i < n; i++) {
         int king;
@@ -3025,6 +4381,7 @@ static void tt_search_ffa(TtBoard *b, int depth, TtResult *out)
         }
     }
 
+    nn_single_end();
     out->nodes = search_nodes;
     out->score = legal ? best : -(MATE_SCORE);
     out->best = best_move;
@@ -3040,6 +4397,7 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     int32_t *scores, best = -INF_SCORE, alpha = -INF_SCORE;
     TtUndo u;
     Pin pins[8];
+    uint64_t evade[4];
     int n, i, legal = 0, me = b->turn, king0, npins, in_chk;
 
     search_nodes = 0;
@@ -3051,7 +4409,7 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     if (!lmr_built) lmr_build();
     /* Killers are per-search, not per-game: a stale table from another
      * position orders by moves that meant something somewhere else. */
-    if (use_killers) killers_clear();
+    if (use_killers || use_ffa_killers) killers_clear();
     /* The root sits at ply 0 of the path, so children at ply 1 can see it. */
     rep_keys[rep_root] = b->key;
 
@@ -3065,15 +4423,17 @@ void tt_search(TtBoard *b, int depth, uint64_t node_limit, TtResult *out)
     n = tt_gen_pseudo(b, moves);
     score_moves(b, moves, scores, n,
                 (tt_table && tt_table[b->key & tt_mask].key == b->key)
-                ? tt_table[b->key & tt_mask].best : 0, 0);
+                ? tt_table[b->key & tt_mask].best : 0, 0, 0);
     king0 = b->kings[me];
     in_chk = king0 >= 0 && tt_is_attacked(b, king0, me);
     npins = compute_pins(b, me, king0, pins);
+    if (in_chk) compute_evasions(b, me, king0, evade);
 
     for (i = 0; i < n; i++) {
         int king, skip;
         int32_t score;
         pick_move(moves, scores, n, i);
+        if (in_chk && surely_illegal(moves[i], king0, evade)) continue;
         skip = surely_legal(moves[i], king0, pins, npins, in_chk);
         tt_make(b, moves[i], &u);
         king = b->kings[me];

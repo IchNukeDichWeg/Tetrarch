@@ -310,6 +310,11 @@ def load(path=None):
         lib.tt_get_lmp.restype = ctypes.c_int
         lib.tt_set_lmp_params.argtypes = [ctypes.c_int, ctypes.c_int]
         lib.tt_set_qs_evasions.argtypes = [ctypes.c_int]
+        for name in ("null_move", "rfp", "ffa_killers", "ffa_lmr", "ffa_lmp"):
+            getattr(lib, "tt_set_" + name).argtypes = [ctypes.c_int]
+            getattr(lib, "tt_get_" + name).restype = ctypes.c_int
+        lib.tt_set_null_params.argtypes = [ctypes.c_int, ctypes.c_int]
+        lib.tt_set_rfp_params.argtypes = [ctypes.c_int, ctypes.c_int]
         lib.tt_get_qs_evasions.restype = ctypes.c_int
         lib.tt_divide.restype = ctypes.c_int
         lib.tt_divide.argtypes = [ctypes.POINTER(TtBoard), ctypes.c_int,
@@ -577,6 +582,70 @@ def qs_evasions_enabled():
     return bool(load().tt_get_qs_evasions())
 
 
+def set_null_move(on):
+    """Null-move pruning in the Teams search. Default ON: +27.33 +/- 10.09 at
+    movetime 200 on top of RFP (docs/AB.md).
+
+    Not exact: it fails high on a pass, so it is wrong exactly where passing
+    would beat every real move. Teams only; the paranoid FFA search ignores it.
+    """
+    load().tt_set_null_move(1 if on else 0)
+
+
+def null_move_enabled():
+    return bool(load().tt_get_null_move())
+
+
+def set_null_params(min_depth, r):
+    load().tt_set_null_params(int(min_depth), int(r))
+
+
+def set_rfp(on):
+    """Reverse futility pruning (static null move) in the Teams search.
+    Default ON: +155.54 +/- 11.10 at movetime 200 (docs/AB.md). Not exact."""
+    load().tt_set_rfp(1 if on else 0)
+
+
+def rfp_enabled():
+    return bool(load().tt_get_rfp())
+
+
+def set_rfp_params(max_depth, margin):
+    load().tt_set_rfp_params(int(max_depth), int(margin))
+
+
+def set_ffa_killers(on):
+    """Killer moves in the paranoid FFA search. Default OFF. Ordering only:
+    the value is unchanged, the node count is not."""
+    load().tt_set_ffa_killers(1 if on else 0)
+
+
+def ffa_killers_enabled():
+    return bool(load().tt_get_ffa_killers())
+
+
+def set_ffa_lmr(on):
+    """Late move reductions in the paranoid FFA search, sharing the Teams
+    table and LMRMinDepth/LMRMinMove. Default ON: +14.28 +/- 7.83 at movetime
+    100 on top of FFALMP (docs/AB.md). Not exact."""
+    load().tt_set_ffa_lmr(1 if on else 0)
+
+
+def ffa_lmr_enabled():
+    return bool(load().tt_get_ffa_lmr())
+
+
+def set_ffa_lmp(on):
+    """Late move pruning in the paranoid FFA search, sharing LMPMaxDepth and
+    LMPBase with Teams. Default ON: +104.33 +/- 7.58 at movetime 100 (docs/AB.md).
+    Not exact; never eliminates a seat that has a legal move."""
+    load().tt_set_ffa_lmp(1 if on else 0)
+
+
+def ffa_lmp_enabled():
+    return bool(load().tt_get_ffa_lmp())
+
+
 def ffa_capture_table():
     """The C core's copy of RULES.md §8.1, so selftest can pin it against
     board.CAPTURE_POINTS rather than trust two hardcoded tables to agree."""
@@ -712,12 +781,53 @@ def search(b, depth, node_limit=0, repetitions=()):
     Iterative deepening and time management stay in Python at the root; this
     is the per-node loop only.
     """
-    lib = load()
-    set_repetitions(repetitions)
-    cb = to_c(b)
-    out = TtResult()
-    lib.tt_search(ctypes.byref(cb), depth, node_limit, ctypes.byref(out))
-    return out
+    return Root(b, repetitions).search(depth, node_limit)
+
+
+class Root:
+    """One position's C-side inputs, converted once and searched many times.
+
+    Iterative deepening calls the C search once per depth on the same board
+    with the same game history. Through `search` above, every one of those
+    calls rebuilt the TtBoard and a fresh ctypes array of the history keys:
+    ~17 us a depth (4.5 us `to_c`, ~12 us for a 150-key array), five to seven
+    depths a move, all of it inside the movetime budget. Here both are built
+    once per move.
+
+    Exact by construction. tt_search makes and unmakes on the board it is
+    handed and returns it byte-identical -- checked over 714 searches in both
+    modes, node-capped aborts included, before this went in -- so a reused
+    TtBoard is the same input as a fresh one. The history is still pushed
+    before EVERY search, from the cached array (the call itself is under a
+    microsecond): it is global state in C, and anything that searches another
+    position between two depths -- an `info` callback, say -- would otherwise
+    leave its own history behind for the next depth to read.
+
+    The Python board must not change while a Root is in use; the copy is
+    taken at construction.
+    """
+
+    def __init__(self, b, repetitions=()):
+        self.lib = load()
+        self.cb = to_c(b)
+        self._ref = ctypes.byref(self.cb)
+        keys = list(repetitions)
+        self.n_reps = len(keys)
+        self.reps = (ctypes.c_uint64 * max(self.n_reps, 1))(*keys)
+
+    def has_legal(self):
+        """Any legal move here? The C generator on the board already
+        converted: ~10 us against ~130 us for movegen.has_legal with the
+        caches cold from the previous move's search. Same answer -- selftest
+        holds the C legal set equal to the Python one."""
+        buf = (ctypes.c_uint32 * MAX_MOVES)()
+        return self.lib.tt_gen_legal(self._ref, buf) > 0
+
+    def search(self, depth, node_limit=0):
+        self.lib.tt_set_rep_history(self.reps, self.n_reps)
+        out = TtResult()
+        self.lib.tt_search(self._ref, depth, node_limit, ctypes.byref(out))
+        return out
 
 
 def available():

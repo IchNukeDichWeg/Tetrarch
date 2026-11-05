@@ -85,6 +85,246 @@ through the same aliased pairing and has not been re-run.
 
 ## Results
 
+### NNUE forward pass column-blocked on x86, plus VNNI -- two SHIPPED, bit-exact
+
+Two commits in `nnue_eval_for`, x86 only; NEON and `-DNN_SCALAR` keep the row
+loop. Signature 597,933, every per-position count and perft 5 (93,846,865)
+unchanged, full selftest green. A separate check compares C `tt_eval` with
+Python `Net.evaluate` on 300 random Teams+FFA positions over all 19 shipped
+nets, plus three synthetic full-range nets with all-(-128) and all-127 rows to
+hit the maddubs extremes, in all four perspectives. It ran on the native
+(AVX-512 VNNI), alderlake (AVX-VNNI only), x86-64-v3 (AVX2), x86-64-v2
+(scalar fallback) and `-DNN_SCALAR` builds: 9,300 evals each, 0 mismatches.
+
+**Column-blocked L2/L3 (AVX2).** The row loop paid a full 8-to-1 horizontal
+reduction and a scalar crelu for each of the 64 outputs. With the weights
+re-laid at load time so that block c is input bytes 4c..4c+3 of every row,
+each step broadcasts four inputs and each int32 lane accumulates one output:
+no reduction anywhere, and crelu is srai + two saturating packs + max(0) + one
+permute over the 32 outputs at once. The signed extras go through madd_epi16
+as int16 pairs. Nothing is cached; the extras-cache rejection above stands.
+
+**VNNI.** Where the compiler has it, vpdpbusd replaces maddubs + madd + add
+and has no int16 saturation constraint. With AVX-512 BW, zmm halves the
+instruction count. vpdpbusd carries its ~5-cycle latency from one block to
+the next, so the sums run in 4 (zmm) or 2 (ymm) independent chains. The
+extras ride the same stream, offset by +128 to make them unsigned, with the
+offset taken back out of the bias at load.
+
+Sapphire Rapids Xeon, 4 vCPUs shared, load 18-32. `tt_bench_eval` ns/call
+over the bench positions, best of 3 x 25 interleaved; the stage columns are
+`tt_bench_nnue_stage` cumulative prefixes, read as differences. HEAD's L2
+column absorbs ~8 ns of L1 crelu, which its truncated prefix lets the compiler
+drop because nothing reads it:
+
+```
+build                          eval  L2 main  L2 extras  L3+out
+HEAD, -march=native           298.7    177.2       26.6    95.0
+column AVX2 (native build)    144.0     98.5        4.4    24.0
++ VNNI zmm (native build)      59.8     33.0        1.2    13.3
++ VNNI ymm (-march=alderlake)  86.2     55.4        1.1    15.0
+```
+
+CPU s per bench round, rotated order, best of 8, each run with a null:
+HEAD -> both commits native **+30.19%** (null +2.20%); HEAD -> the AVX2 code
+built x86-64-v3 **+19.25%** (same run). Commit 1 -> commit 2 native
++10.59%, but that run's null was -6.83%, so it does not resolve the VNNI step
+alone. The first run implies about +9% (1.3019 / 1.1925), consistent with it
+but not proof. AVX-VNNI ymm (alderlake build) against commit 1 native was
++0.17% in the second run: no full-bench effect seen, although the microbench
+gain is clear. callgrind (x86-64-v3, so AVX2 only): nnue_eval_for 1,153.8M ->
+675.2M Ir (-41.5%), libtetrarch -14.0%.
+
+**Rejected inside this item:** chain counts other than the shipped ones
+(zmm 2 / 8 chains 91.6 / 71.2 ns against 69.4 at 4; AVX-VNNI ymm 1 / 4 chains
+132.4 / 106.8 against 91.3 at 2, where 4 spills on 16 registers). Skipping
+all-zero 4-byte input blocks was not built: only 7% (net-v5) to 22%
+(net-ffa1) of L2's input blocks are zero, against a mask-and-compress
+overhead and a data-dependent trip count. The row-wise multi-row variant
+(4-8 rows per pass with one combined hadd tree) was not built either:
+the column form needs no reduction at all, so it dominates it.
+
+Not measured: Apple NEON, which is untouched. The Teams/FFA split was not
+measured separately here, and the AB box is NEON, so none of this moves its
+numbers.
+
+### Reverse futility and null-move pruning in Teams -- both CONFIRMED, default on
+
+`setoption name RFP` (`RFPMaxDepth` 3, `RFPMargin` 150 per ply) and
+`setoption name NullMove` (`NullMoveMinDepth` 3, `NullMoveR` 2, +1 from depth
+7), Teams only, both default **on** (below). They share one static evaluation, read
+only when one of them is on. A pass expires the passer's en-passant offer,
+zeroes `halfmove` so no repetition is scored through it, never follows another
+pass, is refused in check and to a seat down to king and pawns, and never
+returns a mate score.
+
+Cheap readings, no games: 300 Teams positions (book + 0-49 plies of default
+self-play), the net bundle, 16 MB, table cleared per position. "Regret" is the
+20,000-node move's value against a 400,000-node default search's move, each
+valued by a 150,000-node search of the child; paired against base, negative
+is better.
+
+| | mean depth @ 20k | ID nodes to d6 | regret vs base (cp) |
+|---|---:|---:|---:|
+| base | 4.72 | 7,747,172 | -- |
+| RFP margin 150, d <= 3 | **5.45** | 3,651,572 (47%) | -10.7 +/- 21.2 |
+| RFP margin 100 | 5.68 | 2,789,879 (36%) | -25.3 +/- 22.6 |
+| RFP margin 250 | 5.18 | 4,795,346 (62%) | +1.2 +/- 18.2 |
+| RFP d <= 2 | 5.41 | 3,822,605 (49%) | -9.2 +/- 21.3 |
+| NullMove R2, d >= 3 | 4.95 | 5,400,719 (70%) | -3.2 +/- 14.4 |
+| NullMove R3 | 5.01 | 5,278,763 (68%) | +6.2 +/- 15.6 |
+| NullMove d >= 4 | 4.87 | 6,073,035 (78%) | +3.3 +/- 10.3 |
+| RFP + NullMove | 5.63 | 3,002,185 (39%) | -13.8 +/- 21.5 |
+
+(+/- is one standard error here, not the 95% interval match.py prints.) The
+regret instrument cannot resolve anything below ~20 cp; the depth column is the
+firm reading.
+
+**Pre-screens, not screens** -- fixed nodes 20,000, classic, random openings,
+net bundle both sides, 2 workers on a shared 4-core box:
+
+```
+RFP       +110.41 +/- 38.06   400 games, Dist 4, 0, 7, 3, 25, 6, 33, 4, 18
+NullMove   +32.23 +/- 35.25   400 games, Dist 5, 3, 14, 2, 36, 4, 25, 2, 9
+```
+
+Why to distrust the RFP number before the confirm: it is FIXED NODES, and RFP
+spends an evaluation at every shallow interior node it tests -- time that a
+node count does not see. Fixed time is the instrument that decides it, and 100
+should be a second margin arm.
+
+Null move is the one to expect little from, and the 4PC reason is structural:
+a pass hands ONE opponent a tempo and then the passer's partner moves, so the
+threat it tests is a quarter of a round, and at median depth 4-5 a reduction of
+R=2 leaves a null search of one or two plies -- one opponent move and a
+quiescence. It is in because its cost to keep dormant is one branch.
+
+**Fixed-nodes A/B, 5 Nov.** Teams / classic, go nodes 20,000, net-v5 both
+sides, 10,000 games each, `--workers 0` on a 2x EPYC 7443 (Zen 3, AVX2).
+NullMove is measured on top of RFP, since RFP confirmed first:
+
+| | Elo | Dist |
+|---|---|---|
+| RFP vs default | **+133.95 +/- 7.00** | 14, 6, 172, 50, 664, 85, 953, 72, 484 |
+| RFP + NullMove vs RFP | **+20.28 +/- 6.54** | 97, 17, 499, 73, 902, 98, 613, 35, 166 |
+
+Both CONFIRMED at this instrument.
+
+**Fixed-time A/B for RFP**: movetime 200, net-v5 both sides, 4,000 games,
+`--workers 48` (nproc / 2) on the same box:
+**+155.54 +/- 11.10**, Dist 4, 0, 51, 8, 258, 11, 433, 11, 224.
+**RFP: CONFIRMED at both instruments, default on.** The caution above was
+wrong in direction: the clock gained more than the node count did, so the
+extra evaluation is repaid by the subtrees it never enters. Margin 100 as a
+second arm is still untried.
+
+**Fixed-time A/B for NullMove on top of RFP**, same instrument:
+**+27.33 +/- 10.09**, Dist 33, 1, 193, 13, 398, 18, 271, 4, 69.
+**NullMove: CONFIRMED at both instruments, default on.** The structural
+argument below expected little; the games disagree. Null move beat the structural argument against it here; whether it does on
+the clock is the open question.
+
+### Measured and not built: what the other textbook items read here
+
+Same positions and instruments as above; none committed.
+
+| item | reading | verdict |
+|---|---|---|
+| aspiration windows | root score moves a median **86 cp** between consecutive ID iterations, >50 cp 64% of the time, >100 cp 45% (420 transitions into depths 4-6) | a +/-50 window fails two times in three; re-search cost is PVS's problem again. Not built |
+| check extension (+1 ply in check) | depth @20k 4.72 -> 4.54, ID nodes +32%, regret **+31.7 +/- 16.9** cp worse | checks come from three seats; extending them is the opposite of what buys depth here |
+| internal iterative reduction (depth >= 4, no table move) | ID nodes 95%, depth 4.72 -> 4.73, regret +17.3 +/- 12.2 worse | dropped; recorded at the site |
+| depth-preferred table replacement | at a 1 MB table, ID nodes 96%, depth 4.71 -> 4.72 | at 16 MB a 20k-node search does not fill the table; only a long fixed-time game could show it |
+
+### FFA killers, LMR and LMP in the paranoid search -- FFALMP and FFALMR CONFIRMED, default on
+
+`setoption name FFAKillers`, `FFALMR`, `FFALMP`; FFALMP and FFALMR default
+**on** (below), FFAKillers default **off**. The
+paranoid loop had none of the Teams search's shallow pruning, and a ply there
+costs a median 17x the last against Teams' 3.5x -- the regime where LMR and LMP
+each bought Teams about a ply. They reuse the Teams tables and parameters
+(`LMRMinDepth`/`LMRMinMove`, `LMPMaxDepth`/`LMPBase`); killers reuse the
+per-ply slots, which in a paranoid tree are per seat while all four live.
+
+Cheap readings, no games: 200 FFA positions (book + 0-79 plies of default
+self-play), net-ffa1, 16 MB, table cleared per position.
+
+| | mean depth @ 20k nodes | ID nodes to depth 4 | agrees with 400k-node base |
+|---|---:|---:|---:|
+| base | 3.11 | 11,883,965 | 45.0% |
+| FFAKillers | 3.12 | 10,970,400 (92%) | 44.5% |
+| FFALMR | 3.76 | 1,949,528 (16%) | 44.0% |
+| FFALMP | 4.16 | 633,815 (5%) | 49.5% |
+| LMR + LMP | **4.97** | 237,384 (2%) | 46.5% |
+| all three | 5.06 | 222,059 (2%) | 50.0% |
+
+**At the fixed-nodes instrument the FFA search does not finish one round**
+(3.11 plies): the root seat never sees its own next move. LMR + LMP moves that
+to five plies. Agreement with a deep search does not separate the rows -- an
+oracle running the prunings itself puts every row at 32.5-35.0% -- so it is
+reported, not leaned on.
+
+**A pre-screen, not a screen**: LMR + LMP vs default, fixed nodes 20,000, FFA
+book, both sides net-ffa1, 2 workers on a shared 4-core box, stopped at its
+time limit:
+
+```
+Elo   | +205.78 +/- 47.12   (37 complete rotations)
+Dist  | 0, 0, 0, 0, 0, 2, 1, 3, 6, 8, 8, 5, 4
+A pl. | 86/32/19/11  (1st/2nd/3rd/4th)
+Games | 148, 259.66 plies mean
+```
+
+148 games is a direction, not a number. Why to be suspicious of its size: at
+20,000 nodes the default is under a round deep, so this instrument is close to
+the worst case for the baseline; at movetime 100 the default reaches about 4.0
+and the gap should shrink. The pruning at an opponent's node is OPTIMISTIC
+for the root (it assumes that seat misses a late quiet move), which paranoid's
+pessimism may or may not absorb -- the games are what says. Killers alone are
+an ordering change (selftest checks the value is exact against the paranoid
+oracle) worth 8% of nodes here and 41% on the bench's FFA position with
+net-v5; screen them separately or not at all.
+
+**Fixed-nodes A/B, 5 Nov.** One toggle at a time, each on top of the ones
+already confirmed: FFA book, go nodes 20,000, net-ffa1 both sides, 10,000 games
+each, `--workers 0` on a 2x EPYC 7443 (Zen 3, AVX2).
+
+| | Elo | 1st/2nd/3rd/4th (A) |
+|---|---|---|
+| FFALMP vs default | **+121.23 +/- 5.36** | 4450 / 2408 / 1862 / 1280 |
+| + FFALMR vs FFALMP | **+46.67 +/- 4.99** | 3131 / 2595 / 2424 / 1850 |
+| + FFAKillers vs both | **+9.16 +/- 4.98** | 2647 / 2507 / 2439 / 2407 |
+
+Dist, FFALMP: 0, 3, 8, 44, 98, 146, 289, 383, 448, 446, 344, 198, 93;
+FFALMR: 0, 6, 59, 114, 205, 295, 443, 392, 419, 296, 183, 70, 18;
+FFAKillers: 5, 28, 91, 170, 299, 356, 455, 409, 337, 182, 107, 52, 9.
+
+All three CONFIRMED at this instrument, and the pre-screen's direction holds:
+LMP alone carries most of it. As predicted above, 20,000 nodes is close to the
+baseline's worst case, so these magnitudes are upper bounds for the clock.
+
+**Fixed-time A/B, 5 Nov**, the confirm instrument: movetime 100, same book and
+nets, `--workers 48` (nproc / 2) on the same box, the same stacking rule.
+
+| | Elo | 1st/2nd/3rd/4th (A) | games |
+|---|---|---|---|
+| FFALMP vs default | **+104.33 +/- 7.58** | 1437 / 1283 / 873 / 407 | 4,000 |
+| + FFALMR vs FFALMP | **+14.28 +/- 7.83** | 1096 / 972 / 1016 / 916 | 4,000 |
+| + FFAKillers vs both | +3.08 +/- 4.91 | 2518 / 2553 / 2477 / 2452 | 10,000 |
+
+Dist, FFALMP: 0, 0, 3, 19, 38, 64, 137, 164, 204, 175, 131, 55, 10;
+FFALMR: 6, 10, 24, 65, 113, 139, 199, 154, 136, 85, 48, 17, 4;
+FFAKillers: 11, 33, 82, 191, 306, 354, 472, 391, 343, 179, 99, 30, 9.
+
+**FFALMP: CONFIRMED at both instruments, default on.** The clock kept 86% of
+the node-count gain. **FFALMR: CONFIRMED at both, default on**, but the clock kept under a
+third of it (+46.67 -> +14.28): with LMP already on, the reductions buy less.
+**FFAKillers: CONFIRMED at fixed nodes, NULL at fixed time, default off.**
+Reordering saves nodes, and the clock does not see the saving.
+
+These ran on the FFA clock as it stands, which uses about a third of movetime
+(FFA_NEXT_DEPTH_FRACTION). Fixing that changes what every FFA toggle is worth;
+re-measure after.
+
 ### Bit-exact speedups, 26 Sep -- three shipped, one CLOSED PRE-A/B
 
 Four items from the audit's speed section, each bit-exact: every bench
@@ -923,6 +1163,42 @@ in selftest.py are three to four times smaller from depth 4 on.
 
 Worth setting against the generational loop: net v5, a whole generation of
 self-play, is +10.50 at fixed nodes. This toggle is +16.32.
+
+### v9 against v8 -- CONFIRMED, and both fixed-time nulls pass
+
+The release confirm, against v8 (597,903). Same nets and bundle on both sides,
+FIXED TIME, hash 16, `--workers 48` (nproc / 2) on a 2x EPYC 7443 (Zen 3,
+AVX2, Ubuntu 26.04), 5 Nov.
+
+| | Elo | games | Dist |
+|---|---|---|---|
+| Teams classic, movetime 200, net-v5 | **+300.58 +/- 9.39** | 10,000 | 0, 0, 13, 3, 276, 17, 865, 33, 1293 |
+| FFA book, movetime 100, net-ffa1 | **+168.75 +/- 5.47** | 10,000 | 0, 0, 2, 10, 35, 86, 215, 306, 442, 478, 457, 304, 165 |
+| Teams null, same harness | -3.56 +/- 9.91 | 4,000 | 53, 5, 211, 19, 440, 16, 204, 5, 47 |
+| FFA null, same harness | -3.62 +/- 7.61 | 4,000 | 0, 14, 28, 86, 128, 174, 200, 141, 110, 63, 33, 18, 5 |
+
+FFA placed 5011 / 2531 / 1665 / 793 against v8. The nulls are the fixed-time
+certifications this file had owed since the orientation fix (Teams) and since
+v8 (FFA). Gains are not additive: the Teams total is more than the toggle rows
+summed because the +70% x86 speedup only shows on the clock.
+
+### SEE king recapture (6ed2e5d) -- CONFIRMED at both instruments
+
+The swap-off priced a recapturing king at 0 and let the other side take it for
+free; it now stops at a king recapture onto a square the next side still
+attacks. Not a toggle: a correction to what SEEPrune prunes on. A/B against its
+parent c75fa4d, Teams / classic, go nodes 20,000, 10,000 games each:
+
+| | Elo | Dist |
+|---|---|---|
+| net-v5 both sides | **+17.70 +/- 6.41** | 83, 17, 526, 81, 903, 84, 624, 35, 147 |
+| hand eval both sides | **+14.81 +/- 6.63** | 122, 13, 515, 50, 930, 36, 663, 13, 158 |
+| movetime 200, net-v5, 4,000 games | **+12.77 +/- 10.26** | 45, 1, 211, 12, 408, 20, 232, 4, 67 |
+
+Measured on a 2x EPYC 7443 (Zen 3, AVX2, Ubuntu 26.04), `--workers 0`.
+The 240-game smoke in the commit (+29.02 +/- 47.98) only ruled out a disaster;
+these are the numbers. The fixed-time row ran at `--workers 48` (nproc / 2) on
+the same box and agrees with fixed nodes within its margin.
 
 ### SEE in move ordering -- NOT screened, and probably will not be
 

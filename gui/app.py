@@ -66,6 +66,55 @@ except Exception:                                               # noqa: BLE001
     pass
 
 
+class BadInput(ValueError):
+    """A request the client got wrong. Answered 400 with the reason.
+
+    Every field below arrives from a browser or a script, and each endpoint
+    used to read them with a bare int() or .strip(): a movetime of "abc", a
+    null depth from an empty input box, a JSON body that is a list -- each was
+    a 500 and a traceback in the server log for what is a client mistake.
+    """
+
+
+@app.errorhandler(BadInput)
+def _bad_input(exc):
+    return jsonify({"error": str(exc)}), 400
+
+
+def _payload():
+    """The JSON body as a dict; a missing or unreadable body is {}."""
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise BadInput("expected a JSON object, got %s" % type(data).__name__)
+    return data
+
+
+def _int(payload, name, default, lo, hi):
+    """An integer field clamped to [lo, hi]. null means the default: it is
+    what JSON.stringify makes of parseInt("") -- NaN -- from an empty box."""
+    raw = payload.get(name)
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        raise BadInput("%s must be a number, got %r" % (name, raw))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise BadInput("%s must be a number, got %r" % (name, raw)) from None
+    return max(lo, min(value, hi))
+
+
+def _str(payload, name, default=""):
+    raw = payload.get(name, default)
+    if raw is None:
+        return default
+    if not isinstance(raw, str):
+        raise BadInput("%s must be a string, got %r" % (name, raw))
+    return raw
+
+
 def _bundled_net(mode, setup):
     """Basename the bundle picks, or None for the hand eval.
 
@@ -155,13 +204,13 @@ def _render_state(board):
 
 def _board_from(payload):
     mode = MODE_FFA if payload.get("mode") == "ffa" else MODE_TEAMS
-    return Board.from_fen4(payload.get("fen4", ""), mode), mode
+    return Board.from_fen4(_str(payload, "fen4"), mode), mode
 
 
 @app.route("/api/play/new", methods=["POST"])
 def api_play_new():
-    payload = request.get_json(silent=True) or {}
-    setup = payload.get("setup", DEFAULT_SETUP)
+    payload = _payload()
+    setup = _str(payload, "setup", DEFAULT_SETUP)
     if setup not in SETUPS:
         return jsonify({"error": "unknown setup %r" % setup}), 400
     mode = MODE_FFA if payload.get("mode") == "ffa" else MODE_TEAMS
@@ -170,12 +219,14 @@ def api_play_new():
 
 @app.route("/api/play/move", methods=["POST"])
 def api_play_move():
-    payload = request.get_json(silent=True) or {}
+    payload = _payload()
     try:
         board, _ = _board_from(payload)
+    except BadInput:
+        raise
     except Exception as exc:                                    # noqa: BLE001
         return jsonify({"error": str(exc)}), 400
-    token = payload.get("move", "")
+    token = _str(payload, "move")
     if game.play_token(board, token) is None:
         return jsonify({"error": "illegal move %r" % token}), 400
     return jsonify(_render_state(board))
@@ -193,9 +244,11 @@ def api_play_engine():
     that is the hint button, and it is the same code path so a hint can never
     disagree with what the engine would actually do.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _payload()
     try:
         board, mode = _board_from(payload)
+    except BadInput:
+        raise
     except Exception as exc:                                    # noqa: BLE001
         return jsonify({"error": str(exc)}), 400
 
@@ -203,10 +256,13 @@ def api_play_engine():
     # seat comes back playable rather than stuck.
     if game.resolve(board):
         return jsonify(_render_state(board))
-    movetime = max(50, min(int(payload.get("movetime", 1000)), 30000))
-    want_net = (payload.get("net") or "auto").strip()
+    movetime = _int(payload, "movetime", 1000, 50, 30000)
+    want_net = (_str(payload, "net") or "auto").strip()
     if want_net == "auto":
-        want_net = _bundled_net(mode, payload.get("setup", DEFAULT_SETUP)) or ""
+        want_net = _bundled_net(mode, _str(payload, "setup",
+                                           DEFAULT_SETUP)) or ""
+    elif want_net == "none":
+        want_net = ""                   # as /api/eval spells the hand eval
     with ENGINE_LOCK:
         note = _select_net(want_net)
         core.clear_hash()
@@ -242,20 +298,24 @@ def _select_net(name):
     from the browser, so it never reaches the filesystem as a path.
     """
     global _LOADED_NET
+    note = None
     if name and (os.path.basename(name) != name
                  or not name.endswith(".nnue")
                  or not os.path.exists(os.path.join(NETS_DIR, name))):
-        return "unknown net %r; using the hand eval" % name
+        # And then actually use it. This returned the note and left whatever
+        # net the previous request loaded in place, so a reply could say "hand
+        # eval" while net-v7 played.
+        note = "unknown net %r; using the hand eval" % name
+        name = ""
     name = name or None
-    if name == _LOADED_NET:
-        return None
-    if name is None:
-        core.unload_net()
-    else:
-        from tetrarch import nnue
-        core.load_net(nnue.Net.load(os.path.join(NETS_DIR, name)))
-    _LOADED_NET = name
-    return None
+    if name != _LOADED_NET:
+        if name is None:
+            core.unload_net()
+        else:
+            from tetrarch import nnue
+            core.load_net(nnue.Net.load(os.path.join(NETS_DIR, name)))
+        _LOADED_NET = name
+    return note
 
 
 @app.route("/api/play/pgn", methods=["POST"])
@@ -269,14 +329,18 @@ def api_play_pgn():
     Tags follow the standard 4PC export, including the named StartFen4, so
     the result loads in other 4PC viewers and not only in ours.
     """
-    payload = request.get_json(silent=True) or {}
-    setup = payload.get("setup", DEFAULT_SETUP)
+    payload = _payload()
+    setup = _str(payload, "setup", DEFAULT_SETUP)
     if setup not in SETUPS:
         return jsonify({"error": "unknown setup %r" % setup}), 400
     mode = MODE_FFA if payload.get("mode") == "ffa" else MODE_TEAMS
     board = start_board(setup, mode)
+    tokens = payload.get("moves") or []
+    if not (isinstance(tokens, list)
+            and all(isinstance(t, str) for t in tokens)):
+        raise BadInput("moves must be a list of move strings")
     moves = []
-    for token in payload.get("moves", []):
+    for token in tokens:
         # game.play_token, not a local copy: this loop had no resolve between
         # moves, so from the first elimination onward every token was matched
         # against the wrong seat's move list and the endpoint returned 400 for
@@ -372,7 +436,7 @@ def api_play_nets():
 
 @app.route("/api/parse", methods=["POST"])
 def api_parse():
-    text = (request.get_json(silent=True) or {}).get("pgn4", "")
+    text = _str(_payload(), "pgn4")
     if not text.strip():
         return jsonify({"error": "nothing to parse"}), 400
     try:
@@ -411,9 +475,9 @@ def api_parse():
 
 @app.route("/api/eval", methods=["POST"])
 def api_eval():
-    payload = request.get_json(silent=True) or {}
-    fen4 = payload.get("fen4", "")
-    depth = max(1, min(int(payload.get("depth", 6)), 12))
+    payload = _payload()
+    fen4 = _str(payload, "fen4")
+    depth = _int(payload, "depth", 6, 1, 12)
     mode = MODE_FFA if payload.get("mode") == "ffa" else MODE_TEAMS
     try:
         board = Board.from_fen4(fen4, mode)
@@ -426,10 +490,11 @@ def api_eval():
     # Above one line the root gives up its cutoffs so every line has a real
     # score rather than a bound; that costs several times the nodes, which is
     # why it is asked for rather than always on.
-    lines = max(1, min(int(payload.get("lines", 1)), 8))
-    want = (payload.get("net") or "auto").strip()
+    lines = _int(payload, "lines", 1, 1, 8)
+    want = (_str(payload, "net") or "auto").strip()
     if want == "auto":
-        want = _bundled_net(mode, payload.get("setup", DEFAULT_SETUP)) or "none"
+        want = _bundled_net(mode, _str(payload, "setup",
+                                       DEFAULT_SETUP)) or "none"
     with ENGINE_LOCK:
         # Selected inside the lock: the loaded net is global state, so without
         # this the viewer would analyse with whatever the play page left behind.
@@ -462,10 +527,10 @@ def api_eval():
 @app.route("/api/legal", methods=["POST"])
 def api_legal():
     """Legal moves for the position, so the board can highlight them."""
-    payload = request.get_json(silent=True) or {}
+    payload = _payload()
     mode = MODE_FFA if payload.get("mode") == "ffa" else MODE_TEAMS
     try:
-        board = Board.from_fen4(payload.get("fen4", ""), mode)
+        board = Board.from_fen4(_str(payload, "fen4"), mode)
     except Exception as exc:                                    # noqa: BLE001
         return jsonify({"error": str(exc)}), 400
     return jsonify({"moves": [move_str(m) for m in gen.gen_legal(board)]})

@@ -55,6 +55,12 @@ const failures = [];
 
 for (const c of cases) {
   const game = sandbox.parsePgn4(c.pgn4);
+  // The setup decides which net the served viewer asks the engine for, so it
+  // has to agree with pgn4.parse's as well as the frames do.
+  if (c.py_setup !== undefined && game.setup !== c.py_setup) {
+    failures.push(`${c.setup}: setup ${game.setup}, expected ${c.py_setup}`);
+    continue;
+  }
   const out = sandbox.replay(game);
   if (out.error) {
     failures.push(`${c.setup}: replay error: ${out.error}`);

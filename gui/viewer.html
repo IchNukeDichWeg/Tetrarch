@@ -196,7 +196,9 @@ function startPosition(setup){
 // --- PGN4 ----------------------------------------------------------------
 // See tetrarch/pgn4.py. Confirmed from real 4PC exports for all five
 // setups in both modes; `modern` carries no tag because it is the default.
-const NAMED_STARTS = {"4pco":"classic", "4pcb":"by", "4pcn":"byg", "4pcrg":"rg"};
+// "4pc" too: pgn4.py reads it as modern, and without it here the viewer
+// replayed a [StartFen4 "4PC"] game from the classic start.
+const NAMED_STARTS = {"4pc":"modern", "4pco":"classic", "4pcb":"by", "4pcn":"byg", "4pcrg":"rg"};
 
 // A setup named outright by one of the tags, or null. Mirrors _named_setup.
 function namedSetup(tags){
@@ -225,13 +227,21 @@ function parsePgn4(text){
   // tests/js_replay_check.js compares against.
   const named = (tags.StartFen4 || tags.StartFen || "").trim();
   let start;
+  // `setup` is assigned in each arm, as pgn4.parse does: it was left at the
+  // tag guess, so a named or modern start was labelled "classic" and asked
+  // the engine for classic's net.
   if (named && named.includes("-")) start = parseFen4(named);
-  else if (named) start = startPosition(NAMED_STARTS[named.toLowerCase()] || setup);
-  else if (tags.RuleVariants !== undefined && !namedSetup(tags))
+  else if (named){
+    setup = NAMED_STARTS[named.toLowerCase()] || setup;
+    start = startPosition(setup);
+  }
+  else if (tags.RuleVariants !== undefined && !namedSetup(tags)){
     // No StartFen4 means "the default when this was written" -- classic
     // before 2022, modern after. A RuleVariants tag is the tell: every
     // modern export carries one and the old tagless files have none.
-    start = startPosition("modern");
+    setup = "modern";
+    start = startPosition(setup);
+  }
   else start = startPosition(setup);
   const tokens = [];
   for (const raw of body.replace(/\.\./g, " ").split(/\s+/)){
@@ -358,7 +368,7 @@ function snapshot(st, mv, token){
 }
 
 // --- rendering -----------------------------------------------------------
-let frames = [], tokens = [], ply = 0, flipped = 0, mode = "teams";
+let frames = [], tokens = [], ply = 0, flipped = 0, mode = "teams", setup = "classic";
 //: Candidate moves from the last Evaluate, drawn on the board. One colour per
 //: rank, strongest first, so the ranking is readable without the list.
 let pvLines = [];
@@ -501,7 +511,7 @@ function load(){
   catch (e){ err.textContent = "could not read the PGN4: " + e.message; return; }
   if (!game.tokens.length){ err.textContent = "no moves found"; return; }
   const out = replay(game);
-  frames = out.frames; tokens = game.tokens.slice(0, frames.length-1); mode = game.mode;
+  frames = out.frames; tokens = game.tokens.slice(0, frames.length-1); mode = game.mode; setup = game.setup;
   if (out.error) err.textContent = out.error + "\n(showing the game up to that point)";
   const bits = [game.mode, game.setup];
   for (const k of ["Result","TimeControl","Site"]) if (game.tags[k]) bits.push(game.tags[k]);
@@ -551,7 +561,7 @@ document.getElementById("evalBtn").onclick = async () => {
   // The server wants a FEN4; rebuild one from the frame we are showing.
   const r = await fetch("/api/eval", {method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({fen4: toFen4(frames[ply]), mode, depth, lines})});
+    body: JSON.stringify({fen4: toFen4(frames[ply]), mode, setup, depth, lines})});
   const d = await r.json();
   if (d.error || d.terminal || d.unsupported){
     out.textContent = d.error || d.terminal || d.unsupported;

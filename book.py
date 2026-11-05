@@ -42,11 +42,12 @@ BALANCE MEANS SOMETHING ELSE IN FFA (--mode ffa)
     position. It filters for positions already DECIDED, where one seat wins
     whoever plays it and three of the four rotation games carry no signal.
 
-    Four searches instead of one, and the FFA search has no transposition
-    table, so a candidate costs about 274,000 nodes at depth 4 against 20,000
-    for a Teams candidate at depth 6. Depth 5 is 2.7x that again and depth 3
-    is 31x cheaper but visibly noisier (median spread 224 against 160), which
-    is why the default is 4.
+    Four searches instead of one, each at the FFA fan-out, so a candidate
+    cost about 274,000 nodes at depth 4 against 20,000 for a Teams candidate
+    at depth 6. Depth 5 was 2.7x that again and depth 3 31x cheaper but
+    visibly noisier (median spread 224 against 160), which is why the default
+    is 4. Those figures predate the FFA transposition table (v8), which
+    lowers the absolute cost; the depth choice was not re-measured with it.
 """
 
 import argparse
@@ -188,8 +189,8 @@ def main():
                          "interchangeable and each records its mode")
     ap.add_argument("--depth", type=int, default=None,
                     help="search depth the balance is judged at "
-                         "(default 6 teams, 4 ffa -- the FFA search has no "
-                         "transposition table and costs 31x more per ply)")
+                         "(default 6 teams, 4 ffa -- an FFA candidate is four "
+                         "searches at a far wider fan-out)")
     ap.add_argument("--band", type=int, default=None, metavar="CP",
                     help="keep positions within this many centipawns "
                          "(default 60 teams, 250 ffa; the two measure "

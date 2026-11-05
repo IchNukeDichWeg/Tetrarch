@@ -10,8 +10,9 @@ path once destroyed four hours of a training run.
 
 RESUMABLE
     One JSON object per line, one line per game, appended and flushed as it
-    goes. --resume counts the lines already present and skips that many game
-    indices. Game N is seeded from (--seed, N), so the same index always
+    goes. --resume drops a partial final line left by a hard kill, then
+    starts one past the highest game index present (not the line count; see
+    resume_index). Game N is seeded from (--seed, N), so the same index always
     produces the same game and a resumed run continues rather than repeating.
 
 WHAT IS STORED
@@ -241,6 +242,50 @@ def resume_index(path):
     return highest + 1, lines
 
 
+def seal_tail(path):
+    """Make the file end on a line boundary before anything is appended.
+
+    A hard kill can stop a write part way through a line. resume_index skips
+    that fragment, but appending straight after it glued the next game onto
+    it: one line holding half a game and a whole one, unreadable as either.
+    Measured on a two-game file cut 40 bytes short and resumed to three: the
+    resumed game was written, reported, and lost, and the next --resume saw
+    the index past it and never regenerated it.
+
+    A fragment that still parses -- the kill landed between the record and
+    its newline -- is a whole game and gets its newline. Anything else is cut.
+    Returns the number of bytes dropped.
+    """
+    with open(path, "rb+") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        if size == 0:
+            return 0
+        fh.seek(size - 1)
+        if fh.read(1) == b"\n":
+            return 0
+        # Scan back for the last newline; lines are ~1 kB, so this is short.
+        pos = size
+        while pos > 0:
+            step = min(4096, pos)
+            fh.seek(pos - step)
+            chunk = fh.read(step)
+            cut = chunk.rfind(b"\n")
+            if cut >= 0:
+                pos = pos - step + cut + 1
+                break
+            pos -= step
+        fh.seek(pos)
+        tail = fh.read()
+        try:
+            json.loads(tail)
+        except ValueError:
+            fh.truncate(pos)
+            return len(tail)
+        fh.write(b"\n")
+        return 0
+
+
 def _worker_init(net_path):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     # Once per worker, never per game: loading a net clears the transposition
@@ -298,6 +343,10 @@ def main():
         if not args.resume:
             ap.error("%s exists; pass --resume to continue it, or pick a fresh "
                      "path" % args.out)
+        dropped = seal_tail(args.out)
+        if dropped:
+            print("resuming %s: dropped a %d-byte partial final line"
+                  % (args.out, dropped))
         done, lines = resume_index(args.out)
         print("resuming %s: %d games present, next index %d"
               % (args.out, lines, done))
