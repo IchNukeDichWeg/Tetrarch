@@ -48,6 +48,7 @@ tetrarch_export/
 variants.js
 test_engine
 test_engine2
+test_engine3
 
 # Generated opening books: rebuildable from book.py, and large.
 book*.txt
