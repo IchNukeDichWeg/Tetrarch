@@ -148,7 +148,7 @@ Not measured: Apple NEON, which is untouched. The Teams/FFA split was not
 measured separately here, and the AB box is NEON, so none of this moves its
 numbers.
 
-### Reverse futility and null-move pruning in Teams -- built, NOT confirmed
+### Reverse futility and null-move pruning in Teams -- CONFIRMED at fixed nodes, fixed time running
 
 `setoption name RFP` (`RFPMaxDepth` 3, `RFPMargin` 150 per ply) and
 `setoption name NullMove` (`NullMoveMinDepth` 3, `NullMoveR` 2, +1 from depth
@@ -199,6 +199,20 @@ threat it tests is a quarter of a round, and at median depth 4-5 a reduction of
 R=2 leaves a null search of one or two plies -- one opponent move and a
 quiescence. It is in because its cost to keep dormant is one branch.
 
+**Fixed-nodes A/B, 5 Nov.** Teams / classic, go nodes 20,000, net-v5 both
+sides, 10,000 games each, `--workers 0` on a 2x EPYC 7443 (Zen 3, AVX2).
+NullMove is measured on top of RFP, since RFP confirmed first:
+
+| | Elo | Dist |
+|---|---|---|
+| RFP vs default | **+133.95 +/- 7.00** | 14, 6, 172, 50, 664, 85, 953, 72, 484 |
+| RFP + NullMove vs RFP | **+20.28 +/- 6.54** | 97, 17, 499, 73, 902, 98, 613, 35, 166 |
+
+Both CONFIRMED at this instrument. The caution above stands: fixed nodes cannot
+see RFP's extra evaluations, so neither is default on until movetime 200 says
+so. Null move beat the structural argument against it here; whether it does on
+the clock is the open question.
+
 ### Measured and not built: what the other textbook items read here
 
 Same positions and instruments as above; none committed.
@@ -210,7 +224,7 @@ Same positions and instruments as above; none committed.
 | internal iterative reduction (depth >= 4, no table move) | ID nodes 95%, depth 4.72 -> 4.73, regret +17.3 +/- 12.2 worse | dropped; recorded at the site |
 | depth-preferred table replacement | at a 1 MB table, ID nodes 96%, depth 4.71 -> 4.72 | at 16 MB a 20k-node search does not fill the table; only a long fixed-time game could show it |
 
-### FFA killers, LMR and LMP in the paranoid search -- built, NOT confirmed
+### FFA killers, LMR and LMP in the paranoid search -- CONFIRMED at fixed nodes, fixed time running
 
 `setoption name FFAKillers`, `FFALMR`, `FFALMP`, all default **off**. The
 paranoid loop had none of the Teams search's shallow pruning, and a ply there
@@ -258,9 +272,24 @@ an ordering change (selftest checks the value is exact against the paranoid
 oracle) worth 8% of nodes here and 41% on the bench's FFA position with
 net-v5; screen them separately or not at all.
 
-**Owed:** screen LMR + LMP at fixed nodes and at movetime 100 (the FFA confirm
-instrument), then each alone if the pair confirms, since they were measured as
-a pair.
+**Fixed-nodes A/B, 5 Nov.** One toggle at a time, each on top of the ones
+already confirmed: FFA book, go nodes 20,000, net-ffa1 both sides, 10,000 games
+each, `--workers 0` on a 2x EPYC 7443 (Zen 3, AVX2).
+
+| | Elo | 1st/2nd/3rd/4th (A) |
+|---|---|---|
+| FFALMP vs default | **+121.23 +/- 5.36** | 4450 / 2408 / 1862 / 1280 |
+| + FFALMR vs FFALMP | **+46.67 +/- 4.99** | 3131 / 2595 / 2424 / 1850 |
+| + FFAKillers vs both | **+9.16 +/- 4.98** | 2647 / 2507 / 2439 / 2407 |
+
+Dist, FFALMP: 0, 3, 8, 44, 98, 146, 289, 383, 448, 446, 344, 198, 93;
+FFALMR: 0, 6, 59, 114, 205, 295, 443, 392, 419, 296, 183, 70, 18;
+FFAKillers: 5, 28, 91, 170, 299, 356, 455, 409, 337, 182, 107, 52, 9.
+
+All three CONFIRMED at this instrument, and the pre-screen's direction holds:
+LMP alone carries most of it. As predicted above, 20,000 nodes is close to the
+baseline's worst case, so these magnitudes are upper bounds for the clock.
+**Owed:** the same chain at movetime 100, which decides the defaults.
 
 ### Bit-exact speedups, 26 Sep -- three shipped, one CLOSED PRE-A/B
 
