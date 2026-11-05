@@ -224,9 +224,10 @@ Same positions and instruments as above; none committed.
 | internal iterative reduction (depth >= 4, no table move) | ID nodes 95%, depth 4.72 -> 4.73, regret +17.3 +/- 12.2 worse | dropped; recorded at the site |
 | depth-preferred table replacement | at a 1 MB table, ID nodes 96%, depth 4.71 -> 4.72 | at 16 MB a 20k-node search does not fill the table; only a long fixed-time game could show it |
 
-### FFA killers, LMR and LMP in the paranoid search -- CONFIRMED at fixed nodes, fixed time running
+### FFA killers, LMR and LMP in the paranoid search -- FFALMP CONFIRMED and default on
 
-`setoption name FFAKillers`, `FFALMR`, `FFALMP`, all default **off**. The
+`setoption name FFAKillers`, `FFALMR`, `FFALMP`; FFALMP default **on**
+(below), the other two default **off**. The
 paranoid loop had none of the Teams search's shallow pruning, and a ply there
 costs a median 17x the last against Teams' 3.5x -- the regime where LMR and LMP
 each bought Teams about a ply. They reuse the Teams tables and parameters
@@ -289,7 +290,29 @@ FFAKillers: 5, 28, 91, 170, 299, 356, 455, 409, 337, 182, 107, 52, 9.
 All three CONFIRMED at this instrument, and the pre-screen's direction holds:
 LMP alone carries most of it. As predicted above, 20,000 nodes is close to the
 baseline's worst case, so these magnitudes are upper bounds for the clock.
-**Owed:** the same chain at movetime 100, which decides the defaults.
+
+**Fixed-time A/B, 5 Nov**, the confirm instrument: movetime 100, same book and
+nets, `--workers 48` (nproc / 2) on the same box, the same stacking rule.
+
+| | Elo | 1st/2nd/3rd/4th (A) | games |
+|---|---|---|---|
+| FFALMP vs default | **+104.33 +/- 7.58** | 1437 / 1283 / 873 / 407 | 4,000 |
+| + FFALMR vs FFALMP | **+14.28 +/- 7.83** | 1096 / 972 / 1016 / 916 | 4,000 |
+| + FFAKillers vs both | +3.08 +/- 4.91 | 2518 / 2553 / 2477 / 2452 | 10,000 |
+
+Dist, FFALMP: 0, 0, 3, 19, 38, 64, 137, 164, 204, 175, 131, 55, 10;
+FFALMR: 6, 10, 24, 65, 113, 139, 199, 154, 136, 85, 48, 17, 4;
+FFAKillers: 11, 33, 82, 191, 306, 354, 472, 391, 343, 179, 99, 30, 9.
+
+**FFALMP: CONFIRMED at both instruments, default on.** The clock kept 86% of
+the node-count gain. **FFALMR: CONFIRMED at both**, but the clock kept under a
+third of it (+46.67 -> +14.28): with LMP already on, the reductions buy less.
+**FFAKillers: CONFIRMED at fixed nodes, NULL at fixed time, default off.**
+Reordering saves nodes, and the clock does not see the saving.
+
+These ran on the FFA clock as it stands, which uses about a third of movetime
+(FFA_NEXT_DEPTH_FRACTION). Fixing that changes what every FFA toggle is worth;
+re-measure after.
 
 ### Bit-exact speedups, 26 Sep -- three shipped, one CLOSED PRE-A/B
 

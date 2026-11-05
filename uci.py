@@ -336,7 +336,7 @@ class Engine:
         print("option name RFPMargin type spin default 150 min 1 max 2000")
         print("option name FFAKillers type check default false")
         print("option name FFALMR type check default false")
-        print("option name FFALMP type check default false")
+        print("option name FFALMP type check default true")
         # A draw the search is walking into has to score as one. Off is for
         # measuring the difference, not for playing.
         print("option name Repetitions type check default true")

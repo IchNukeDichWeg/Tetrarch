@@ -3080,8 +3080,8 @@ void tt_set_rfp_params(int max_depth, int margin)
  * The paranoid loop had none of the Teams search's shallow pruning: no
  * killers (it passes ply -1 to score_moves), no LMR, no LMP. A ply there costs
  * a median 17x the one before it against Teams' 3.5x, which is exactly the
- * regime where LMR and LMP bought Teams a whole ply. Each is its own toggle,
- * off by default, so each is its own A/B.
+ * regime where LMR and LMP bought Teams a whole ply. Each is its own toggle
+ * and its own A/B; the default each carries is the one its A/B gave it.
  *
  * Killers are an ordering change only: alpha-beta returns the same value in
  * any order, so FFAKillers moves the node count and not the score (up to the
@@ -3109,10 +3109,16 @@ void tt_set_rfp_params(int max_depth, int margin)
  *
  * Agreement with a deep search is a weak instrument here: against a 400k
  * oracle that runs all three prunings instead, every row lands in 32.5-35.0%
- * and the order does not hold. The depth column is the reading to trust. */
+ * and the order does not hold. The depth column is the reading to trust.
+ *
+ * FFALMP: CONFIRMED and default ON. FFA book, net-ffa1 both sides:
+ *   fixed nodes 20,000   +121.23 +/- 5.36   10,000 games
+ *   movetime 100         +104.33 +/- 7.58    4,000 games
+ * The clock kept most of the node-count gain, which is what a ply the base
+ * never reached should do. See docs/AB.md. */
 static int use_ffa_killers = 0;
 static int use_ffa_lmr = 0;
-static int use_ffa_lmp = 0;
+static int use_ffa_lmp = 1;
 
 void tt_set_ffa_killers(int on) { use_ffa_killers = on ? 1 : 0; }
 int tt_get_ffa_killers(void) { return use_ffa_killers; }

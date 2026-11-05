@@ -635,8 +635,8 @@ def ffa_lmr_enabled():
 
 def set_ffa_lmp(on):
     """Late move pruning in the paranoid FFA search, sharing LMPMaxDepth and
-    LMPBase with Teams. Default OFF. Not exact; never eliminates a seat that
-    has a legal move."""
+    LMPBase with Teams. Default ON: +104.33 +/- 7.58 at movetime 100 (docs/AB.md).
+    Not exact; never eliminates a seat that has a legal move."""
     load().tt_set_ffa_lmp(1 if on else 0)
 
 

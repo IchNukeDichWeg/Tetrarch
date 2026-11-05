@@ -21,6 +21,7 @@ Two things this file is deliberately built around:
 
 import argparse
 import atexit
+import contextlib
 import json
 import os
 import random
@@ -1067,11 +1068,26 @@ INEXACT_TOGGLES = (
 )
 
 #: The same list for the paranoid oracle. FFAKillers is not on it: it only
-#: reorders, and test_dormant_search_toggles checks it against the oracle.
+#: reorders, and test_search_toggles checks it against the oracle.
 FFA_INEXACT_TOGGLES = (
     ("ffa lmr", core.set_ffa_lmr, core.ffa_lmr_enabled),
     ("ffa lmp", core.set_ffa_lmp, core.ffa_lmp_enabled),
 )
+
+
+@contextlib.contextmanager
+def ffa_exact():
+    """FFA_INEXACT_TOGGLES off for the block, then back as they were. Any
+    check of the FFA search against reference_paranoid needs it now that
+    FFALMP is default on."""
+    restore = [(setter, getter()) for _n, setter, getter in FFA_INEXACT_TOGGLES]
+    for _n, setter, _g in FFA_INEXACT_TOGGLES:
+        setter(False)
+    try:
+        yield
+    finally:
+        for setter, value in restore:
+            setter(value)
 
 
 def _minimax_job(index):
@@ -1778,27 +1794,29 @@ def test_ffa_elimination():
 
 
 #: bench.py's per-position node counts with the default net and the default
-#: toggles -- the signature every bit-exact commit quotes (601,860). Pinned
+#: toggles -- the signature every bit-exact commit quotes (424,923). Pinned
 #: here so a dormant toggle that leaks into the default path fails the gate
 #: rather than a reviewer's arithmetic. Was 597,933 (49806 / 189492 / 111487)
-#: until SEE stopped letting a recapturing king be taken for free; the FFA
-#: positions never ask SEE and did not move.
-BENCH_PINS = [50063, 189490, 115159, 190997, 56151]
+#: until SEE stopped letting a recapturing king be taken for free, then
+#: 601,860 until FFALMP went default on (classic-24ply-ffa 190997 -> 14060).
+BENCH_PINS = [50063, 189490, 115159, 14060, 56151]
 
-#: Built, default OFF, each pending its own A/B. (name, setter, getter, which
-#: bench positions it must move: "teams" or "ffa"). None is exact except
-#: FFAKillers, which is ordering only and is checked against the oracle.
-DORMANT_SEARCH_TOGGLES = (
-    ("NullMove", core.set_null_move, core.null_move_enabled, "teams"),
-    ("RFP", core.set_rfp, core.rfp_enabled, "teams"),
-    ("FFAKillers", core.set_ffa_killers, core.ffa_killers_enabled, "ffa"),
-    ("FFALMR", core.set_ffa_lmr, core.ffa_lmr_enabled, "ffa"),
-    ("FFALMP", core.set_ffa_lmp, core.ffa_lmp_enabled, "ffa"),
+#: The pruning toggles built after the bench was pinned, each with the default
+#: its A/B gave it. (name, setter, getter, which bench positions it must move:
+#: "teams" or "ffa", default). None is exact except FFAKillers, which is
+#: ordering only and is checked against the oracle.
+SEARCH_TOGGLES = (
+    ("NullMove", core.set_null_move, core.null_move_enabled, "teams", False),
+    ("RFP", core.set_rfp, core.rfp_enabled, "teams", False),
+    ("FFAKillers", core.set_ffa_killers, core.ffa_killers_enabled, "ffa", False),
+    ("FFALMR", core.set_ffa_lmr, core.ffa_lmr_enabled, "ffa", False),
+    # CONFIRMED at fixed nodes and movetime 100 (docs/AB.md).
+    ("FFALMP", core.set_ffa_lmp, core.ffa_lmp_enabled, "ffa", True),
 )
 
 
-def test_dormant_search_toggles():
-    section("dormant search toggles (default off, pending A/B)")
+def test_search_toggles():
+    section("search toggles (each at the default its A/B gave it)")
     if not HAVE_C:
         check("C core is built", False, "run ./setup.sh")
         return
@@ -1806,8 +1824,9 @@ def test_dormant_search_toggles():
     import uci
     from tetrarch import nnue
 
-    for name, _s, getter, _m in DORMANT_SEARCH_TOGGLES:
-        check("%s default off (pending its A/B)" % name, not getter())
+    for name, _s, getter, _m, default in SEARCH_TOGGLES:
+        check("%s default %s" % (name, "on" if default else "off"),
+              getter() == default)
 
     def bench_counts():
         out = []
@@ -1820,13 +1839,13 @@ def test_dormant_search_toggles():
     core.load_net(nnue.Net.load(uci.DEFAULT_NET))
     try:
         base = bench_counts()
-        check("the bench signature is the pinned one with every toggle off",
+        check("the bench signature is the pinned one at the defaults",
               base == BENCH_PINS, "%s (%d)" % (base, sum(base)))
         modes = [mode for _l, mode, _f in bench.POSITIONS]
-        for name, setter, _g, where in DORMANT_SEARCH_TOGGLES:
-            setter(True)
+        for name, setter, _g, where, default in SEARCH_TOGGLES:
+            setter(not default)
             on = bench_counts()
-            setter(False)
+            setter(default)
             back = bench_counts()
             want = MODE_FFA if where == "ffa" else MODE_TEAMS
             moved_own = any(a != b_ for a, b_, m in zip(on, base, modes)
@@ -1839,7 +1858,7 @@ def test_dormant_search_toggles():
                   "%d -> %d nodes" % (sum(base), sum(on)))
             check("%s leaves the other mode's tree alone" % name,
                   not moved_other)
-            check("%s off again restores the signature" % name,
+            check("%s back at its default restores the signature" % name,
                   back == BENCH_PINS, str(back))
     finally:
         core.unload_net()
@@ -1879,14 +1898,17 @@ def test_dormant_search_toggles():
         if b.mode != MODE_FFA or not fast.gen_legal(b) or sum(b.alive) < 2:
             continue
         compared += 1
+        was = (core.ffa_lmp_enabled(), core.ffa_lmr_enabled())
+        core.set_ffa_lmp(False)
+        core.set_ffa_lmr(False)
         core.clear_hash()
         plain = core.search(b, 4).score
         core.set_ffa_lmp(True)
         core.set_ffa_lmr(True)
         core.clear_hash()
         got = core.search(b, 4).score
-        core.set_ffa_lmp(False)
-        core.set_ffa_lmr(False)
+        core.set_ffa_lmp(was[0])
+        core.set_ffa_lmr(was[1])
         if abs(got) >= 29900 and abs(plain) < 29900:
             invented += 1
     check("FFA LMP and LMR never invent a win or an elimination",
@@ -1897,17 +1919,19 @@ def test_dormant_search_toggles():
     core.set_ffa_killers(True)
     bad = tested = 0
     try:
-        for index in range(40):
-            rng = random.Random(9000 + index)
-            b = _sparse_ffa(rng)
-            if not fast.gen_legal(b):
-                continue
-            for depth in (1, 2, 3):
-                core.clear_hash()
-                got = core.search(b, depth).score
-                if got != search.reference_paranoid(b.copy(), b.turn, depth):
-                    bad += 1
-                tested += 1
+        with ffa_exact():
+            for index in range(40):
+                rng = random.Random(9000 + index)
+                b = _sparse_ffa(rng)
+                if not fast.gen_legal(b):
+                    continue
+                for depth in (1, 2, 3):
+                    core.clear_hash()
+                    got = core.search(b, depth).score
+                    if got != search.reference_paranoid(b.copy(), b.turn,
+                                                        depth):
+                        bad += 1
+                    tested += 1
     finally:
         core.set_ffa_killers(False)
     check("FFA killers leave the paranoid value exact", bad == 0,
@@ -1946,9 +1970,9 @@ def _paranoid_job(index):
 
     The FFA path shares none of the Teams heuristics -- no killers, no LMR,
     no LMP, no SEE pruning, no quiescence -- except through its own FFA*
-    toggles, all default off; the inexact ones are switched off here anyway,
-    like INEXACT_TOGGLES for the Teams oracle, so promoting one cannot
-    silently blind this comparison.
+    toggles; the inexact ones (FFALMP is default on) are switched off here,
+    like INEXACT_TOGGLES for the Teams oracle, so a promoted one cannot
+    blind this comparison.
 
     Half the sample runs with a net loaded. That half is the only thing that
     exercises the incremental accumulator being READ from a perspective that
@@ -2430,22 +2454,23 @@ def test_repetition():
     check("the FFA table is default on", core.ffa_tt_enabled())
     core.clear_hash()
     bad = tested = 0
-    for i in range(24):
-        pos = _sparse_ffa(random.Random(9000 + i))
-        for seat in range(4):
-            view = pos.copy()
-            view.turn = seat
-            view.recompute_key()
-            if not fast.gen_legal(view):
-                continue
-            for depth in (2, 3):
-                got = core.search(view, depth).score
-                want = search.reference_paranoid(view.copy(), seat, depth)
-                tested += 1
-                bad += got != want
-        # A Teams search into the same table, so the two are proved not to
-        # answer each other.
-        core.search(start_board("classic"), 4)
+    with ffa_exact():
+        for i in range(24):
+            pos = _sparse_ffa(random.Random(9000 + i))
+            for seat in range(4):
+                view = pos.copy()
+                view.turn = seat
+                view.recompute_key()
+                if not fast.gen_legal(view):
+                    continue
+                for depth in (2, 3):
+                    got = core.search(view, depth).score
+                    want = search.reference_paranoid(view.copy(), seat, depth)
+                    tested += 1
+                    bad += got != want
+            # A Teams search into the same table, so the two are proved not
+            # to answer each other.
+            core.search(start_board("classic"), 4)
     check("the table survives every root and both modes over %d searches"
           % tested, bad == 0, "%d disagreements" % bad)
 
@@ -4574,7 +4599,7 @@ def main():
     run(test_eval)
     run(test_search, workers)
     run(test_ffa_search, workers)
-    run(test_dormant_search_toggles)
+    run(test_search_toggles)
     run(test_ffa_points)
     run(test_ffa_multipv_info)
     run(test_ffa_elimination)
