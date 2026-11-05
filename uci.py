@@ -331,7 +331,7 @@ class Engine:
         print("option name NullMove type check default false")
         print("option name NullMoveMinDepth type spin default 3 min 2 max 16")
         print("option name NullMoveR type spin default 2 min 1 max 6")
-        print("option name RFP type check default false")
+        print("option name RFP type check default true")
         print("option name RFPMaxDepth type spin default 3 min 1 max 8")
         print("option name RFPMargin type spin default 150 min 1 max 2000")
         print("option name FFAKillers type check default false")

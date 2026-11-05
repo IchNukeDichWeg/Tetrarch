@@ -1023,12 +1023,15 @@ def test_eval():
 #: times smaller, which is the feature working and is worth 16.32 Elo at fixed
 #: nodes (docs/AB.md). A change here is either a deliberate default flip or a
 #: bug, and never a wash.
+#: Re-pinned when RFP became the default: classic d4 971 -> 927, rg d4
+#: 1088 -> 1044. RFP needs depth > 1 below a node to act, so d1-d3 and the
+#: d5 trees (where the table absorbs it) do not move.
 SEARCH_PINS = {
-    "classic": [40, 84, 311, 971, 5982],
+    "classic": [40, 84, 311, 927, 5982],
     "modern": [40, 86, 322, 775, 6527],
     "by": [40, 86, 322, 1217, 4789],
     "byg": [40, 86, 322, 1217, 5371],
-    "rg": [40, 80, 342, 1088, 5155],
+    "rg": [40, 80, 342, 1044, 5155],
 }
 
 
@@ -1794,13 +1797,14 @@ def test_ffa_elimination():
 
 
 #: bench.py's per-position node counts with the default net and the default
-#: toggles -- the signature every bit-exact commit quotes (414,562). Pinned
+#: toggles -- the signature every bit-exact commit quotes (178,350). Pinned
 #: here so a dormant toggle that leaks into the default path fails the gate
 #: rather than a reviewer's arithmetic. Was 597,933 (49806 / 189492 / 111487)
 #: until SEE stopped letting a recapturing king be taken for free, then
 #: 601,860 until FFALMP went default on (classic-24ply-ffa 190997 -> 14060),
-#: then 424,923 until FFALMR did (14060 -> 3699).
-BENCH_PINS = [50063, 189490, 115159, 3699, 56151]
+#: then 424,923 until FFALMR did (14060 -> 3699), then 414,562 until RFP did
+#: (every Teams position).
+BENCH_PINS = [27650, 75311, 48043, 3699, 23647]
 
 #: The pruning toggles built after the bench was pinned, each with the default
 #: its A/B gave it. (name, setter, getter, which bench positions it must move:
@@ -1808,7 +1812,8 @@ BENCH_PINS = [50063, 189490, 115159, 3699, 56151]
 #: ordering only and is checked against the oracle.
 SEARCH_TOGGLES = (
     ("NullMove", core.set_null_move, core.null_move_enabled, "teams", False),
-    ("RFP", core.set_rfp, core.rfp_enabled, "teams", False),
+    # CONFIRMED at fixed nodes and movetime 200 (docs/AB.md).
+    ("RFP", core.set_rfp, core.rfp_enabled, "teams", True),
     ("FFAKillers", core.set_ffa_killers, core.ffa_killers_enabled, "ffa", False),
     # CONFIRMED at fixed nodes and movetime 100 (docs/AB.md).
     ("FFALMR", core.set_ffa_lmr, core.ffa_lmr_enabled, "ffa", True),
@@ -1876,6 +1881,10 @@ def test_search_toggles():
         if b.mode != MODE_TEAMS or not all(b.alive) or not fast.gen_legal(b):
             continue
         compared += 1
+        was = {name: on() for name, on in (("NullMove", core.null_move_enabled),
+                                           ("RFP", core.rfp_enabled))}
+        for setter in setters.values():
+            setter(False)
         core.clear_hash()
         plain = core.search(b, 5).score
         for name, setter in setters.items():
@@ -1883,6 +1892,8 @@ def test_search_toggles():
             core.clear_hash()
             got = core.search(b, 5).score
             setter(False)
+        for name, setter in setters.items():
+            setter(was[name])
             if abs(got) >= 29900 and abs(plain) < 29900:
                 invented[name] += 1
     for name, n in invented.items():

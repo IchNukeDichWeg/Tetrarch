@@ -3062,8 +3062,15 @@ void tt_set_null_params(int min_depth, int r)
  * second arm. Pre-screen at fixed nodes 20,000, 400 games: +110.41 +/- 38.06
  * (docs/AB.md) -- a direction, not a confirm.
  * The eval it reads is NOT free at fixed time (one more evaluation per
- * shallow interior node), so fixed nodes will flatter it: screen both. */
-static int use_rfp = 0;
+ * shallow interior node), so fixed nodes will flatter it: screen both.
+ *
+ * CONFIRMED and default ON. Teams / classic, net-v5 both sides:
+ *   fixed nodes 20,000   +133.95 +/- 7.00   10,000 games
+ *   movetime 200         +155.54 +/- 11.10   4,000 games
+ * The worry above did not hold: the clock gained MORE than the node count,
+ * so the extra evaluation is repaid by the subtrees it never enters. Margin
+ * 100 as a second arm is still untried. See docs/AB.md. */
+static int use_rfp = 1;
 static int rfp_max_depth = 3;
 static int rfp_margin = 150;
 

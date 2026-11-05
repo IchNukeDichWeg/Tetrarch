@@ -601,7 +601,7 @@ def set_null_params(min_depth, r):
 
 def set_rfp(on):
     """Reverse futility pruning (static null move) in the Teams search.
-    Default OFF, pending its A/B. Not exact."""
+    Default ON: +155.54 +/- 11.10 at movetime 200 (docs/AB.md). Not exact."""
     load().tt_set_rfp(1 if on else 0)
 
 

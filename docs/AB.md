@@ -148,11 +148,11 @@ Not measured: Apple NEON, which is untouched. The Teams/FFA split was not
 measured separately here, and the AB box is NEON, so none of this moves its
 numbers.
 
-### Reverse futility and null-move pruning in Teams -- CONFIRMED at fixed nodes, fixed time running
+### Reverse futility and null-move pruning in Teams -- RFP CONFIRMED and default on
 
 `setoption name RFP` (`RFPMaxDepth` 3, `RFPMargin` 150 per ply) and
 `setoption name NullMove` (`NullMoveMinDepth` 3, `NullMoveR` 2, +1 from depth
-7), both default **off**, Teams only. They share one static evaluation, read
+7), Teams only. RFP is default **on** (below); NullMove default **off**. They share one static evaluation, read
 only when one of them is on. A pass expires the passer's en-passant offer,
 zeroes `halfmove` so no repetition is scored through it, never follows another
 pass, is refused in check and to a seat down to king and pawns, and never
@@ -208,9 +208,15 @@ NullMove is measured on top of RFP, since RFP confirmed first:
 | RFP vs default | **+133.95 +/- 7.00** | 14, 6, 172, 50, 664, 85, 953, 72, 484 |
 | RFP + NullMove vs RFP | **+20.28 +/- 6.54** | 97, 17, 499, 73, 902, 98, 613, 35, 166 |
 
-Both CONFIRMED at this instrument. The caution above stands: fixed nodes cannot
-see RFP's extra evaluations, so neither is default on until movetime 200 says
-so. Null move beat the structural argument against it here; whether it does on
+Both CONFIRMED at this instrument.
+
+**Fixed-time A/B for RFP**: movetime 200, net-v5 both sides, 4,000 games,
+`--workers 48` (nproc / 2) on the same box:
+**+155.54 +/- 11.10**, Dist 4, 0, 51, 8, 258, 11, 433, 11, 224.
+**RFP: CONFIRMED at both instruments, default on.** The caution above was
+wrong in direction: the clock gained more than the node count did, so the
+extra evaluation is repaid by the subtrees it never enters. Margin 100 as a
+second arm is still untried. Null move beat the structural argument against it here; whether it does on
 the clock is the open question.
 
 ### Measured and not built: what the other textbook items read here
