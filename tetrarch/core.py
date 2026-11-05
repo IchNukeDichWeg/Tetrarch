@@ -583,7 +583,8 @@ def qs_evasions_enabled():
 
 
 def set_null_move(on):
-    """Null-move pruning in the Teams search. Default OFF, pending its A/B.
+    """Null-move pruning in the Teams search. Default ON: +27.33 +/- 10.09 at
+    movetime 200 on top of RFP (docs/AB.md).
 
     Not exact: it fails high on a pass, so it is wrong exactly where passing
     would beat every real move. Teams only; the paranoid FFA search ignores it.

@@ -328,7 +328,7 @@ class Engine:
         # Built, default OFF, each pending its own A/B (docs/AB.md). None is
         # exact. NullMove and RFP are Teams-only; the FFA* three touch only the
         # paranoid search and share the LMR/LMP parameters above.
-        print("option name NullMove type check default false")
+        print("option name NullMove type check default true")
         print("option name NullMoveMinDepth type spin default 3 min 2 max 16")
         print("option name NullMoveR type spin default 2 min 1 max 6")
         print("option name RFP type check default true")

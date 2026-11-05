@@ -3029,8 +3029,14 @@ void tt_set_lmp_params(int max_depth, int base)
  * min depth 4 (4.87, +3 cp) are no better. The weaker of the two Teams
  * toggles: a third of RFP's depth gain, and little on top of it (5.45 ->
  * 5.63 together). Expected to be small; that is why it is separate.
+ *
+ * CONFIRMED and default ON, measured on top of RFP. Teams / classic, net-v5:
+ *   fixed nodes 20,000   +20.28 +/- 6.54   10,000 games
+ *   movetime 200         +27.33 +/- 10.09   4,000 games
+ * The expectation above was wrong: a quarter-round tempo still refutes enough
+ * to pay for itself, and RFP did not already take what it gives.
  */
-static int use_null_move = 0;
+static int use_null_move = 1;
 static int null_min_depth = 3;
 static int null_r = 2;
 /* Set at ply p when the move into ply p was a pass. A second pass in a row

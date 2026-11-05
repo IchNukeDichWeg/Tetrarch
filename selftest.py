@@ -1026,12 +1026,14 @@ def test_eval():
 #: Re-pinned when RFP became the default: classic d4 971 -> 927, rg d4
 #: 1088 -> 1044. RFP needs depth > 1 below a node to act, so d1-d3 and the
 #: d5 trees (where the table absorbs it) do not move.
+#: Re-pinned when NullMove became the default: every d4 and d5 moves (a pass
+#: needs depth >= 3), d1-d3 do not.
 SEARCH_PINS = {
-    "classic": [40, 84, 311, 927, 5982],
-    "modern": [40, 86, 322, 775, 6527],
-    "by": [40, 86, 322, 1217, 4789],
-    "byg": [40, 86, 322, 1217, 5371],
-    "rg": [40, 80, 342, 1044, 5155],
+    "classic": [40, 84, 311, 346, 3227],
+    "modern": [40, 86, 322, 515, 3905],
+    "by": [40, 86, 322, 474, 2815],
+    "byg": [40, 86, 322, 474, 5065],
+    "rg": [40, 80, 342, 402, 3646],
 }
 
 
@@ -1262,11 +1264,15 @@ def test_search(workers=1):
 
     # The toggle must still reach the search, so it can be turned off for a
     # future A/B. A toggle wired to nothing passes every other check here.
+    # Depth 6, not 5: with NullMove default on, the depth-5 start tree is a
+    # few thousand nodes and killers happen to grow it (3,227 vs 2,736),
+    # while at depth 6 they cut it to 13% and over the bench to 26%. One
+    # shallow tree is noise; the deeper one measures the ordering.
     core.clear_hash()
-    on = core.search(start_board("classic"), 5).nodes
+    on = core.search(start_board("classic"), 6).nodes
     core.set_killers(False)
     core.clear_hash()
-    off = core.search(start_board("classic"), 5).nodes
+    off = core.search(start_board("classic"), 6).nodes
     core.set_killers(True)
     check("the killers toggle still reaches the search", on != off,
           "%d on, %d off" % (on, off))
@@ -1797,22 +1803,22 @@ def test_ffa_elimination():
 
 
 #: bench.py's per-position node counts with the default net and the default
-#: toggles -- the signature every bit-exact commit quotes (178,350). Pinned
+#: toggles -- the signature every bit-exact commit quotes (146,019). Pinned
 #: here so a dormant toggle that leaks into the default path fails the gate
 #: rather than a reviewer's arithmetic. Was 597,933 (49806 / 189492 / 111487)
 #: until SEE stopped letting a recapturing king be taken for free, then
 #: 601,860 until FFALMP went default on (classic-24ply-ffa 190997 -> 14060),
 #: then 424,923 until FFALMR did (14060 -> 3699), then 414,562 until RFP did
-#: (every Teams position).
-BENCH_PINS = [27650, 75311, 48043, 3699, 23647]
+#: (every Teams position), then 178,350 until NullMove did.
+BENCH_PINS = [28786, 55988, 44674, 3699, 12872]
 
 #: The pruning toggles built after the bench was pinned, each with the default
 #: its A/B gave it. (name, setter, getter, which bench positions it must move:
 #: "teams" or "ffa", default). None is exact except FFAKillers, which is
 #: ordering only and is checked against the oracle.
 SEARCH_TOGGLES = (
-    ("NullMove", core.set_null_move, core.null_move_enabled, "teams", False),
     # CONFIRMED at fixed nodes and movetime 200 (docs/AB.md).
+    ("NullMove", core.set_null_move, core.null_move_enabled, "teams", True),
     ("RFP", core.set_rfp, core.rfp_enabled, "teams", True),
     ("FFAKillers", core.set_ffa_killers, core.ffa_killers_enabled, "ffa", False),
     # CONFIRMED at fixed nodes and movetime 100 (docs/AB.md).

@@ -148,11 +148,11 @@ Not measured: Apple NEON, which is untouched. The Teams/FFA split was not
 measured separately here, and the AB box is NEON, so none of this moves its
 numbers.
 
-### Reverse futility and null-move pruning in Teams -- RFP CONFIRMED and default on
+### Reverse futility and null-move pruning in Teams -- both CONFIRMED, default on
 
 `setoption name RFP` (`RFPMaxDepth` 3, `RFPMargin` 150 per ply) and
 `setoption name NullMove` (`NullMoveMinDepth` 3, `NullMoveR` 2, +1 from depth
-7), Teams only. RFP is default **on** (below); NullMove default **off**. They share one static evaluation, read
+7), Teams only, both default **on** (below). They share one static evaluation, read
 only when one of them is on. A pass expires the passer's en-passant offer,
 zeroes `halfmove` so no repetition is scored through it, never follows another
 pass, is refused in check and to a seat down to king and pawns, and never
@@ -216,7 +216,12 @@ Both CONFIRMED at this instrument.
 **RFP: CONFIRMED at both instruments, default on.** The caution above was
 wrong in direction: the clock gained more than the node count did, so the
 extra evaluation is repaid by the subtrees it never enters. Margin 100 as a
-second arm is still untried. Null move beat the structural argument against it here; whether it does on
+second arm is still untried.
+
+**Fixed-time A/B for NullMove on top of RFP**, same instrument:
+**+27.33 +/- 10.09**, Dist 33, 1, 193, 13, 398, 18, 271, 4, 69.
+**NullMove: CONFIRMED at both instruments, default on.** The structural
+argument below expected little; the games disagree. Null move beat the structural argument against it here; whether it does on
 the clock is the open question.
 
 ### Measured and not built: what the other textbook items read here
