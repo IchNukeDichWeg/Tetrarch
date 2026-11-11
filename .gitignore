@@ -78,3 +78,6 @@ book*.txt
 id_rsa*
 id_ed25519*
 *credential*
+test_engine4
+test_engine4.mjs
+test_gauntlet
